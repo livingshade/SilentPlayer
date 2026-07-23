@@ -317,7 +317,6 @@ public final class RustPlayerClient: @unchecked Sendable {
         }
     }
 
-    #if os(macOS)
     public func exportLibrary(to packageURL: URL) throws -> LibraryPackageSummary {
         try sync {
             try packageURL.path.withCString { packagePath in
@@ -345,7 +344,6 @@ public final class RustPlayerClient: @unchecked Sendable {
             _ = try decode(player_app_zero_out_library(app), as: EmptyDTO.self)
         }
     }
-    #endif
 
     public func importFolder(_ folder: URL) throws -> ImportSummary {
         try sync {

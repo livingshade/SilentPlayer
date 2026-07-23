@@ -329,16 +329,18 @@ public final class AppModel: ObservableObject {
         await refreshPlaylists()
     }
 
-    #if os(macOS)
-    public func exportLibrary(to packageURL: URL) async {
+    public func exportLibrary(to packageURL: URL) async -> LibraryPackageSummary? {
         guard canStartLibraryMigration() else {
-            return
+            return nil
         }
+        var exportedSummary: LibraryPackageSummary?
         await runBusy("Exporting library") { [self] in
             let summary = try await invoke { try $0.exportLibrary(to: packageURL) }
+            exportedSummary = summary
             status = "Library exported"
             playbackDetail = libraryPackageSummary(summary, location: packageURL)
         }
+        return exportedSummary
     }
 
     public func importLibrary(from packageURL: URL) async {
@@ -350,13 +352,22 @@ public final class AppModel: ObservableObject {
             apply(snapshot: snapshot)
             playbackSystemIntegration?.playbackDidStop()
 
+            status = "Preparing \(packageURL.lastPathComponent)"
+            let localPackageURL = try await localLibraryPackageForImport(packageURL)
+            let removesLocalPackage = localPackageURL != packageURL
+            defer {
+                if removesLocalPackage {
+                    try? FileManager.default.removeItem(at: localPackageURL)
+                }
+            }
+
             let (backupURL, backupSummary) = try await backupCurrentLibrary()
             lastLibraryBackupURL = backupURL
             status = "Replacing current library"
             try await invoke { try $0.zeroOutLibrary() }
 
             status = "Importing \(packageURL.lastPathComponent)"
-            let imported = try await invoke { try $0.importLibrary(from: packageURL) }
+            let imported = try await invoke { try $0.importLibrary(from: localPackageURL) }
             resetLibraryPresentation()
             await reloadActiveScope(quiet: true)
             await refreshPlaylists()
@@ -404,6 +415,40 @@ public final class AppModel: ObservableObject {
         return (backupURL, summary)
     }
 
+    private func localLibraryPackageForImport(_ packageURL: URL) async throws -> URL {
+        #if os(iOS)
+        return try await Task.detached(priority: .userInitiated) {
+            let accessGranted = packageURL.startAccessingSecurityScopedResource()
+            defer {
+                if accessGranted {
+                    packageURL.stopAccessingSecurityScopedResource()
+                }
+            }
+
+            let stagingRoot = FileManager.default.temporaryDirectory
+                .appendingPathComponent("SilentLibraryImports", isDirectory: true)
+            try FileManager.default.createDirectory(
+                at: stagingRoot,
+                withIntermediateDirectories: true
+            )
+            let stagedPackage = stagingRoot
+                .appendingPathComponent(
+                    "\(UUID().uuidString).silentlibrary",
+                    isDirectory: true
+                )
+            do {
+                try FileManager.default.copyItem(at: packageURL, to: stagedPackage)
+                return stagedPackage
+            } catch {
+                try? FileManager.default.removeItem(at: stagedPackage)
+                throw error
+            }
+        }.value
+        #else
+        return packageURL
+        #endif
+    }
+
     private func nextLibraryBackupURL() -> URL {
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "en_US_POSIX")
@@ -438,7 +483,6 @@ public final class AppModel: ObservableObject {
     ) -> String {
         "\(summary.tracks) tracks, \(summary.audioFiles) audio files, \(summary.sidecarFiles) sidecars: \(location.path)"
     }
-    #endif
 
     public func importFolder(_ folder: URL) async {
         #if os(macOS)

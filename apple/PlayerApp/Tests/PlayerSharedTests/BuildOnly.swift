@@ -79,7 +79,6 @@ final class PlaybackPolicyTests: XCTestCase {
     }
 }
 
-#if os(macOS)
 @MainActor
 final class LibraryMigrationTests: XCTestCase {
     func testImportCreatesCompleteBackupBeforeReplacingLibrary() async throws {
@@ -125,7 +124,6 @@ final class LibraryMigrationTests: XCTestCase {
         )
     }
 }
-#endif
 
 @MainActor
 final class AppModelAudioInterruptionTests: XCTestCase {

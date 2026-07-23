@@ -250,7 +250,7 @@ public struct ContentView: View {
                 Button {
                     Task {
                         if let packageURL = await chooseLibraryExportPackage() {
-                            await model.exportLibrary(to: packageURL)
+                            _ = await model.exportLibrary(to: packageURL)
                         }
                     }
                 } label: {

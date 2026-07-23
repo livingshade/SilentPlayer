@@ -4,11 +4,21 @@ import SwiftUI
 import UIKit
 import UniformTypeIdentifiers
 
+private extension UTType {
+    static let silentLibraryPackage = UTType(
+        exportedAs: "com.normalplayer.silent-library",
+        conformingTo: .package
+    )
+}
+
 public struct PhoneContentView: View {
     @ObservedObject private var model: AppModel
     @State private var selectedTab: PhoneTab = .library
     @State private var fileImportPurpose: PhoneFileImportPurpose?
     @State private var isFileImporterPresented = false
+    @State private var pendingLibraryExportURL: URL?
+    @State private var isLibraryExporterPresented = false
+    @State private var isZeroOutConfirmationPresented = false
     @State private var pendingSeekProgress: Double?
     @State private var lastExportURL: URL?
     @State private var activeAlert: PhoneAppAlert?
@@ -76,6 +86,26 @@ public struct PhoneContentView: View {
             )
             .frame(width: 0, height: 0)
         )
+        .background(
+            PhoneDocumentExporterBridge(
+                isPresented: $isLibraryExporterPresented,
+                sourceURL: pendingLibraryExportURL,
+                onResult: handleLibraryExport
+            )
+            .frame(width: 0, height: 0)
+        )
+        .confirmationDialog(
+            "Zero Out Library?",
+            isPresented: $isZeroOutConfirmationPresented,
+            titleVisibility: .visible
+        ) {
+            Button("Back Up and Zero Out", role: .destructive) {
+                Task { await model.zeroOutLibrary() }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Silent will create a complete internal backup before clearing the database and managed music files.")
+        }
         .task {
             await model.bootstrap()
         }
@@ -383,6 +413,28 @@ public struct PhoneContentView: View {
                 Label("Import Folder", systemImage: "folder.badge.plus")
             }
 
+            Divider()
+
+            Button {
+                Task { await prepareLibraryExport() }
+            } label: {
+                Label("Export Library", systemImage: "square.and.arrow.up")
+            }
+
+            Button {
+                presentFileImporter(.libraryPackage)
+            } label: {
+                Label("Import Library", systemImage: "square.and.arrow.down")
+            }
+
+            Button(role: .destructive) {
+                isZeroOutConfirmationPresented = true
+            } label: {
+                Label("Zero Out Library", systemImage: "trash")
+            }
+
+            Divider()
+
             Button {
                 Task { await model.analyzeLibrary() }
             } label: {
@@ -408,6 +460,7 @@ public struct PhoneContentView: View {
         } label: {
             Label("Actions", systemImage: "ellipsis.circle")
         }
+        .disabled(model.isBusy)
     }
 
     private var sortMenu: some View {
@@ -719,6 +772,11 @@ public struct PhoneContentView: View {
                 return
             }
             await model.importFolder(folder)
+        case .libraryPackage:
+            guard let packageURL = urls.first else {
+                return
+            }
+            await model.importLibrary(from: packageURL)
         case .trackCover(let track):
             guard let url = urls.first else {
                 return
@@ -749,6 +807,46 @@ public struct PhoneContentView: View {
                 return
             }
             model.setViewEditLyricsURL(url)
+        }
+    }
+
+    @MainActor
+    private func prepareLibraryExport() async {
+        let packageURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("SilentLibraryExports", isDirectory: true)
+            .appendingPathComponent(
+                "Silent-Library-\(UUID().uuidString).silentlibrary",
+                isDirectory: true
+            )
+        guard await model.exportLibrary(to: packageURL) != nil else {
+            return
+        }
+        pendingLibraryExportURL = packageURL
+        model.status = "Choose where to save the library package"
+        isLibraryExporterPresented = true
+    }
+
+    private func handleLibraryExport(_ result: Result<[URL], Error>) {
+        isLibraryExporterPresented = false
+        let exportedPackage = pendingLibraryExportURL
+        pendingLibraryExportURL = nil
+        defer {
+            if let exportedPackage {
+                try? FileManager.default.removeItem(at: exportedPackage)
+            }
+        }
+
+        do {
+            let destinations = try result.get()
+            guard let destination = destinations.first else {
+                model.status = "Library export cancelled"
+                return
+            }
+            model.status = "Library exported"
+            model.playbackDetail = destination.path
+        } catch {
+            model.status = "Library export failed"
+            model.playbackError = error.localizedDescription
         }
     }
 }
@@ -844,9 +942,90 @@ private struct PhoneDocumentPickerBridge: UIViewControllerRepresentable {
     }
 }
 
+private struct PhoneDocumentExporterBridge: UIViewControllerRepresentable {
+    @Binding var isPresented: Bool
+    let sourceURL: URL?
+    let onResult: (Result<[URL], Error>) -> Void
+
+    func makeUIViewController(context: Context) -> UIViewController {
+        UIViewController()
+    }
+
+    func updateUIViewController(_ viewController: UIViewController, context: Context) {
+        context.coordinator.parent = self
+
+        guard isPresented, let sourceURL else {
+            if context.coordinator.presentedPicker != nil {
+                context.coordinator.dismissPresentedPicker()
+            }
+            return
+        }
+
+        guard context.coordinator.presentedPicker == nil else {
+            return
+        }
+
+        DispatchQueue.main.async {
+            guard isPresented, context.coordinator.presentedPicker == nil else {
+                return
+            }
+            let picker = UIDocumentPickerViewController(
+                forExporting: [sourceURL],
+                asCopy: true
+            )
+            picker.delegate = context.coordinator
+            picker.shouldShowFileExtensions = true
+            context.coordinator.presentedPicker = picker
+            context.coordinator.topPresenter(from: viewController).present(picker, animated: true)
+        }
+    }
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(parent: self)
+    }
+
+    final class Coordinator: NSObject, UIDocumentPickerDelegate {
+        var parent: PhoneDocumentExporterBridge
+        weak var presentedPicker: UIDocumentPickerViewController?
+
+        init(parent: PhoneDocumentExporterBridge) {
+            self.parent = parent
+        }
+
+        func documentPicker(
+            _ controller: UIDocumentPickerViewController,
+            didPickDocumentsAt urls: [URL]
+        ) {
+            presentedPicker = nil
+            parent.isPresented = false
+            parent.onResult(.success(urls))
+        }
+
+        func documentPickerWasCancelled(_ controller: UIDocumentPickerViewController) {
+            presentedPicker = nil
+            parent.isPresented = false
+            parent.onResult(.success([]))
+        }
+
+        func dismissPresentedPicker() {
+            presentedPicker?.dismiss(animated: true)
+            presentedPicker = nil
+        }
+
+        func topPresenter(from viewController: UIViewController) -> UIViewController {
+            var presenter = viewController.view.window?.rootViewController ?? viewController
+            while let presented = presenter.presentedViewController {
+                presenter = presented
+            }
+            return presenter
+        }
+    }
+}
+
 private enum PhoneFileImportPurpose {
     case musicFiles
     case musicFolder
+    case libraryPackage
     case trackCover(TrackItem)
     case albumCover(TrackItem)
     case playlistCover(PlaylistItem)
@@ -861,6 +1040,8 @@ private enum PhoneFileImportPurpose {
             return [.item]
         case .musicFolder:
             return [.folder]
+        case .libraryPackage:
+            return [.silentLibraryPackage, .package]
         case .trackCover, .albumCover, .playlistCover, .playlistSettingsArtwork, .editArtwork:
             return [.image]
         case .editLyrics:
@@ -876,7 +1057,7 @@ private enum PhoneFileImportPurpose {
         switch self {
         case .musicFolder:
             return false
-        case .musicFiles, .trackCover, .albumCover, .playlistCover, .playlistSettingsArtwork, .editArtwork, .editLyrics:
+        case .musicFiles, .libraryPackage, .trackCover, .albumCover, .playlistCover, .playlistSettingsArtwork, .editArtwork, .editLyrics:
             return true
         }
     }
@@ -885,7 +1066,7 @@ private enum PhoneFileImportPurpose {
         switch self {
         case .musicFiles:
             return true
-        case .musicFolder, .trackCover, .albumCover, .playlistCover, .playlistSettingsArtwork, .editArtwork, .editLyrics:
+        case .musicFolder, .libraryPackage, .trackCover, .albumCover, .playlistCover, .playlistSettingsArtwork, .editArtwork, .editLyrics:
             return false
         }
     }
@@ -896,6 +1077,8 @@ private enum PhoneFileImportPurpose {
             return "Choose music files"
         case .musicFolder:
             return "Choose a music folder"
+        case .libraryPackage:
+            return "Choose a Silent library package"
         case .trackCover:
             return "Choose track artwork"
         case .albumCover:
