@@ -1,5 +1,9 @@
 #![allow(clippy::missing_safety_doc, clippy::not_unsafe_ptr_arg_deref)]
 
+mod client;
+
+pub use client::{SilentAppClient, SilentAppClientError};
+
 use std::collections::{BTreeMap, HashSet};
 use std::ffi::{c_char, CStr, CString};
 use std::fs::{self, OpenOptions};
@@ -282,16 +286,7 @@ const LIBRARY_PACKAGE_MANIFEST_FILE: &str = "manifest.json";
 const LIBRARY_PACKAGE_MUSIC_DIRECTORY: &str = "Music";
 
 #[no_mangle]
-pub unsafe extern "C" fn player_app_create(db_path: *const c_char) -> *mut PlayerApp {
-    let Ok(db_path) = (unsafe { c_string(db_path) }) else {
-        return ptr::null_mut();
-    };
-    let db_path = PathBuf::from(db_path);
-    create_app(db_path.clone(), default_media_root_for_db(&db_path))
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn player_app_create_with_media_root(
+pub unsafe extern "C" fn player_app_create(
     db_path: *const c_char,
     media_root: *const c_char,
 ) -> *mut PlayerApp {
@@ -1406,7 +1401,6 @@ impl PlayerApp {
     }
 
     fn import_library(&mut self, package_path: &Path) -> PlayerResult<LibraryPackageSummary> {
-        self.reset_library_runtime_state();
         let manifest_path = package_path.join(LIBRARY_PACKAGE_MANIFEST_FILE);
         let manifest_data =
             fs::read(&manifest_path).map_err(|source| PlayerError::io(&manifest_path, source))?;
@@ -1418,11 +1412,65 @@ impl PlayerApp {
                 manifest.format_version
             )));
         }
+        if manifest.database_file != LIBRARY_PACKAGE_DATABASE_FILE {
+            return Err(PlayerError::store(format!(
+                "library package database must be `{LIBRARY_PACKAGE_DATABASE_FILE}`"
+            )));
+        }
 
+        let package_root = package_path
+            .canonicalize()
+            .map_err(|source| PlayerError::io(package_path, source))?;
+        let package_database =
+            validated_package_file(&package_root, &manifest.database_file, "database")?;
+        let database_track_paths = LibraryStore::open(&package_database)?
+            .tracks()?
+            .into_iter()
+            .map(|track| track.path)
+            .collect::<HashSet<_>>();
+        let manifest_database_paths = manifest
+            .tracks
+            .iter()
+            .map(|track| PathBuf::from(&track.database_path))
+            .collect::<HashSet<_>>();
+        if manifest_database_paths.len() != manifest.tracks.len()
+            || manifest_database_paths != database_track_paths
+        {
+            return Err(PlayerError::store(
+                "library package manifest tracks do not match its database",
+            ));
+        }
+        let mut validated_audio_files = Vec::with_capacity(manifest.tracks.len());
+        let mut unique_audio_files = HashSet::with_capacity(manifest.tracks.len());
+        for track in &manifest.tracks {
+            let audio_file = Path::new(&track.audio_file);
+            if audio_file
+                .strip_prefix(LIBRARY_PACKAGE_MUSIC_DIRECTORY)
+                .ok()
+                .is_none_or(|relative| relative.as_os_str().is_empty())
+            {
+                return Err(PlayerError::store(format!(
+                    "library package audio path must be below `{LIBRARY_PACKAGE_MUSIC_DIRECTORY}`: {}",
+                    track.audio_file
+                )));
+            }
+            if !unique_audio_files.insert(audio_file.to_path_buf()) {
+                return Err(PlayerError::store(format!(
+                    "library package contains duplicate audio path: {}",
+                    track.audio_file
+                )));
+            }
+            validated_audio_files.push(validated_package_file(
+                &package_root,
+                &track.audio_file,
+                "audio",
+            )?);
+        }
+
+        self.reset_library_runtime_state();
         if let Some(parent) = self.db_path.parent() {
             fs::create_dir_all(parent).map_err(|source| PlayerError::io(parent, source))?;
         }
-        let package_database = package_path.join(&manifest.database_file);
         fs::copy(&package_database, &self.db_path)
             .map_err(|source| PlayerError::io(&self.db_path, source))?;
         fs::create_dir_all(&self.media_root)
@@ -1430,12 +1478,11 @@ impl PlayerApp {
 
         let mut replacements = Vec::with_capacity(manifest.tracks.len());
         let mut sidecar_files = 0_usize;
-        for track in &manifest.tracks {
+        for (track, source) in manifest.tracks.iter().zip(validated_audio_files) {
             let audio_file = PathBuf::from(&track.audio_file);
-            let source = package_path.join(&audio_file);
             let relative_audio_path = audio_file
                 .strip_prefix(LIBRARY_PACKAGE_MUSIC_DIRECTORY)
-                .unwrap_or(&audio_file);
+                .map_err(|_| PlayerError::store("validated package audio path lost its prefix"))?;
             let destination = self.media_root.join(relative_audio_path);
             copy_into_media_library(&source, &destination)?;
             sidecar_files += copy_related_sidecars(&source, &destination)?;
@@ -2011,11 +2058,33 @@ unsafe fn c_string(value: *const c_char) -> PlayerResult<String> {
         .map_err(|error| PlayerError::engine(error.to_string()))
 }
 
-fn default_media_root_for_db(db_path: &Path) -> PathBuf {
-    db_path
-        .parent()
-        .map(|parent| parent.join("Music"))
-        .unwrap_or_else(|| PathBuf::from("Music"))
+fn validated_package_file(
+    package_root: &Path,
+    relative_path: &str,
+    kind: &str,
+) -> PlayerResult<PathBuf> {
+    let relative_path = Path::new(relative_path);
+    if relative_path.as_os_str().is_empty()
+        || relative_path
+            .components()
+            .any(|component| !matches!(component, Component::Normal(_)))
+    {
+        return Err(PlayerError::store(format!(
+            "library package {kind} path must be relative and normalized: {}",
+            relative_path.display()
+        )));
+    }
+    let path = package_root.join(relative_path);
+    let canonical = path
+        .canonicalize()
+        .map_err(|source| PlayerError::io(&path, source))?;
+    if !canonical.starts_with(package_root) || !canonical.is_file() {
+        return Err(PlayerError::store(format!(
+            "library package {kind} path escapes the package or is not a file: {}",
+            relative_path.display()
+        )));
+    }
+    Ok(canonical)
 }
 
 fn library_package_audio_path(index: usize, source_path: &Path) -> PathBuf {
@@ -2062,10 +2131,10 @@ fn materialized_primary_view_id(audio_hash: &str, created_at_unix_nanos: u128) -
 }
 
 fn parse_repeat_mode(value: &str) -> PlayerResult<RepeatMode> {
-    match value.trim().to_ascii_lowercase().as_str() {
-        "off" | "none" | "no_repeat" | "sequence" | "sequential" | "order" => Ok(RepeatMode::Off),
-        "one" | "single" | "single_loop" | "repeat_one" => Ok(RepeatMode::One),
-        "all" | "loop" | "repeat_all" => Ok(RepeatMode::All),
+    match value {
+        "off" => Ok(RepeatMode::Off),
+        "one" => Ok(RepeatMode::One),
+        "all" => Ok(RepeatMode::All),
         other => Err(PlayerError::metadata(format!(
             "unknown repeat mode: {other}"
         ))),
@@ -2879,6 +2948,59 @@ mod tests {
     }
 
     #[test]
+    fn library_package_import_rejects_escaping_paths_before_replacing_state() {
+        let target_root = temp_dir("unsafe_library_package_target");
+        let target_db = target_root.join("player_library.sqlite3");
+        let target_media = target_root.join("Music");
+        let existing_audio = target_media.join("existing.wav");
+        fs::create_dir_all(&target_media).unwrap();
+        write_test_wav(&existing_audio, b"Existing").unwrap();
+        {
+            let mut store = LibraryStore::open(&target_db).unwrap();
+            store
+                .upsert_track(&Track::from_path(existing_audio.clone()))
+                .unwrap();
+        }
+
+        let package_root = temp_dir("unsafe_library_package");
+        fs::create_dir_all(&package_root).unwrap();
+        fs::copy(&target_db, package_root.join(LIBRARY_PACKAGE_DATABASE_FILE)).unwrap();
+        fs::write(
+            package_root.join(LIBRARY_PACKAGE_MANIFEST_FILE),
+            serde_json::to_vec(&LibraryPackageManifest {
+                format_version: LIBRARY_PACKAGE_FORMAT_VERSION,
+                database_file: LIBRARY_PACKAGE_DATABASE_FILE.to_owned(),
+                tracks: vec![LibraryPackageTrack {
+                    database_path: existing_audio.to_string_lossy().into_owned(),
+                    audio_file: "../outside.wav".to_owned(),
+                }],
+            })
+            .unwrap(),
+        )
+        .unwrap();
+
+        let app = create_app(&target_db, &target_media);
+        let imported = unsafe {
+            call_json(player_app_import_library(
+                app,
+                c_string_arg(&package_root).as_ptr(),
+            ))
+        };
+        assert_eq!(imported["ok"], false);
+        let library = unsafe { call_json(player_app_library(app)) };
+        assert_ok(&library);
+        assert_eq!(library["data"].as_array().unwrap().len(), 1);
+        assert_eq!(
+            library["data"][0]["path"],
+            existing_audio.to_string_lossy().as_ref()
+        );
+
+        unsafe { player_app_destroy(app) };
+        fs::remove_dir_all(package_root).ok();
+        fs::remove_dir_all(target_root).ok();
+    }
+
+    #[test]
     fn track_details_find_imported_sidecar_artwork_and_lyrics() {
         let source_dir = temp_dir("detail_source");
         fs::create_dir_all(&source_dir).unwrap();
@@ -3075,7 +3197,7 @@ mod tests {
             call_json(player_app_sort_playlist(
                 app,
                 c_string_arg("Road").as_ptr(),
-                c_string_arg("default").as_ptr(),
+                c_string_arg("manual").as_ptr(),
             ))
         };
         assert_ok(&reset);
@@ -4202,6 +4324,14 @@ mod tests {
             unsafe { call_json(player_app_create_playlist(app, c_string_arg("").as_ptr())) };
         assert_eq!(bad_playlist["ok"], false);
 
+        let repeat_alias = unsafe {
+            call_json(player_app_set_repeat_mode(
+                app,
+                c_string_arg("loop").as_ptr(),
+            ))
+        };
+        assert_eq!(repeat_alias["ok"], false);
+
         let poll = unsafe { call_json(player_app_poll(app)) };
         assert_ok(&poll);
         assert_eq!(poll["data"]["is_playing"], false);
@@ -4215,8 +4345,7 @@ mod tests {
     fn create_app(db_path: &Path, media_root: &Path) -> *mut PlayerApp {
         let db_path = c_string_arg(db_path);
         let media_root = c_string_arg(media_root);
-        let app =
-            unsafe { player_app_create_with_media_root(db_path.as_ptr(), media_root.as_ptr()) };
+        let app = unsafe { player_app_create(db_path.as_ptr(), media_root.as_ptr()) };
         assert!(!app.is_null());
         app
     }

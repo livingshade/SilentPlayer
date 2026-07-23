@@ -1,6 +1,6 @@
-# NormalPlayer
+# Silent
 
-一个面向 macOS 和 iPhone 的本地音乐播放器设计与 Rust 核心原型。当前 Rust 层已经支持曲库扫描、metadata 解析、SQLite 持久化、EBU R128 响度分析与缓存、播放状态服务，以及通过默认音频输出设备播放本地音频文件。
+一个面向 macOS、iPhone 和通用 CLI 的本地音乐播放器。三个 target 共用 Rust 应用行为；当前已经支持曲库扫描、metadata 解析、SQLite 持久化、EBU R128 响度分析与缓存、播放状态服务，以及通过默认音频输出设备播放本地音频文件。
 
 目标是做一个接近主流播放器体验的本地播放器：曲库扫描、播放队列、专辑/歌曲视图、搜索、收藏、后台播放、锁屏控制，以及最重要的响度归一化，避免不同歌曲之间音量忽大忽小。
 
@@ -24,11 +24,11 @@
 - `crates/player_analysis_ebur128`: Rust 响度分析后端，使用 Symphonia 解码并用 EBU R128/BS.1770 分析 track loudness，并可从已缓存的 track loudness 生成 album loudness。
 - `crates/player_audio_rodio`: Rust CLI 播放后端，使用 rodio 打开默认音频输出设备并播放本地文件。
 - `crates/player_engine`: 线程化播放服务层；命令在 backend 完成后才返回，并发布状态、曲目、gain、进度与错误事件。
-- `crates/player_ffi`: SwiftUI 产品路径使用的 Rust C ABI 服务层，导入时会把音频复制到托管媒体库。
+- `crates/player_ffi`: macOS、iPhone 和 CLI 共用的 Rust 应用实现及 Apple C ABI 适配层，导入时会把音频复制到托管媒体库。
 - `crates/player_analyzer`: 独立 loudness 分析 worker，后台分析并把结果持久化到 SQLite。
 - `crates/player_metadata_lofty`: metadata 解析后端，读取 title、artist、album、duration 和内嵌 artwork。
 - `crates/player_store_sqlite`: SQLite 曲库和缓存，保存 metadata、file fingerprint、loudness analysis、搜索索引字段、播放列表、收藏、播放历史和 artwork bytes。
-- `crates/player_cli`: 命令行验证入口，用于扫描本地音乐目录、播放文件、验证 normalize 增益。
+- `crates/player_cli`: `silent` 通用 CLI target，覆盖共享曲库、Music View、播放列表、历史和播放控制能力。
 - `test-assets/audio`: 真实下载的 Ogg Vorbis 音频 fixtures，用于解码、响度分析和播放 smoke tests。
 - `docs/product_design.md`: 产品和界面设计。
 - `docs/loudness_normalization.md`: 响度归一化设计。
@@ -39,7 +39,7 @@ iOS 外壳当前还会配置系统播放音频会话、发布锁屏 Now Playing 
 
 ## 运行
 
-macOS SwiftUI app 的默认持久数据位置：
+macOS SwiftUI app 的持久数据位置：
 
 - 托管音频副本：`~/Music/NormalPlayer/Music`
 - 曲库、收藏、播放历史和 loudness analyze cache：`~/Music/NormalPlayer/player_library.sqlite3`
@@ -52,26 +52,28 @@ UI 的 Import 会复制音频到托管目录，之后播放器只使用托管副
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 ```
 
-安装后在仓库根目录运行：
+安装后在仓库根目录运行测试并构建 CLI：
 
 ```bash
 cargo test
-cargo run -p player_cli -- scan ~/Music
-cargo run -p player_cli -- import ~/Music --db player_library.sqlite3
-cargo run -p player_cli -- library --db player_library.sqlite3
-cargo run -p player_cli -- search "artist or title" --db player_library.sqlite3
-cargo run -p player_cli -- playlist-create Favorites --db player_library.sqlite3
-cargo run -p player_cli -- playlist-add Favorites ~/Music/example.mp3 --db player_library.sqlite3
-cargo run -p player_cli -- favorite ~/Music/example.mp3 --db player_library.sqlite3
-cargo run -p player_cli -- history-add ~/Music/example.mp3 --db player_library.sqlite3 --completed
-cargo run -p player_cli -- extract-artwork ~/Music/example.mp3 --db player_library.sqlite3
-cargo run -p player_cli -- analyze-library --db player_library.sqlite3
-cargo run -p player_cli -- analyze-albums --db player_library.sqlite3
-cargo run -p player_cli -- analyze ~/Music/example.mp3
-cargo run -p player_cli -- play ~/Music/example.mp3
-cargo run -p player_cli -- play ~/Music/example.mp3 --analyze
-cargo run -p player_cli -- self-test
+cargo build -p silent_cli
+target/debug/silent --version
+target/debug/silent --cli --help
 ```
+
+简单命令直接放在根层，产品功能通过明确的 CLI target 边界调用：
+
+```bash
+target/debug/silent --version
+target/debug/silent --cli --db player_library.sqlite3 --media-root Music library import ~/Music
+target/debug/silent --cli --db player_library.sqlite3 --media-root Music library list
+target/debug/silent --cli --db player_library.sqlite3 --media-root Music library search "artist or title" --limit 25
+target/debug/silent --cli --db player_library.sqlite3 --media-root Music library analyze
+target/debug/silent --cli --db player_library.sqlite3 --media-root Music playback shell
+```
+
+完整命令、JSON 输出、Music View 编辑、曲库迁移及 target 覆盖矩阵见
+[`docs/cli.md`](docs/cli.md)。
 
 本机启动 macOS SwiftUI 调试版：
 
@@ -90,15 +92,7 @@ open dist/Silent.app
 
 仓库里的 `rust-toolchain.toml` 已声明 macOS 与 iOS 常用 target。第一次进入目录时，rustup 会按需安装 stable、rustfmt、clippy 和 Apple target。
 
-播放时可以手动验证 normalize 增益：
-
-```bash
-cargo run -p player_cli -- play ~/Music/example.mp3 --gain-db -6
-cargo run -p player_cli -- play ~/Music/example.mp3 --measured-lufs -20 --true-peak-dbtp -6
-cargo run -p player_cli -- play ~/Music/example.mp3 --analyze --target-lufs -16
-```
-
-第二条命令会按默认目标 `-16 LUFS` 算出 `+4 dB`，并把对应的线性增益应用到播放后端。
+CLI 的 `playback shell` 与 macOS/iPhone 使用相同的队列、normalize、历史会话和生命周期规则。单文件分析可以使用 `silent --cli track analyze <music-file>`。
 
 ## 测试
 
@@ -114,7 +108,7 @@ cargo clippy --all-targets -- -D warnings
 
 ```bash
 cargo test -p player_audio_rodio --test playback_smoke -- --ignored --nocapture
-cargo test -p player_cli --test cli -- --ignored --nocapture
+cargo test -p silent_cli --test cli -- --ignored --nocapture
 ```
 
 重新下载外部测试音频：
@@ -134,7 +128,7 @@ scripts/download_test_audio.sh
 - 播放模式：单曲 normalize
 - 专辑连续播放时可切到 album normalize，保留专辑内部动态差异
 
-`analyze-library` 先计算每首歌的 integrated LUFS 和 true peak；`analyze-albums` 再按专辑分组，把已缓存的单曲响度按时长加权合成为 album loudness，并写回每首歌的 album gain 字段。
+`silent --cli library analyze` 先计算每首歌的 integrated LUFS 和 true peak，再按专辑分组，把已缓存的单曲响度按时长加权合成为 album loudness，并写回每首歌的 album gain 字段。
 
 核心公式：
 

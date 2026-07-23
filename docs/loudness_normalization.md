@@ -89,18 +89,17 @@ iOS 上后台分析要注意：
 3. 后台重新分析。
 4. 没有结果时临时使用 `0 dB` 增益，并标记为待分析。
 
-当前 CLI 已支持：
+Silent CLI 已支持：
 
 ```bash
-cargo run -p player_cli -- analyze <music-file>
-cargo run -p player_cli -- play <music-file> --analyze
-cargo run -p player_cli -- import <music-folder> --db player_library.sqlite3
-cargo run -p player_cli -- analyze-library --db player_library.sqlite3
-cargo run -p player_cli -- analyze-albums --db player_library.sqlite3
+silent --cli track analyze <music-file>
+silent --cli --db player_library.sqlite3 --media-root Music library import <music-folder>
+silent --cli --db player_library.sqlite3 --media-root Music library analyze
+silent --cli --db player_library.sqlite3 --media-root Music playback shell
 ```
 
-`play --analyze` 会先分析文件，得到 integrated LUFS 和 true peak，再按 `NormalizationSettings` 计算增益并播放。
+`track analyze` 会分析文件并输出 integrated LUFS 与 true peak。`playback shell` 播放曲库中的 Music View 时会使用与 macOS/iPhone 相同的 `NormalizationSettings`。
 
-`analyze-library` 会从 SQLite 曲库中找出缺少分析结果、分析版本过期、或文件 fingerprint 已变化的曲目，批量分析后写回缓存。
+`library analyze` 会从 SQLite 曲库中找出缺少分析结果、分析版本过期、或文件 fingerprint 已变化的曲目，批量分析后写回缓存。
 
-`analyze-albums` 会读取已缓存的 track loudness 和 duration，按专辑时长加权合成 `album_integrated_lufs`，并取同专辑内最大的 `true_peak_dbtp` 作为 `album_true_peak_dbtp`。如果某张专辑还有曲目缺少 track analysis 或 duration，就先跳过，等 `analyze-library` 补齐后再处理。
+同一次 `library analyze` 会读取已缓存的 track loudness 和 duration，按专辑时长加权合成 `album_integrated_lufs`，并取同专辑内最大的 `true_peak_dbtp` 作为 `album_true_peak_dbtp`。如果某张专辑还有曲目缺少 track analysis 或 duration，就先跳过，等后续分析补齐后再处理。

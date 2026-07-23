@@ -7,8 +7,7 @@
 
 typedef struct PlayerApp PlayerApp;
 
-PlayerApp *player_app_create(const char *db_path);
-PlayerApp *player_app_create_with_media_root(const char *db_path, const char *media_root);
+PlayerApp *player_app_create(const char *db_path, const char *media_root);
 void player_app_destroy(PlayerApp *app);
 void player_string_free(char *value);
 

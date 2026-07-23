@@ -9,7 +9,7 @@ This is the SwiftUI shell for the local player. It is a Swift Package, but the m
 The Swift package maps Debug builds to `target/debug/libplayer_ffi.dylib` and Release builds to `target/release/libplayer_ffi.dylib`. Use the script instead of a bare `swift run Silent`; the script prepares the dynamic-library install name before Swift links the executable.
 Set `SILENT_SKIP_OPEN=1` when only a build-and-bundle verification is needed.
 
-The macOS executable uses shared SwiftUI view/model code in `PlayerShared` and talks to Rust through the `player_ffi` C ABI. The CLI remains available for Rust-layer debugging only. By default the app stores managed audio copies under `~/Music/NormalPlayer/Music` and persistent SQLite state, including loudness analysis results, at `~/Music/NormalPlayer/player_library.sqlite3`.
+The macOS executable uses shared SwiftUI view/model code in `PlayerShared` and talks to Rust through the `player_ffi` C ABI. Silent's generic CLI is a first-class third target that uses the same Rust application behavior as macOS and iPhone. The app stores managed audio copies under `~/Music/NormalPlayer/Music` and persistent SQLite state, including loudness analysis results, at `~/Music/NormalPlayer/player_library.sqlite3`.
 
 ## iPhone App
 

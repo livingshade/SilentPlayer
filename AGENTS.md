@@ -1,4 +1,4 @@
-# NormalPlayer Agent Instructions
+# Silent Agent Instructions
 
 ## Required Development Order
 
@@ -10,7 +10,10 @@ When adding or changing product functionality, especially anything that touches 
 4. Only after the Rust layer is correct and tested, update the SwiftUI/macOS UI.
 5. Build and test the Swift layer after UI changes.
 
-Do not use the CLI as the app integration model. The CLI is only for Rust-layer debugging and smoke testing. The UI should call stable Rust/FFI APIs designed for app use.
+Treat the CLI as a first-class third product target alongside macOS and iPhone. Shared product
+behavior must live in Rust application services that all three targets use. The CLI must not
+reimplement product rules by editing SQLite directly when an application service exists. Apple
+UI targets should continue to call stable Rust/FFI APIs designed for app use.
 
 ## UI Design Standard
 

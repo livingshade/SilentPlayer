@@ -54,7 +54,7 @@ pub struct TrackMetadataView {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PlaylistSort {
-    Default,
+    Manual,
     Title,
     Artist,
     Album,
@@ -63,16 +63,29 @@ pub enum PlaylistSort {
 
 impl PlaylistSort {
     pub fn parse(value: &str) -> PlayerResult<Self> {
-        match value.trim().to_ascii_lowercase().as_str() {
-            "default" | "manual" | "position" => Ok(Self::Default),
-            "title" | "name" => Ok(Self::Title),
-            "artist" | "author" => Ok(Self::Artist),
+        match value {
+            "manual" => Ok(Self::Manual),
+            "title" => Ok(Self::Title),
+            "artist" => Ok(Self::Artist),
             "album" => Ok(Self::Album),
-            "rating" | "score" => Ok(Self::Rating),
+            "rating" => Ok(Self::Rating),
             other => Err(PlayerError::store(format!(
                 "unknown playlist sort mode: {other}"
             ))),
         }
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn playlist_sort_parser_accepts_only_canonical_values() {
+    assert_eq!(PlaylistSort::parse("manual").unwrap(), PlaylistSort::Manual);
+    assert_eq!(PlaylistSort::parse("title").unwrap(), PlaylistSort::Title);
+    assert_eq!(PlaylistSort::parse("artist").unwrap(), PlaylistSort::Artist);
+    assert_eq!(PlaylistSort::parse("album").unwrap(), PlaylistSort::Album);
+    assert_eq!(PlaylistSort::parse("rating").unwrap(), PlaylistSort::Rating);
+    for alias in ["default", "position", "name", "author", "score", "Title"] {
+        assert!(PlaylistSort::parse(alias).is_err(), "{alias}");
     }
 }
 
@@ -2542,7 +2555,7 @@ impl LibraryStore {
 
 fn sort_playlist_items(items: &mut [PlaylistSortItem], sort: PlaylistSort) {
     match sort {
-        PlaylistSort::Default => {
+        PlaylistSort::Manual => {
             items.sort_by_key(|item| item.item_id);
         }
         PlaylistSort::Title => {
@@ -3491,7 +3504,7 @@ mod tests {
     }
 
     #[test]
-    fn sorts_playlists_by_default_title_artist_and_album() {
+    fn sorts_playlists_by_manual_title_artist_and_album() {
         let mut store = LibraryStore::in_memory().unwrap();
         let mut first = Track::from_path("/music/a.ogg".into());
         first.title = "Delta".to_owned();
@@ -3544,7 +3557,7 @@ mod tests {
         assert_playlist_paths(&store, "Road", &[&third.path, &first.path, &second.path]);
 
         assert_eq!(
-            store.sort_playlist("Road", PlaylistSort::Default).unwrap(),
+            store.sort_playlist("Road", PlaylistSort::Manual).unwrap(),
             3
         );
         assert_playlist_paths(&store, "Road", &[&second.path, &first.path, &third.path]);

@@ -11,6 +11,17 @@ let playerSharedTestsBuildAnchor = TrackItem(
 )
 
 final class PlaybackPolicyTests: XCTestCase {
+    func testWireEnumsUseOnlyCanonicalValues() throws {
+        XCTAssertEqual(PlaylistSortMode.defaultOrder.apiValue, "manual")
+        XCTAssertEqual(
+            try JSONDecoder().decode(PlaybackRepeatMode.self, from: Data(#""all""#.utf8)).rawValue,
+            "all"
+        )
+        XCTAssertThrowsError(
+            try JSONDecoder().decode(PlaybackRepeatMode.self, from: Data(#""loop""#.utf8))
+        )
+    }
+
     func testInterruptionOnlyPreparesWhenBothSystemAndLifecycleRequestResume() {
         XCTAssertTrue(PlaybackInterruptionPolicy.shouldPrepareForResume(
             systemShouldResume: true,

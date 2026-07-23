@@ -303,7 +303,7 @@ public final class RustPlayerClient: @unchecked Sendable {
         let mediaRootPath = self.mediaRootURL.path
         guard let app = dbURL.path.withCString({ dbPath in
             mediaRootPath.withCString { mediaRootPath in
-                player_app_create_with_media_root(dbPath, mediaRootPath)
+                player_app_create(dbPath, mediaRootPath)
             }
         }) else {
             throw RustPlayerError.startupFailed("Rust player service failed to start")
@@ -938,7 +938,7 @@ private struct PlaybackSnapshotDTO: Decodable {
     let currentTrack: TrackDTO?
     let queueLen: Int
     let queuePosition: Int?
-    let repeatMode: String
+    let repeatMode: PlaybackRepeatMode
     let shuffleEnabled: Bool
     let gainDb: Double?
     let loudnessStatus: String?
@@ -953,7 +953,7 @@ private struct PlaybackSnapshotDTO: Decodable {
             currentTrack: currentTrack?.model,
             queueLen: queueLen,
             queuePosition: queuePosition,
-            repeatMode: PlaybackRepeatMode(apiValue: repeatMode),
+            repeatMode: repeatMode,
             shuffleEnabled: shuffleEnabled,
             gainDB: gainDb,
             loudnessStatus: loudnessStatus,
@@ -967,14 +967,14 @@ private struct PlaybackSnapshotDTO: Decodable {
 private struct PlaybackQueueDTO: Decodable {
     let tracks: [TrackDTO]
     let currentIndex: Int?
-    let repeatMode: String
+    let repeatMode: PlaybackRepeatMode
     let shuffleEnabled: Bool
 
     var model: PlaybackQueue {
         PlaybackQueue(
             tracks: tracks.map(\.model),
             currentIndex: currentIndex,
-            repeatMode: PlaybackRepeatMode(apiValue: repeatMode),
+            repeatMode: repeatMode,
             shuffleEnabled: shuffleEnabled
         )
     }

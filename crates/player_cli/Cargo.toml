@@ -1,16 +1,17 @@
 [package]
-name = "player_cli"
+name = "silent_cli"
 version = "0.1.0"
 edition.workspace = true
 license.workspace = true
 authors.workspace = true
 
+[[bin]]
+name = "silent"
+path = "src/main.rs"
+
 [dependencies]
 player_analysis_ebur128 = { path = "../player_analysis_ebur128" }
-player_audio_rodio = { path = "../player_audio_rodio" }
-player_core = { path = "../player_core" }
-player_engine = { path = "../player_engine" }
-player_fingerprint = { path = "../player_fingerprint" }
+player_error = { path = "../player_error" }
+player_ffi = { path = "../player_ffi" }
 player_library_fs = { path = "../player_library_fs" }
-player_metadata_lofty = { path = "../player_metadata_lofty" }
-player_store_sqlite = { path = "../player_store_sqlite" }
+serde_json = "1.0.145"

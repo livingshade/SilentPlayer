@@ -35,7 +35,7 @@ public enum PlaylistSortMode: CaseIterable, Identifiable, Sendable {
     public var apiValue: String {
         switch self {
         case .defaultOrder:
-            return "default"
+            return "manual"
         case .title:
             return "title"
         case .artist:
@@ -78,21 +78,10 @@ public enum PlaylistSortMode: CaseIterable, Identifiable, Sendable {
     }
 }
 
-public enum PlaybackRepeatMode: String, CaseIterable, Identifiable, Sendable {
+public enum PlaybackRepeatMode: String, CaseIterable, Codable, Identifiable, Sendable {
     case off
     case all
     case one
-
-    public init(apiValue: String) {
-        switch apiValue.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
-        case "all":
-            self = .all
-        case "one":
-            self = .one
-        default:
-            self = .off
-        }
-    }
 
     public var id: String {
         rawValue

@@ -6,7 +6,7 @@ license.workspace = true
 authors.workspace = true
 
 [lib]
-crate-type = ["cdylib", "staticlib"]
+crate-type = ["cdylib", "staticlib", "rlib"]
 
 [dependencies]
 player_analysis_ebur128 = { path = "../player_analysis_ebur128" }
