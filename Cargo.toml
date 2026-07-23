@@ -1,0 +1,22 @@
+[workspace]
+members = [
+    "crates/player_analysis_ebur128",
+    "crates/player_audio_rodio",
+    "crates/player_core",
+    "crates/player_cli",
+    "crates/player_analyzer",
+    "crates/player_fingerprint",
+    "crates/player_library_fs",
+    "crates/player_library_worker",
+    "crates/player_metadata_lofty",
+    "crates/player_store_sqlite",
+    "crates/player_engine",
+    "crates/player_error",
+    "crates/player_ffi",
+]
+resolver = "2"
+
+[workspace.package]
+edition = "2021"
+license = "MIT"
+authors = ["NormalPlayer"]

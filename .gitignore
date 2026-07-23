@@ -1,0 +1,18 @@
+/target/
+/dist/
+/apple/PlayerApp/.build/
+/apple/PlayerApp/.build-*/
+/apple/PlayerApp/.xcode-derived-*/
+/apple/PlayerApp/Vendor/PlayerFFI.xcframework/
+/apple/PlayerApp/player_library.sqlite3
+/apple/PlayerApp/player_library.sqlite3-*
+/apple/apple/
+.DS_Store
+DerivedData/
+*.xcuserstate
+xcuserdata/
+
+# Local music-library data.
+/youtube-music-library/
+/missing_youtube_links.csv
+/missing_youtube_links.md

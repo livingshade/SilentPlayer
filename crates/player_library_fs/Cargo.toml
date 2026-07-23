@@ -1,0 +1,10 @@
+[package]
+name = "player_library_fs"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+player_core = { path = "../player_core" }
+player_error = { path = "../player_error" }

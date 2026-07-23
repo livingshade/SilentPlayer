@@ -1,0 +1,16 @@
+[package]
+name = "player_library_worker"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+player_core = { path = "../player_core" }
+player_error = { path = "../player_error" }
+player_fingerprint = { path = "../player_fingerprint" }
+player_library_fs = { path = "../player_library_fs" }
+player_metadata_lofty = { path = "../player_metadata_lofty" }
+player_store_sqlite = { path = "../player_store_sqlite" }
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.145"
