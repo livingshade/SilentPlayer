@@ -59,6 +59,8 @@ The current imported file is not just a raw file record: it is the first view fo
 - Export/materialize copies or renders the selected view to the destination path, registers that destination as a new primary view, sets `primary_view_id == view_id`, and keeps the source primary/derived views unchanged.
 - Current materialization copies the audio bytes and sidecar files, and persists display metadata, rating, notes, artwork, and lyrics for the new primary view. Future tag-writing/transcoding will bake those changes into the audio container itself.
 - Cover resolution is: per-music managed artwork asset, embedded/sidecar cover, then per-album managed artwork asset. If none exists, the UI shows no cover/placeholder.
+- When multiple views share one primary identity and the user has not selected a view, clients use the Rust-provided default priority: per-music artwork, embedded/sidecar artwork, album artwork, bare primary view, then other bare derived views.
+- Playback queues contain at most one active view for each `primary_view_id`. Library play-all uses the current client selection when available and otherwise uses the Rust-provided default view; selecting a specific view replaces only that primary track's queue entry.
 - Missing optional fields such as `quality_profile`, `transform_spec`, artwork, lyrics, or loudness analysis are diagnostics only. They must not prevent playback.
 
 ## Extensibility Rules

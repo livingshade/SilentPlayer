@@ -68,6 +68,10 @@ fn run_shell_command(
             let selected = resolve_track(client, &selector)?;
             context.emit(&client.play_path(selected.path)?)
         }
+        "play-all" => {
+            ensure_no_args(&args, "play-all")?;
+            context.emit(&client.play_library()?)
+        }
         "load" => {
             if args.is_empty() {
                 return Err(CliError::usage(
@@ -271,6 +275,7 @@ fn print_shell_help() {
         "\
 Playback shell commands:
   play <path-or-view-id>              Play the selected track in library order
+  play-all                            Play the full library from the beginning
   load <selector>...                  Load and play an explicit queue
   pause | resume | stop
   next | previous

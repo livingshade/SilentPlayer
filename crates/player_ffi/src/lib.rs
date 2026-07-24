@@ -75,6 +75,7 @@ struct TrackDto {
     artwork_count: u32,
     artwork_path: Option<String>,
     artwork_source: Option<String>,
+    default_view_priority: u8,
     has_album_identity: bool,
     path: String,
     quality_profile: Option<String>,
@@ -148,6 +149,13 @@ struct PlaybackQueueDto {
     current_index: Option<usize>,
     repeat_mode: String,
     shuffle_enabled: bool,
+}
+
+#[derive(Serialize)]
+struct LibraryPageDto {
+    total: usize,
+    offset: usize,
+    tracks: Vec<TrackDto>,
 }
 
 #[derive(Serialize)]
@@ -535,6 +543,24 @@ pub unsafe extern "C" fn player_app_library(app: *mut PlayerApp) -> *mut c_char 
 }
 
 #[no_mangle]
+pub unsafe extern "C" fn player_app_library_page(
+    app: *mut PlayerApp,
+    offset: usize,
+    limit: usize,
+) -> *mut c_char {
+    ffi_result(|| {
+        let app = app_mut(app)?;
+        let store = app.store()?;
+        let (total, tracks) = store.tracks_page(offset, limit)?;
+        Ok(LibraryPageDto {
+            total,
+            offset,
+            tracks: track_dtos_with_artwork(&tracks, &store, &app.db_path)?,
+        })
+    })
+}
+
+#[no_mangle]
 pub unsafe extern "C" fn player_app_search(
     app: *mut PlayerApp,
     query: *const c_char,
@@ -591,6 +617,15 @@ pub unsafe extern "C" fn player_app_user_data(app: *mut PlayerApp) -> *mut c_cha
 }
 
 #[no_mangle]
+pub unsafe extern "C" fn player_app_play_library(app: *mut PlayerApp) -> *mut c_char {
+    ffi_result(|| {
+        let app = app_mut(app)?;
+        let (tracks, start_index) = library_playback_plan(&app.store()?, &app.db_path, None)?;
+        app.play_queue_tracks(tracks, start_index)
+    })
+}
+
+#[no_mangle]
 pub unsafe extern "C" fn player_app_play_path(
     app: *mut PlayerApp,
     path: *const c_char,
@@ -598,13 +633,8 @@ pub unsafe extern "C" fn player_app_play_path(
     ffi_result(|| {
         let app = app_mut(app)?;
         let path = PathBuf::from(c_string(path)?);
-        let tracks = app.store()?.tracks()?;
-        let start_index = tracks
-            .iter()
-            .position(|track| track.path == path)
-            .ok_or_else(|| {
-                PlayerError::store(format!("track is not in library: {}", path.display()))
-            })?;
+        let (tracks, start_index) =
+            library_playback_plan(&app.store()?, &app.db_path, Some(&path))?;
         app.play_queue_tracks(tracks, start_index)
     })
 }
@@ -625,11 +655,18 @@ pub unsafe extern "C" fn player_app_play_queue(
         let start_path = PathBuf::from(c_string(start_path)?);
         let store = app.store()?;
         let mut tracks = Vec::with_capacity(paths.len());
+        let mut queued_primary_views = HashSet::with_capacity(paths.len());
         for path in paths {
             let path = PathBuf::from(path);
             let track = store.track_by_path(&path)?.ok_or_else(|| {
                 PlayerError::store(format!("track is not in library: {}", path.display()))
             })?;
+            let primary_view_id = track.primary_view_id.value().to_owned();
+            if !queued_primary_views.insert(primary_view_id.clone()) {
+                return Err(PlayerError::invalid_input(format!(
+                    "queue contains multiple active views for primary view: {primary_view_id}"
+                )));
+            }
             tracks.push(track);
         }
         let start_index = tracks
@@ -643,6 +680,90 @@ pub unsafe extern "C" fn player_app_play_queue(
             })?;
         app.play_queue_tracks(tracks, start_index)
     })
+}
+
+fn library_playback_plan(
+    store: &LibraryStore,
+    db_path: &Path,
+    start_path: Option<&Path>,
+) -> PlayerResult<(Vec<Track>, usize)> {
+    let all_views = store.tracks()?;
+    if all_views.is_empty() {
+        return Err(PlayerError::invalid_input("library is empty"));
+    }
+
+    let preferred_view_id = start_path
+        .map(|path| {
+            all_views
+                .iter()
+                .find(|track| track.path == path)
+                .map(|track| track.view_id.value().to_owned())
+                .ok_or_else(|| {
+                    PlayerError::store(format!("track is not in library: {}", path.display()))
+                })
+        })
+        .transpose()?;
+    let tracks = active_library_views(store, db_path, all_views, preferred_view_id.as_deref())?;
+    let start_index = match start_path {
+        Some(path) => tracks
+            .iter()
+            .position(|track| track.path == path)
+            .ok_or_else(|| PlayerError::store("active track is missing from playback queue"))?,
+        None => 0,
+    };
+    Ok((tracks, start_index))
+}
+
+fn active_library_views(
+    store: &LibraryStore,
+    db_path: &Path,
+    all_views: Vec<Track>,
+    preferred_view_id: Option<&str>,
+) -> PlayerResult<Vec<Track>> {
+    let mut group_index_by_primary_id = BTreeMap::new();
+    let mut groups: Vec<Vec<Track>> = Vec::new();
+    for track in all_views {
+        let primary_view_id = track.primary_view_id.value().to_owned();
+        let group_index = match group_index_by_primary_id.get(&primary_view_id) {
+            Some(index) => *index,
+            None => {
+                let index = groups.len();
+                group_index_by_primary_id.insert(primary_view_id, index);
+                groups.push(Vec::new());
+                index
+            }
+        };
+        groups[group_index].push(track);
+    }
+
+    groups
+        .into_iter()
+        .map(|views| {
+            if let Some(preferred_view_id) = preferred_view_id {
+                if let Some(preferred) = views
+                    .iter()
+                    .find(|track| track.view_id.value() == preferred_view_id)
+                {
+                    return Ok(preferred.clone());
+                }
+            }
+
+            let mut selected: Option<(u8, Track)> = None;
+            for track in views {
+                let priority =
+                    track_to_dto_with_artwork(&track, store, db_path)?.default_view_priority;
+                if selected
+                    .as_ref()
+                    .is_none_or(|(selected_priority, _)| priority > *selected_priority)
+                {
+                    selected = Some((priority, track));
+                }
+            }
+            selected
+                .map(|(_, track)| track)
+                .ok_or_else(|| PlayerError::store("music view group is empty"))
+        })
+        .collect()
 }
 
 #[no_mangle]
@@ -2606,6 +2727,7 @@ fn track_to_dto(track: &Track) -> PlayerResult<TrackDto> {
         artwork_count: track.artwork_count,
         artwork_path: None,
         artwork_source: None,
+        default_view_priority: default_view_priority(track.view_id == track.primary_view_id, None),
         has_album_identity: track_has_album_identity(track),
         path: track.path.to_string_lossy().into_owned(),
         quality_profile: track.quality_profile.clone(),
@@ -2640,7 +2762,19 @@ fn track_to_dto_with_artwork(
         dto.artwork_path = Some(path_to_string_lossy(&path));
         dto.artwork_source = Some(source.to_owned());
     }
+    dto.default_view_priority =
+        default_view_priority(dto.is_primary_view, dto.artwork_source.as_deref());
     Ok(dto)
+}
+
+fn default_view_priority(is_primary_view: bool, artwork_source: Option<&str>) -> u8 {
+    match artwork_source {
+        Some("track") => 4,
+        Some("embedded" | "sidecar") => 3,
+        Some(_) => 2,
+        None if is_primary_view => 1,
+        None => 0,
+    }
 }
 
 fn track_has_album_identity(track: &Track) -> bool {
@@ -3620,6 +3754,7 @@ mod tests {
             b"\x89PNG\r\n\x1A\ntrack"
         );
         assert_eq!(track_edit["data"]["artwork_source"], "track");
+        assert_eq!(track_edit["data"]["default_view_priority"], 4);
         let derived_path = PathBuf::from(track_edit["data"]["path"].as_str().unwrap());
         fs::remove_file(&track_cover).unwrap();
         fs::remove_file(&album_cover).unwrap();
@@ -3655,6 +3790,20 @@ mod tests {
             b"\x89PNG\r\n\x1A\nalbum"
         );
         assert_eq!(source_details["data"]["artwork_source"], "album");
+
+        let library = unsafe { call_json(player_app_library(app)) };
+        assert_ok(&library);
+        let tracks = library["data"].as_array().unwrap();
+        let primary = tracks
+            .iter()
+            .find(|track| track["is_primary_view"] == true)
+            .unwrap();
+        let derived = tracks
+            .iter()
+            .find(|track| track["path"] == derived_path.to_string_lossy().as_ref())
+            .unwrap();
+        assert_eq!(primary["default_view_priority"], 2);
+        assert_eq!(derived["default_view_priority"], 4);
 
         unsafe { player_app_destroy(app) };
         fs::remove_file(db_path).ok();
@@ -3865,6 +4014,178 @@ mod tests {
         assert!(!invalid["ok"].as_bool().unwrap());
 
         unsafe { player_app_destroy(app) };
+        fs::remove_file(db_path).ok();
+        fs::remove_dir_all(media_root).ok();
+    }
+
+    #[test]
+    fn library_playback_plan_queues_only_one_active_view_per_primary_track() {
+        let db_path = temp_db_path("library_playback_plan");
+        let media_root = temp_dir("library_playback_plan_media");
+        fs::create_dir_all(&media_root).unwrap();
+        let first_path = media_root.join("zulu-primary.ogg");
+        let first_derived_path = media_root.join("zulu-derived.ogg");
+        let second_path = media_root.join("alpha.ogg");
+
+        let mut first = Track::from_path(first_path.clone());
+        first.title = "Zulu".to_owned();
+        first.set_primary_audio_hash("zulu-audio");
+        let mut second = Track::from_path(second_path.clone());
+        second.title = "Alpha".to_owned();
+        second.set_primary_audio_hash("alpha-audio");
+
+        let mut store = LibraryStore::open(&db_path).unwrap();
+        store.upsert_tracks(&[first, second]).unwrap();
+        let derived = store
+            .create_derived_view(
+                &first_path,
+                &first_derived_path,
+                "audio:zulu-audio:view:edited",
+                r#"{"kind":"metadata"}"#,
+            )
+            .unwrap();
+
+        let (tracks, start_index) = library_playback_plan(&store, &db_path, None).unwrap();
+        assert_eq!(tracks.len(), 2);
+        assert_eq!(tracks[0].path, second_path);
+        assert_eq!(tracks[1].path, first_path);
+        assert_eq!(start_index, 0);
+
+        let (tracks, start_index) =
+            library_playback_plan(&store, &db_path, Some(&first_derived_path)).unwrap();
+        assert_eq!(tracks.len(), 2);
+        assert_eq!(tracks[start_index].path, first_derived_path);
+        assert_eq!(
+            tracks
+                .iter()
+                .filter(|track| track.primary_view_id == derived.primary_view_id)
+                .count(),
+            1
+        );
+
+        let missing = media_root.join("missing.ogg");
+        let error = library_playback_plan(&store, &db_path, Some(&missing)).unwrap_err();
+        assert!(error.to_string().contains("track is not in library"));
+
+        drop(store);
+        fs::remove_file(db_path).ok();
+        fs::remove_dir_all(media_root).ok();
+    }
+
+    #[test]
+    fn play_queue_rejects_multiple_views_for_the_same_primary_track() {
+        let db_path = temp_db_path("duplicate_active_views");
+        let media_root = temp_dir("duplicate_active_views_media");
+        fs::create_dir_all(&media_root).unwrap();
+        let primary_path = media_root.join("primary.ogg");
+        let derived_path = media_root.join("derived.ogg");
+        {
+            let mut store = LibraryStore::open(&db_path).unwrap();
+            let mut primary = Track::from_path(primary_path.clone());
+            primary.set_primary_audio_hash("shared-audio");
+            store.upsert_track(&primary).unwrap();
+            store
+                .create_derived_view(
+                    &primary_path,
+                    &derived_path,
+                    "audio:shared-audio:view:edited",
+                    r#"{"kind":"metadata"}"#,
+                )
+                .unwrap();
+        }
+        let app = create_app(&db_path, &media_root);
+        let paths_json = CString::new(
+            serde_json::to_string(&[
+                path_to_string_lossy(&primary_path),
+                path_to_string_lossy(&derived_path),
+            ])
+            .unwrap(),
+        )
+        .unwrap();
+        let response = unsafe {
+            call_json(player_app_play_queue(
+                app,
+                paths_json.as_ptr(),
+                c_string_arg(&primary_path).as_ptr(),
+            ))
+        };
+        assert_eq!(response["ok"], false);
+        assert!(response["error"]
+            .as_str()
+            .unwrap()
+            .contains("multiple active views"));
+        unsafe {
+            assert!((*app).engine.is_none());
+            player_app_destroy(app);
+        }
+
+        fs::remove_file(db_path).ok();
+        fs::remove_dir_all(media_root).ok();
+    }
+
+    #[test]
+    fn library_page_reports_total_and_stable_order() {
+        let db_path = temp_db_path("library_page");
+        let media_root = temp_dir("library_page_media");
+        fs::create_dir_all(&media_root).unwrap();
+        let app = create_app(&db_path, &media_root);
+
+        {
+            let mut store = LibraryStore::open(&db_path).unwrap();
+            let mut zulu = Track::from_path(media_root.join("zulu.ogg"));
+            zulu.title = "Zulu".to_owned();
+            let mut alpha = Track::from_path(media_root.join("alpha.ogg"));
+            alpha.title = "Alpha".to_owned();
+            let mut middle = Track::from_path(media_root.join("middle.ogg"));
+            middle.title = "Middle".to_owned();
+            store.upsert_tracks(&[zulu, alpha, middle]).unwrap();
+        }
+
+        let first = unsafe { call_json(player_app_library_page(app, 0, 2)) };
+        assert_ok(&first);
+        assert_eq!(first["data"]["total"], 3);
+        assert_eq!(first["data"]["offset"], 0);
+        assert_eq!(first["data"]["tracks"].as_array().unwrap().len(), 2);
+        assert_eq!(first["data"]["tracks"][0]["title"], "Alpha");
+        assert_eq!(first["data"]["tracks"][1]["title"], "Middle");
+
+        let second = unsafe { call_json(player_app_library_page(app, 2, 2)) };
+        assert_ok(&second);
+        assert_eq!(second["data"]["total"], 3);
+        assert_eq!(second["data"]["offset"], 2);
+        assert_eq!(second["data"]["tracks"].as_array().unwrap().len(), 1);
+        assert_eq!(second["data"]["tracks"][0]["title"], "Zulu");
+
+        let invalid = unsafe { call_json(player_app_library_page(app, 0, 0)) };
+        assert_eq!(invalid["ok"], false);
+        assert!(invalid["error"]
+            .as_str()
+            .unwrap()
+            .contains("limit must be greater than zero"));
+
+        unsafe { player_app_destroy(app) };
+        fs::remove_file(db_path).ok();
+        fs::remove_dir_all(media_root).ok();
+    }
+
+    #[test]
+    fn play_library_rejects_an_empty_library_before_opening_audio() {
+        let db_path = temp_db_path("empty_library_playback");
+        let media_root = temp_dir("empty_library_playback_media");
+        fs::create_dir_all(&media_root).unwrap();
+        let app = create_app(&db_path, &media_root);
+
+        let response = unsafe { call_json(player_app_play_library(app)) };
+        assert_eq!(response["ok"], false);
+        assert!(response["error"]
+            .as_str()
+            .unwrap()
+            .contains("library is empty"));
+        unsafe {
+            assert!((*app).engine.is_none());
+            player_app_destroy(app);
+        }
+
         fs::remove_file(db_path).ok();
         fs::remove_dir_all(media_root).ok();
     }

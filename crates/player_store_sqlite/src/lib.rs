@@ -459,6 +459,51 @@ impl LibraryStore {
         Ok(rows)
     }
 
+    pub fn tracks_page(&self, offset: usize, limit: usize) -> PlayerResult<(usize, Vec<Track>)> {
+        if limit == 0 {
+            return Err(PlayerError::invalid_input(
+                "library page limit must be greater than zero",
+            ));
+        }
+
+        let total = self
+            .conn
+            .query_row("SELECT COUNT(*) FROM tracks", [], |row| {
+                row.get::<_, i64>(0)
+            })
+            .map_err(to_store_error)?
+            .max(0) as usize;
+        let mut stmt = self
+            .conn
+            .prepare(
+                r#"
+                SELECT id, path, title, artist, album, album_artist, genre,
+                       track_number, disc_number, year, duration_ms, artwork_count,
+                       size_bytes, modified_unix_seconds, integrated_lufs, true_peak_dbtp,
+                       album_integrated_lufs, album_true_peak_dbtp, analysis_version,
+                       file_hash, audio_hash,
+                       view_id, primary_view_id, view_kind, transform_spec,
+                       quality_profile, format_name, view_name, user_rating
+                FROM tracks
+                ORDER BY lower(title), path
+                LIMIT ?1 OFFSET ?2
+                "#,
+            )
+            .map_err(to_store_error)?;
+        let tracks = stmt
+            .query_map(
+                params![
+                    saturating_i64_from_u64(limit as u64),
+                    saturating_i64_from_u64(offset as u64)
+                ],
+                row_to_track,
+            )
+            .map_err(to_store_error)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(to_store_error)?;
+        Ok((total, tracks))
+    }
+
     pub fn replace_track_paths(&mut self, replacements: &[(PathBuf, PathBuf)]) -> PlayerResult<()> {
         self.conn
             .execute_batch("PRAGMA foreign_keys = OFF;")

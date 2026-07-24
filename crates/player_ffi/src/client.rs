@@ -13,15 +13,16 @@ use crate::{
     player_app_create_playlist, player_app_delete_playlist, player_app_destroy,
     player_app_edit_track_view, player_app_export_library, player_app_export_track_view,
     player_app_favorites, player_app_history, player_app_import_files, player_app_import_folder,
-    player_app_import_library, player_app_library, player_app_move_playlist_track, player_app_next,
-    player_app_pause, player_app_play_path, player_app_play_queue, player_app_playlist_tracks,
-    player_app_playlists, player_app_poll, player_app_previous, player_app_queue,
-    player_app_remove_from_playlist, player_app_rename_playlist, player_app_resume,
-    player_app_search, player_app_seek, player_app_set_album_artwork, player_app_set_favorite,
-    player_app_set_playlist_artwork, player_app_set_repeat_mode, player_app_set_shuffle,
-    player_app_set_track_artwork, player_app_set_track_lyrics, player_app_set_track_metadata,
-    player_app_set_track_notes, player_app_set_track_rating, player_app_sort_playlist,
-    player_app_stop, player_app_track_details, player_app_user_data, player_app_zero_out_library,
+    player_app_import_library, player_app_library, player_app_library_page,
+    player_app_move_playlist_track, player_app_next, player_app_pause, player_app_play_library,
+    player_app_play_path, player_app_play_queue, player_app_playlist_tracks, player_app_playlists,
+    player_app_poll, player_app_previous, player_app_queue, player_app_remove_from_playlist,
+    player_app_rename_playlist, player_app_resume, player_app_search, player_app_seek,
+    player_app_set_album_artwork, player_app_set_favorite, player_app_set_playlist_artwork,
+    player_app_set_repeat_mode, player_app_set_shuffle, player_app_set_track_artwork,
+    player_app_set_track_lyrics, player_app_set_track_metadata, player_app_set_track_notes,
+    player_app_set_track_rating, player_app_sort_playlist, player_app_stop,
+    player_app_track_details, player_app_user_data, player_app_zero_out_library,
     player_string_free, PlayerApp,
 };
 
@@ -109,6 +110,10 @@ impl SilentAppClient {
         self.call(|app| unsafe { player_app_library(app) })
     }
 
+    pub fn library_page(&mut self, offset: usize, limit: usize) -> ClientResult {
+        self.call(|app| unsafe { player_app_library_page(app, offset, limit) })
+    }
+
     pub fn search(&mut self, query: &str, limit: usize) -> ClientResult {
         let query = CString::new(query)?;
         self.call(|app| unsafe { player_app_search(app, query.as_ptr(), limit) })
@@ -129,6 +134,10 @@ impl SilentAppClient {
     pub fn play_path(&mut self, path: impl AsRef<Path>) -> ClientResult {
         let path = c_path(path.as_ref())?;
         self.call(|app| unsafe { player_app_play_path(app, path.as_ptr()) })
+    }
+
+    pub fn play_library(&mut self) -> ClientResult {
+        self.call(|app| unsafe { player_app_play_library(app) })
     }
 
     pub fn play_queue(&mut self, paths: &[PathBuf], start_path: impl AsRef<Path>) -> ClientResult {

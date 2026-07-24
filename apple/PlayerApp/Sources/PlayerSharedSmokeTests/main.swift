@@ -81,6 +81,32 @@ private func testTrackItemKeepsOptionalViewName() {
     expect(unnamed.viewName == nil, "blank view name should be nil")
 }
 
+private func testPreferredDefaultViewUsesRustArtworkPriority() {
+    let primary = TrackItem(
+        id: "audio:hash",
+        title: "Song",
+        artist: "Artist",
+        durationMS: nil,
+        defaultViewPriority: 1,
+        path: "/tmp/primary.wav"
+    )
+    let coveredView = TrackItem(
+        id: "audio:hash:view:artwork",
+        primaryViewID: "audio:hash",
+        isPrimaryView: false,
+        viewKind: "derived",
+        title: "Song",
+        artist: "Artist",
+        durationMS: nil,
+        artworkURL: URL(fileURLWithPath: "/tmp/cover.jpg"),
+        defaultViewPriority: 4,
+        path: "/tmp/covered.wav"
+    )
+
+    let preferred = TrackItem.preferredDefaultView(in: [primary, coveredView])
+    expect(preferred?.id == coveredView.id, "covered view should replace a bare primary by default")
+}
+
 private func testPlaceholderDetailsUseTrackDisplayMetadata() {
     let track = TrackItem(
         id: "audio:hash",
@@ -110,6 +136,7 @@ testTrackItemUsesDisplayDefaultsForBlankMetadata()
 testTrackItemTrimsDisplayMetadata()
 testTrackItemKeepsViewIdentityDefaults()
 testTrackItemKeepsOptionalViewName()
+testPreferredDefaultViewUsesRustArtworkPriority()
 testPlaceholderDetailsUseTrackDisplayMetadata()
 
 if failures.isEmpty {
@@ -121,7 +148,7 @@ if failures.isEmpty {
         )
         try? "passed\n".write(to: resultURL, atomically: true, encoding: .utf8)
     }
-    print("PlayerSharedSmokeTests passed (5 cases)")
+    print("PlayerSharedSmokeTests passed (6 cases)")
 } else {
     for failure in failures {
         fputs("PlayerSharedSmokeTests failure: \(failure)\n", stderr)

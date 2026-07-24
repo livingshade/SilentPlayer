@@ -49,6 +49,23 @@ import Combine
 import MediaPlayer
 import UIKit
 
+private final class IOSArtworkImageBox: @unchecked Sendable {
+    let image: UIImage
+
+    init(image: UIImage) {
+        self.image = image
+    }
+}
+
+enum IOSNowPlayingArtworkFactory {
+    nonisolated static func make(image: UIImage) -> MPMediaItemArtwork {
+        let imageBox = IOSArtworkImageBox(image: image)
+        return MPMediaItemArtwork(boundsSize: image.size) { @Sendable _ in
+            imageBox.image
+        }
+    }
+}
+
 @MainActor
 public final class IOSPlaybackSystemIntegration: NSObject, PlaybackSystemIntegration {
     private weak var model: AppModel?
@@ -383,7 +400,7 @@ public final class IOSPlaybackSystemIntegration: NSObject, PlaybackSystemIntegra
             return nil
         }
 
-        let artwork = MPMediaItemArtwork(boundsSize: image.size) { _ in image }
+        let artwork = IOSNowPlayingArtworkFactory.make(image: image)
         artworkCache = (url.path, artwork)
         return artwork
     }

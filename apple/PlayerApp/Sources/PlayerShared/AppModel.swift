@@ -185,8 +185,9 @@ public final class AppModel: ObservableObject {
     @Published public var libraryProgress: Double?
     @Published public var libraryStatus: String = ""
     @Published public var lastLibraryBackupURL: URL?
+    @Published public private(set) var startupError: String?
 
-    private let client: RustPlayerClient
+    private let client: RustPlayerClient?
     private var playbackSystemIntegration: (any PlaybackSystemIntegration)?
     private var resumeAfterAudioInterruption = false
     nonisolated(unsafe) private var playbackTimer: Timer?
@@ -201,11 +202,22 @@ public final class AppModel: ObservableObject {
     private var allTrackViews: [TrackItem] = []
     private var activeViewIDByPrimaryID: [String: String] = [:]
 
-    public init(client: RustPlayerClient? = nil) {
+    public init(
+        client: RustPlayerClient? = nil,
+        discoverClient: () throws -> RustPlayerClient = RustPlayerClient.discover
+    ) {
+        if let client {
+            self.client = client
+            return
+        }
         do {
-            self.client = try client ?? RustPlayerClient.discover()
+            self.client = try discoverClient()
         } catch {
-            fatalError(error.localizedDescription)
+            self.client = nil
+            let message = "Unable to start the player service: \(error.localizedDescription)"
+            startupError = message
+            playbackError = message
+            status = "Player unavailable"
         }
     }
 
@@ -219,15 +231,15 @@ public final class AppModel: ObservableObject {
     }
 
     public var dbPath: String {
-        client.dbURL.path
+        client?.dbURL.path ?? ""
     }
 
     public var mediaRootPath: String {
-        client.mediaRootURL.path
+        client?.mediaRootURL.path ?? ""
     }
 
     public var repoPath: String {
-        client.repoRoot.path
+        client?.repoRoot.path ?? ""
     }
 
     public var isPaused: Bool {
@@ -314,6 +326,11 @@ public final class AppModel: ObservableObject {
     }
 
     public func bootstrap() async {
+        guard client != nil else {
+            status = "Player unavailable"
+            playbackError = startupError ?? "Unable to start the player service"
+            return
+        }
         await reloadActiveScope()
         await refreshPlaylists()
     }
@@ -397,7 +414,7 @@ public final class AppModel: ObservableObject {
     }
 
     private func backupCurrentLibrary() async throws -> (URL, LibraryPackageSummary) {
-        let backupURL = nextLibraryBackupURL()
+        let backupURL = try nextLibraryBackupURL()
         let summary = try await invoke { try $0.exportLibrary(to: backupURL) }
         return (backupURL, summary)
     }
@@ -436,7 +453,8 @@ public final class AppModel: ObservableObject {
         #endif
     }
 
-    private func nextLibraryBackupURL() -> URL {
+    private func nextLibraryBackupURL() throws -> URL {
+        let client = try requireClient()
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "en_US_POSIX")
         formatter.dateFormat = "yyyyMMdd-HHmmss"
@@ -607,7 +625,7 @@ public final class AppModel: ObservableObject {
             var loaded: [TrackItem]
             switch libraryScope {
             case .library:
-                loaded = try await invoke { try $0.library() }
+                loaded = try await loadLibraryPages()
             case .favorites:
                 loaded = try await invoke { try $0.favorites() }
             case .history:
@@ -691,6 +709,10 @@ public final class AppModel: ObservableObject {
             return
         }
 
+        guard let client else {
+            report(serviceUnavailableError)
+            return
+        }
         let worker = AnalyzerWorker(
             dbURL: client.dbURL,
             repoRoot: client.repoRoot,
@@ -767,6 +789,10 @@ public final class AppModel: ObservableObject {
             return
         }
 
+        guard let client else {
+            report(serviceUnavailableError)
+            return
+        }
         let worker = LibraryWorker(
             operation: operation,
             dbURL: client.dbURL,
@@ -816,9 +842,10 @@ public final class AppModel: ObservableObject {
         playbackSystemIntegration?.shutdown()
         playbackSystemIntegration = nil
 
-        let client = self.client
-        Task.detached(priority: .background) {
-            _ = try? client.stop()
+        if let client {
+            Task.detached(priority: .background) {
+                _ = try? client.stop()
+            }
         }
     }
 
@@ -1089,6 +1116,35 @@ public final class AppModel: ObservableObject {
             return
         }
         await play(track)
+    }
+
+    public func playEntireLibrary() async {
+        guard !isAudioInterrupted else {
+            status = "Wait for the audio interruption to end"
+            return
+        }
+        guard let firstTrack = tracks.first else {
+            status = "Library is empty"
+            return
+        }
+        let activeViewPaths = tracks.map(\.path)
+        await runBusy(nil) { [self] in
+            try playbackSystemIntegration?.prepareForPlayback()
+            let snapshot = try await invoke {
+                try $0.playQueue(paths: activeViewPaths, startPath: firstTrack.path)
+            }
+            selectedTrack = snapshot.currentTrack
+            apply(snapshot: snapshot, fallbackTrack: firstTrack)
+            status = "Playing all Library"
+        }
+    }
+
+    public func playAllVisible() async {
+        guard let firstTrack = tracks.first else {
+            status = "\(libraryScope.title) is empty"
+            return
+        }
+        await play(firstTrack)
     }
 
     public func play(_ track: TrackItem) async {
@@ -1666,13 +1722,11 @@ public final class AppModel: ObservableObject {
                let active = options.first(where: { $0.id == activeID }) {
                 return active
             }
-            if let primary = options.first(where: { $0.isPrimaryView }) {
-                activeViewIDByPrimaryID[primaryID] = primary.id
-                return primary
+            if let preferred = TrackItem.preferredDefaultView(in: options) {
+                activeViewIDByPrimaryID[primaryID] = preferred.id
+                return preferred
             }
-            let fallback = options[0]
-            activeViewIDByPrimaryID[primaryID] = fallback.id
-            return fallback
+            return nil
         }
     }
 
@@ -1957,8 +2011,63 @@ public final class AppModel: ObservableObject {
         }
     }
 
+    private func loadLibraryPages() async throws -> [TrackItem] {
+        let pageSize = 100
+        var loaded: [TrackItem] = []
+        var offset = 0
+        var expectedTotal = 0
+        libraryProgress = 0
+        libraryStatus = "Loading Library"
+        defer {
+            libraryProgress = nil
+            libraryStatus = ""
+        }
+
+        while true {
+            let requestedOffset = offset
+            let page = try await invoke {
+                try $0.libraryPage(offset: requestedOffset, limit: pageSize)
+            }
+            guard page.offset == requestedOffset else {
+                throw RustPlayerError.callFailed(
+                    "Library page offset mismatch: expected \(requestedOffset), received \(page.offset)"
+                )
+            }
+            expectedTotal = page.total
+            loaded.append(contentsOf: page.tracks)
+            let completed = min(loaded.count, expectedTotal)
+            libraryProgress = expectedTotal == 0
+                ? 1
+                : min(Double(completed) / Double(expectedTotal), 1)
+            libraryStatus = "Loading Library \(completed) / \(expectedTotal)"
+            status = libraryStatus
+
+            if completed >= expectedTotal {
+                return loaded
+            }
+            guard !page.tracks.isEmpty else {
+                throw RustPlayerError.callFailed(
+                    "Library loading stopped at \(completed) of \(expectedTotal) items"
+                )
+            }
+            offset = requestedOffset + page.tracks.count
+            await Task.yield()
+        }
+    }
+
+    private var serviceUnavailableError: RustPlayerError {
+        .startupFailed(startupError ?? "Player service is unavailable")
+    }
+
+    private func requireClient() throws -> RustPlayerClient {
+        guard let client else {
+            throw serviceUnavailableError
+        }
+        return client
+    }
+
     private func invoke<T: Sendable>(_ operation: @escaping @Sendable (RustPlayerClient) throws -> T) async throws -> T {
-        let client = self.client
+        let client = try requireClient()
         return try await Task.detached(priority: .userInitiated) {
             try operation(client)
         }.value

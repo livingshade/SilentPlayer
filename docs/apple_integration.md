@@ -40,6 +40,8 @@ Normalize 增益由 Rodio 播放 backend 应用到渲染链路，不修改系统
 
 当前 iOS 外壳已经完成系统播放集成：使用 `.playback` / `.longFormAudio` 配置并按需激活 `AVAudioSession`，通过 `MPNowPlayingInfoCenter` 发布锁屏标题、艺人、专辑、封面、时长、进度和播放状态，通过 `MPRemoteCommandCenter` 接收播放、暂停、上一首、下一首、拖动进度、循环和随机命令。来电等系统中断与耳机断开事件会进入 Rust `PlaybackLifecycle` 状态机，只有中断前正在播放且系统允许恢复时才会自动恢复。模拟器 app bundle 声明了 `UIBackgroundModes = audio`。
 
+资料库列表通过 Rust/SQLite 稳定排序的分页 API 加载；Swift 每完成一页就更新真实加载比例，避免大资料库启动时只显示无法判断进度的旋转指示器。Rust 服务初始化或调用失败会进入 `AppModel` 的可见错误状态，由 iPhone 界面持续显示并弹窗报告，不使用 `fatalError` 终止进程。
+
 ## macOS
 
 macOS 版本建议使用：

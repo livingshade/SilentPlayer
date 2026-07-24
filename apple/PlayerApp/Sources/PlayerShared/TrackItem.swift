@@ -15,6 +15,7 @@ public struct TrackItem: Identifiable, Hashable, Sendable {
     public let artworkCount: Int
     public let artworkURL: URL?
     public let artworkSource: String?
+    public let defaultViewPriority: Int
     public let hasAlbumIdentity: Bool
     public let path: String
     public let qualityProfile: String?
@@ -37,6 +38,7 @@ public struct TrackItem: Identifiable, Hashable, Sendable {
         artworkCount: Int = 0,
         artworkURL: URL? = nil,
         artworkSource: String? = nil,
+        defaultViewPriority: Int? = nil,
         hasAlbumIdentity: Bool = false,
         path: String,
         qualityProfile: String? = nil,
@@ -58,12 +60,21 @@ public struct TrackItem: Identifiable, Hashable, Sendable {
         self.artworkCount = artworkCount
         self.artworkURL = artworkURL
         self.artworkSource = artworkSource
+        self.defaultViewPriority = defaultViewPriority
+            ?? (artworkURL != nil ? 2 : (isPrimaryView ? 1 : 0))
         self.hasAlbumIdentity = hasAlbumIdentity
         self.path = path
         self.qualityProfile = qualityProfile
         self.formatName = formatName
         self.gainDB = gainDB
         self.loudnessStatus = loudnessStatus
+    }
+
+    public static func preferredDefaultView(in views: [TrackItem]) -> TrackItem? {
+        guard let highestPriority = views.map(\.defaultViewPriority).max() else {
+            return nil
+        }
+        return views.first { $0.defaultViewPriority == highestPriority }
     }
 
     public var durationText: String {

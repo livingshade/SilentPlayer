@@ -2,6 +2,19 @@ import Foundation
 import XCTest
 @testable import PlayerShared
 
+#if os(iOS)
+import MediaPlayer
+import UIKit
+
+private final class SendableArtworkBox: @unchecked Sendable {
+    let artwork: MPMediaItemArtwork
+
+    init(artwork: MPMediaItemArtwork) {
+        self.artwork = artwork
+    }
+}
+#endif
+
 let playerSharedTestsBuildAnchor = TrackItem(
     id: "audio:test-anchor",
     title: "Anchor",
@@ -87,6 +100,46 @@ final class PlaybackPolicyTests: XCTestCase {
             PlaybackStatusText.afterTrackChange(isPlaying: false, title: "   "),
             "Paused at track"
         )
+    }
+}
+
+#if os(iOS)
+@MainActor
+final class IOSNowPlayingArtworkFactoryTests: XCTestCase {
+    func testRequestHandlerCanRunOutsideMainActor() async throws {
+        let image = try XCTUnwrap(UIImage(systemName: "music.note"))
+        let artworkBox = SendableArtworkBox(
+            artwork: IOSNowPlayingArtworkFactory.make(image: image)
+        )
+
+        let returnedImage = await Task.detached {
+            artworkBox.artwork.image(at: CGSize(width: 32, height: 32)) != nil
+        }.value
+
+        XCTAssertTrue(returnedImage)
+    }
+}
+#endif
+
+@MainActor
+final class AppModelStartupTests: XCTestCase {
+    func testStartupFailureBecomesVisibleStateInsteadOfCrashing() async {
+        let model = AppModel(discoverClient: {
+            throw RustPlayerError.startupFailed("test startup failure")
+        })
+
+        XCTAssertEqual(model.status, "Player unavailable")
+        XCTAssertEqual(
+            model.startupError,
+            "Unable to start the player service: test startup failure"
+        )
+        XCTAssertEqual(model.playbackError, model.startupError)
+
+        await model.bootstrap()
+
+        XCTAssertEqual(model.status, "Player unavailable")
+        XCTAssertEqual(model.playbackError, model.startupError)
+        XCTAssertTrue(model.tracks.isEmpty)
     }
 }
 

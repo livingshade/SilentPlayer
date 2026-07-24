@@ -15,6 +15,12 @@ public struct LibraryPackageSummary: Hashable, Sendable {
     public let sidecarFiles: Int
 }
 
+public struct LibraryPage: Hashable, Sendable {
+    public let total: Int
+    public let offset: Int
+    public let tracks: [TrackItem]
+}
+
 public struct AnalysisSummary: Hashable, Sendable {
     public let tracksAnalyzed: Int
     public let trackFailures: Int
@@ -372,6 +378,15 @@ public final class RustPlayerClient: @unchecked Sendable {
         }
     }
 
+    public func libraryPage(offset: Int, limit: Int) throws -> LibraryPage {
+        try sync {
+            try decode(
+                player_app_library_page(app, max(0, offset), max(0, limit)),
+                as: LibraryPageDTO.self
+            ).model
+        }
+    }
+
     public func search(_ query: String, limit: Int = 200) throws -> [TrackItem] {
         try sync {
             try query.withCString { queryValue in
@@ -403,6 +418,12 @@ public final class RustPlayerClient: @unchecked Sendable {
             try path.withCString { pathValue in
                 try decode(player_app_play_path(app, pathValue), as: PlaybackSnapshotDTO.self).model
             }
+        }
+    }
+
+    public func playLibrary() throws -> PlaybackSnapshot {
+        try sync {
+            try decode(player_app_play_library(app), as: PlaybackSnapshotDTO.self).model
         }
     }
 
@@ -770,6 +791,16 @@ private struct ResponseDTO<T: Decodable>: Decodable {
 
 private struct EmptyDTO: Decodable {}
 
+private struct LibraryPageDTO: Decodable {
+    let total: Int
+    let offset: Int
+    let tracks: [TrackDTO]
+
+    var model: LibraryPage {
+        LibraryPage(total: total, offset: offset, tracks: tracks.map(\.model))
+    }
+}
+
 private struct TrackDTO: Decodable {
     let id: String
     let viewId: String
@@ -785,6 +816,7 @@ private struct TrackDTO: Decodable {
     let artworkCount: UInt32
     let artworkPath: String?
     let artworkSource: String?
+    let defaultViewPriority: UInt8?
     let hasAlbumIdentity: Bool
     let path: String
     let qualityProfile: String?
@@ -808,6 +840,7 @@ private struct TrackDTO: Decodable {
             artworkCount: Int(artworkCount),
             artworkURL: artworkPath.map { URL(fileURLWithPath: $0) },
             artworkSource: artworkSource,
+            defaultViewPriority: defaultViewPriority.map(Int.init),
             hasAlbumIdentity: hasAlbumIdentity,
             path: path,
             qualityProfile: qualityProfile,
