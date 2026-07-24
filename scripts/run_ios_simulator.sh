@@ -5,11 +5,13 @@ cd "$(dirname "$0")/.."
 
 SIM_DEVICE_NAME="${NORMALPLAYER_SIM_DEVICE:-iPhone 17}"
 SIM_BUNDLE_ID="${NORMALPLAYER_IOS_BUNDLE_ID:-com.normalplayer.ios}"
+SKIP_SIMULATOR_OPEN="${SILENT_IOS_SKIP_OPEN:-0}"
 APP_ROOT="apple/PlayerApp"
 SWIFT_SCRATCH="$APP_ROOT/.build-ios-sim"
 PRODUCT_DIR="$SWIFT_SCRATCH/arm64-apple-ios-simulator/debug"
 APP_BUNDLE="$PRODUCT_DIR/NormalPlayer-iOS.app"
 LAUNCH_SCREEN_SOURCE="$APP_ROOT/Resources/LaunchScreen.storyboard"
+APP_ICON_CATALOG="$APP_ROOT/Resources/AppIcon.xcassets"
 FIXTURE_SOURCE="${NORMALPLAYER_IOS_FIXTURES:-test-assets/audio}"
 FIXTURE_DEST_NAME="${NORMALPLAYER_IOS_FIXTURE_FOLDER:-ImportFixtures}"
 
@@ -48,8 +50,8 @@ write_info_plist() {
   plutil -create xml1 "$plist"
   /usr/libexec/PlistBuddy -c "Add :CFBundleExecutable string NormalPlayer-iOS" "$plist"
   /usr/libexec/PlistBuddy -c "Add :CFBundleIdentifier string ${SIM_BUNDLE_ID}" "$plist"
-  /usr/libexec/PlistBuddy -c "Add :CFBundleName string NormalPlayer" "$plist"
-  /usr/libexec/PlistBuddy -c "Add :CFBundleDisplayName string NormalPlayer" "$plist"
+  /usr/libexec/PlistBuddy -c "Add :CFBundleName string Silent" "$plist"
+  /usr/libexec/PlistBuddy -c "Add :CFBundleDisplayName string Silent" "$plist"
   /usr/libexec/PlistBuddy -c "Add :CFBundlePackageType string APPL" "$plist"
   /usr/libexec/PlistBuddy -c "Add :CFBundleVersion string 1" "$plist"
   /usr/libexec/PlistBuddy -c "Add :CFBundleShortVersionString string 0.1" "$plist"
@@ -84,6 +86,21 @@ write_info_plist() {
   /usr/libexec/PlistBuddy -c "Add :UISupportedInterfaceOrientations:2 string UIInterfaceOrientationLandscapeRight" "$plist"
 }
 
+compile_app_icon() {
+  local partial_plist="$PRODUCT_DIR/AppIcon-Info.plist"
+
+  xcrun actool \
+    "$APP_ICON_CATALOG" \
+    --compile "$APP_BUNDLE" \
+    --platform iphonesimulator \
+    --minimum-deployment-target 16.0 \
+    --target-device iphone \
+    --target-device ipad \
+    --app-icon AppIcon \
+    --output-partial-info-plist "$partial_plist"
+  /usr/libexec/PlistBuddy -c "Merge $partial_plist" "$APP_BUNDLE/Info.plist"
+}
+
 package_app_bundle() {
   local binary="$PRODUCT_DIR/NormalPlayer-iOS"
 
@@ -102,6 +119,7 @@ package_app_bundle() {
     --compile "$APP_BUNDLE/LaunchScreen.storyboardc" \
     "$LAUNCH_SCREEN_SOURCE"
   write_info_plist
+  compile_app_icon
   xattr -cr "$APP_BUNDLE"
   codesign --force --sign - --timestamp=none "$APP_BUNDLE"
 }
@@ -111,7 +129,9 @@ boot_simulator() {
 
   xcrun simctl boot "$udid" >/dev/null 2>&1 || true
   xcrun simctl bootstatus "$udid" -b
-  open -a Simulator --args -CurrentDeviceUDID "$udid"
+  if [[ "$SKIP_SIMULATOR_OPEN" != "1" ]]; then
+    open -a Simulator --args -CurrentDeviceUDID "$udid"
+  fi
 }
 
 seed_fixture_files() {

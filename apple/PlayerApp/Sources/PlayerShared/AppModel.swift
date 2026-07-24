@@ -369,20 +369,18 @@ public final class AppModel: ObservableObject {
         guard canStartLibraryMigration() else {
             return
         }
-        await runBusy("Backing up current library") { [self] in
+        await runBusy("Clearing current library") { [self] in
             let snapshot = try await invoke { try $0.stop() }
             apply(snapshot: snapshot)
             playbackSystemIntegration?.playbackDidStop()
 
-            let (backupURL, backupSummary) = try await backupCurrentLibrary()
-            lastLibraryBackupURL = backupURL
             status = "Clearing current library"
             try await invoke { try $0.zeroOutLibrary() }
             resetLibraryPresentation()
             await reloadActiveScope(quiet: true)
             await refreshPlaylists()
             status = "Library cleared"
-            playbackDetail = "Backup: \(backupURL.path) (\(backupSummary.tracks) tracks)"
+            playbackDetail = "Database and managed music files deleted"
         }
     }
 

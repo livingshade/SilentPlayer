@@ -99,12 +99,12 @@ public struct PhoneContentView: View {
             isPresented: $isZeroOutConfirmationPresented,
             titleVisibility: .visible
         ) {
-            Button("Back Up and Zero Out", role: .destructive) {
+            Button("Zero Out Library", role: .destructive) {
                 Task { await model.zeroOutLibrary() }
             }
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text("Silent will create a complete internal backup before clearing the database and managed music files.")
+            Text("This permanently deletes the current database and managed music files. No internal backup will be created.")
         }
         .task {
             await model.bootstrap()

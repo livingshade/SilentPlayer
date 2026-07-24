@@ -58,3 +58,10 @@ To test real file import in the simulator:
 6. Tap `Select`, choose the `.ogg` files, and confirm.
 
 The app bundle used by the script enables `UIFileSharingEnabled` and `LSSupportsOpeningDocumentsInPlace`, so the seeded fixture folder is visible through Files instead of being imported through a test-only backdoor.
+
+The iOS packaging flow compiles `Resources/AppIcon.xcassets` with `actool`. Its
+`AppIcon` set uses the same opaque 1024×1024 Silent artwork as the macOS app, and
+Xcode generates the required iPhone and iPad icon renditions.
+
+Set `SILENT_IOS_SKIP_OPEN=1` to build, install, and launch the simulator app
+without opening the Simulator window.

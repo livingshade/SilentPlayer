@@ -134,6 +134,28 @@ final class LibraryMigrationTests: XCTestCase {
             )
         )
     }
+
+    func testZeroOutDoesNotCreateLocalBackup() async throws {
+        let container = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: container) }
+
+        let targetRoot = container.appendingPathComponent("Target", isDirectory: true)
+        let targetClient = try RustPlayerClient(
+            dbURL: targetRoot.appendingPathComponent("library.sqlite3"),
+            mediaRootURL: targetRoot.appendingPathComponent("Music", isDirectory: true),
+            repoRoot: container
+        )
+        let model = AppModel(client: targetClient)
+
+        await model.zeroOutLibrary()
+
+        let backupsRoot = targetRoot.appendingPathComponent("Backups", isDirectory: true)
+        XCTAssertEqual(model.status, "Library cleared")
+        XCTAssertEqual(model.playbackDetail, "Database and managed music files deleted")
+        XCTAssertNil(model.lastLibraryBackupURL)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: backupsRoot.path))
+    }
 }
 
 @MainActor
