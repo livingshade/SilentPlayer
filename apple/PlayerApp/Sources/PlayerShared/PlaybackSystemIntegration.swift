@@ -1,11 +1,45 @@
+import Combine
 import Foundation
 
 @MainActor
 public protocol PlaybackSystemIntegration: AnyObject {
     func start()
     func prepareForPlayback() throws
+    func playbackPositionDidChange()
     func playbackDidStop()
     func shutdown()
+}
+
+public extension PlaybackSystemIntegration {
+    func playbackPositionDidChange() {}
+}
+
+struct PlaybackNowPlayingObservedState: Equatable {
+    let nowPlaying: TrackItem?
+    let nowPlayingDetails: TrackDetails?
+    let isPlaying: Bool
+}
+
+enum PlaybackNowPlayingObservation {
+    @MainActor
+    static func publisher(
+        for model: AppModel
+    ) -> AnyPublisher<PlaybackNowPlayingObservedState, Never> {
+        Publishers.CombineLatest3(
+            model.$nowPlaying.removeDuplicates(),
+            model.$nowPlayingDetails.removeDuplicates(),
+            model.$isPlaying.removeDuplicates()
+        )
+        .map { nowPlaying, nowPlayingDetails, isPlaying in
+            PlaybackNowPlayingObservedState(
+                nowPlaying: nowPlaying,
+                nowPlayingDetails: nowPlayingDetails,
+                isPlaying: isPlaying
+            )
+        }
+        .removeDuplicates()
+        .eraseToAnyPublisher()
+    }
 }
 
 public enum PlaybackInterruptionPolicy {
@@ -45,7 +79,6 @@ public enum PlaybackRemoteCommandPolicy {
 
 #if os(iOS)
 import AVFoundation
-import Combine
 import MediaPlayer
 import UIKit
 
@@ -74,6 +107,7 @@ public final class IOSPlaybackSystemIntegration: NSObject, PlaybackSystemIntegra
     private var notificationObservers: [NSObjectProtocol] = []
     private var remoteTargets: [(command: MPRemoteCommand, target: Any)] = []
     private var artworkCache: (path: String, artwork: MPMediaItemArtwork)?
+    private var pendingNowPlayingUpdate: Task<Void, Never>?
     private var isStarted = false
 
     public init(model: AppModel) {
@@ -99,6 +133,10 @@ public final class IOSPlaybackSystemIntegration: NSObject, PlaybackSystemIntegra
         try audioSession.setActive(true)
     }
 
+    public func playbackPositionDidChange() {
+        updateNowPlayingInfo()
+    }
+
     public func playbackDidStop() {
         MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
         MPNowPlayingInfoCenter.default().playbackState = .stopped
@@ -111,6 +149,8 @@ public final class IOSPlaybackSystemIntegration: NSObject, PlaybackSystemIntegra
         }
         isStarted = false
 
+        pendingNowPlayingUpdate?.cancel()
+        pendingNowPlayingUpdate = nil
         cancellables.removeAll()
         for observer in notificationObservers {
             NotificationCenter.default.removeObserver(observer)
@@ -137,34 +177,40 @@ public final class IOSPlaybackSystemIntegration: NSObject, PlaybackSystemIntegra
             return
         }
 
+        PlaybackNowPlayingObservation.publisher(for: model)
+            .dropFirst()
+            .sink { [weak self] _ in
+                Task { @MainActor [weak self] in
+                    self?.scheduleNowPlayingUpdate()
+                }
+            }
+            .store(in: &cancellables)
+
         Publishers.CombineLatest4(
-            model.$nowPlaying,
-            model.$nowPlayingDetails,
-            model.$isPlaying,
-            model.$playbackElapsedMS
+            model.$queueCount.removeDuplicates(),
+            model.$isAudioInterrupted.removeDuplicates(),
+            model.$repeatMode.removeDuplicates(),
+            model.$isShuffleEnabled.removeDuplicates()
         )
+        .dropFirst()
         .sink { [weak self] _, _, _, _ in
             Task { @MainActor [weak self] in
-                self?.updateNowPlayingInfo()
+                self?.updateRemoteCommandAvailability()
             }
         }
         .store(in: &cancellables)
+    }
 
-        model.$queueCount
-            .sink { [weak self] _ in
-                Task { @MainActor [weak self] in
-                    self?.updateRemoteCommandAvailability()
-                }
+    private func scheduleNowPlayingUpdate() {
+        pendingNowPlayingUpdate?.cancel()
+        pendingNowPlayingUpdate = Task { @MainActor [weak self] in
+            await Task.yield()
+            guard !Task.isCancelled else {
+                return
             }
-            .store(in: &cancellables)
-
-        model.$isAudioInterrupted
-            .sink { [weak self] _ in
-                Task { @MainActor [weak self] in
-                    self?.updateRemoteCommandAvailability()
-                }
-            }
-            .store(in: &cancellables)
+            self?.updateNowPlayingInfo()
+            self?.pendingNowPlayingUpdate = nil
+        }
     }
 
     private func observeAudioSession() {

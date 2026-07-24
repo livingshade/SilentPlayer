@@ -13,6 +13,7 @@ private extension UTType {
 
 public struct PhoneContentView: View {
     @ObservedObject private var model: AppModel
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @State private var selectedTab: PhoneTab = .library
     @State private var fileImportPurpose: PhoneFileImportPurpose?
     @State private var isFileImporterPresented = false
@@ -261,39 +262,83 @@ public struct PhoneContentView: View {
 
     private var nowPlayingTab: some View {
         NavigationStack {
-            ScrollView {
-                VStack(spacing: 22) {
-                    let nowDetails = details(for: model.nowPlaying)
-                    PhoneArtworkImage(
-                        artworkURL: nowDetails?.artworkURL ?? model.nowPlaying?.artworkURL,
-                        placeholderSystemImage: "music.note",
-                        size: 280,
-                        cornerRadius: 14
-                    )
-                    .padding(.top, 20)
+            GeometryReader { proxy in
+                let availableArtworkWidth = max(0, proxy.size.width - 72)
+                let regularArtworkSize = min(
+                    availableArtworkWidth,
+                    max(176, min(220, proxy.size.height * 0.36))
+                )
+                let compactArtworkSize = min(availableArtworkWidth, 168)
 
-                    VStack(spacing: 6) {
-                        Text(model.nowPlaying?.phoneDisplayTitle ?? "Nothing Playing")
-                            .font(.title2.weight(.semibold))
-                            .multilineTextAlignment(.center)
-                            .fixedSize(horizontal: false, vertical: true)
-                            .layoutPriority(1)
-                        Text(model.nowPlaying?.phoneDisplaySubtitle ?? model.status.phoneCompacted)
-                            .font(.callout)
-                            .foregroundStyle(.secondary)
-                            .multilineTextAlignment(.center)
-                            .fixedSize(horizontal: false, vertical: true)
+                Group {
+                    if dynamicTypeSize.isAccessibilitySize {
+                        ScrollView {
+                            nowPlayingContent(
+                                artworkSize: compactArtworkSize,
+                                spacing: 10,
+                                usesCompactControls: true
+                            )
+                            .padding(.vertical, 12)
+                        }
+                    } else {
+                        ViewThatFits(in: .vertical) {
+                            nowPlayingContent(
+                                artworkSize: regularArtworkSize,
+                                spacing: 16,
+                                usesCompactControls: false
+                            )
+                            nowPlayingContent(
+                                artworkSize: compactArtworkSize,
+                                spacing: 10,
+                                usesCompactControls: true
+                            )
+                        }
+                        .padding(.vertical, 8)
+                        .frame(maxHeight: .infinity)
                     }
-                    .padding(.horizontal)
-
-                    playerControls
-                        .padding(.horizontal)
                 }
-                .padding(.bottom, 24)
+                .padding(.horizontal, 20)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
             .navigationTitle("Now Playing")
             .navigationBarTitleDisplayMode(.inline)
         }
+    }
+
+    private func nowPlayingContent(
+        artworkSize: CGFloat,
+        spacing: CGFloat,
+        usesCompactControls: Bool
+    ) -> some View {
+        VStack(spacing: spacing) {
+            let nowDetails = details(for: model.nowPlaying)
+            PhoneArtworkImage(
+                artworkURL: nowDetails?.artworkURL ?? model.nowPlaying?.artworkURL,
+                placeholderSystemImage: "music.note",
+                size: artworkSize,
+                cornerRadius: 12
+            )
+
+            VStack(spacing: usesCompactControls ? 3 : 5) {
+                Text(model.nowPlaying?.phoneDisplayTitle ?? "Nothing Playing")
+                    .font(
+                        usesCompactControls
+                            ? .headline
+                            : .title3.weight(.semibold)
+                    )
+                    .multilineTextAlignment(.center)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .layoutPriority(1)
+                Text(model.nowPlaying?.phoneDisplaySubtitle ?? model.status.phoneCompacted)
+                    .font(usesCompactControls ? .footnote : .callout)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            playerControls(compact: usesCompactControls)
+        }
+        .frame(maxWidth: .infinity)
     }
 
     private func details(for track: TrackItem?) -> TrackDetails? {
@@ -466,8 +511,8 @@ public struct PhoneContentView: View {
         }
     }
 
-    private var playerControls: some View {
-        VStack(spacing: 12) {
+    private func playerControls(compact: Bool) -> some View {
+        VStack(spacing: compact ? 7 : 10) {
             Slider(
                 value: seekBinding,
                 in: 0...1,
@@ -487,39 +532,55 @@ public struct PhoneContentView: View {
                 Spacer()
             }
 
-            HStack(spacing: 28) {
+            HStack(spacing: 0) {
                 Button {
                     Task { await model.toggleShuffle() }
                 } label: {
                     Image(systemName: "shuffle")
                         .foregroundStyle(model.isShuffleEnabled ? Color.accentColor : Color.secondary)
                 }
+                .frame(width: 44, height: 44)
+                .accessibilityLabel("Shuffle")
+                .accessibilityValue(model.isShuffleEnabled ? "On" : "Off")
 
+                Spacer(minLength: 0)
                 Button {
                     Task { await model.previousTrack() }
                 } label: {
                     Image(systemName: "backward.fill")
                 }
+                .frame(width: 44, height: 44)
+                .accessibilityLabel("Previous Track")
 
+                Spacer(minLength: 0)
                 Button {
                     Task { await model.pauseOrResume() }
                 } label: {
                     Image(systemName: model.isPlaying ? "pause.circle.fill" : "play.circle.fill")
-                        .font(.system(size: 54))
+                        .font(.system(size: compact ? 46 : 50))
                 }
+                .frame(width: 52, height: 52)
+                .accessibilityLabel(model.isPlaying ? "Pause" : "Play")
 
+                Spacer(minLength: 0)
                 Button {
                     Task { await model.nextTrack() }
                 } label: {
                     Image(systemName: "forward.fill")
                 }
+                .frame(width: 44, height: 44)
+                .accessibilityLabel("Next Track")
 
+                Spacer(minLength: 0)
                 Button {
                     Task { await model.cycleRepeatMode() }
                 } label: {
                     Image(systemName: model.repeatMode.systemImage)
                         .foregroundStyle(model.repeatMode == .off ? Color.secondary : Color.accentColor)
                 }
+                .frame(width: 44, height: 44)
+                .accessibilityLabel("Repeat")
+                .accessibilityValue(model.repeatMode.label)
             }
             .font(.title2)
             .buttonStyle(.plain)

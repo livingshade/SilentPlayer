@@ -131,6 +131,18 @@ enum PlaybackStatusText {
     }
 }
 
+enum PlaybackPollingPolicy {
+    static let timerInterval: TimeInterval = 1
+    static let timerTolerance: TimeInterval = 0.2
+
+    static func shouldPoll(
+        hasNowPlayingItem: Bool,
+        isPlaying: Bool
+    ) -> Bool {
+        hasNowPlayingItem && isPlaying
+    }
+}
+
 public struct TrackViewChoice: Identifiable, Hashable, Sendable {
     public let id: String
     public let track: TrackItem
@@ -387,13 +399,10 @@ public final class AppModel: ObservableObject {
             return
         }
         await runBusy("Clearing current library") { [self] in
-            let snapshot = try await invoke { try $0.stop() }
-            apply(snapshot: snapshot)
-            playbackSystemIntegration?.playbackDidStop()
-
             status = "Clearing current library"
             try await invoke { try $0.zeroOutLibrary() }
             resetLibraryPresentation()
+            resetPlaybackAfterLibraryReset()
             await reloadActiveScope(quiet: true)
             await refreshPlaylists()
             status = "Library cleared"
@@ -480,6 +489,18 @@ public final class AppModel: ObservableObject {
         tracks = []
         playlists = []
         clearDetails()
+    }
+
+    private func resetPlaybackAfterLibraryReset() {
+        isPlaying = false
+        isAudioInterrupted = false
+        resumeAfterAudioInterruption = false
+        playbackElapsedMS = 0
+        playbackError = ""
+        queueCount = 0
+        queuePosition = nil
+        stopPlaybackTimer()
+        playbackSystemIntegration?.playbackDidStop()
     }
 
     private func libraryPackageSummary(
@@ -1129,12 +1150,19 @@ public final class AppModel: ObservableObject {
         }
         let activeViewPaths = tracks.map(\.path)
         await runBusy(nil) { [self] in
+            let previousTrackID = nowPlaying?.id
+            let previousPositionMS = playbackElapsedMS
             try playbackSystemIntegration?.prepareForPlayback()
             let snapshot = try await invoke {
                 try $0.playQueue(paths: activeViewPaths, startPath: firstTrack.path)
             }
             selectedTrack = snapshot.currentTrack
             apply(snapshot: snapshot, fallbackTrack: firstTrack)
+            publishPlaybackPositionDiscontinuity(
+                previousTrackID: previousTrackID,
+                previousPositionMS: previousPositionMS,
+                force: true
+            )
             status = "Playing all Library"
         }
     }
@@ -1161,6 +1189,8 @@ public final class AppModel: ObservableObject {
             return
         }
         await runBusy(nil) { [self] in
+            let previousTrackID = nowPlaying?.id
+            let previousPositionMS = playbackElapsedMS
             try playbackSystemIntegration?.prepareForPlayback()
             let snapshot = try await invoke {
                 try $0.playPlaylist(
@@ -1171,6 +1201,11 @@ public final class AppModel: ObservableObject {
             }
             selectedTrack = snapshot.currentTrack
             apply(snapshot: snapshot, fallbackTrack: track)
+            publishPlaybackPositionDiscontinuity(
+                previousTrackID: previousTrackID,
+                previousPositionMS: previousPositionMS,
+                force: true
+            )
             status = shuffled
                 ? "Shuffling \(playlist.name)"
                 : "Playing \(playlist.name)"
@@ -1183,12 +1218,19 @@ public final class AppModel: ObservableObject {
             return
         }
         await runBusy(nil) { [self] in
+            let previousTrackID = nowPlaying?.id
+            let previousPositionMS = playbackElapsedMS
             try playbackSystemIntegration?.prepareForPlayback()
             let queuePaths = tracks.map(\.path)
             let paths = queuePaths.contains(track.path) ? queuePaths : [track.path]
             let snapshot = try await invoke { try $0.playQueue(paths: paths, startPath: track.path) }
             selectedTrack = track
             apply(snapshot: snapshot, fallbackTrack: track)
+            publishPlaybackPositionDiscontinuity(
+                previousTrackID: previousTrackID,
+                previousPositionMS: previousPositionMS,
+                force: true
+            )
             status = "Playing \(track.title)"
         }
     }
@@ -1232,11 +1274,18 @@ public final class AppModel: ObservableObject {
 
     public func nextTrack() async {
         do {
+            let previousTrackID = nowPlaying?.id
+            let previousPositionMS = playbackElapsedMS
             if isPlaying {
                 try playbackSystemIntegration?.prepareForPlayback()
             }
             let snapshot = try await invoke { try $0.next() }
             apply(snapshot: snapshot)
+            publishPlaybackPositionDiscontinuity(
+                previousTrackID: previousTrackID,
+                previousPositionMS: previousPositionMS,
+                force: true
+            )
             status = PlaybackStatusText.afterTrackChange(
                 isPlaying: snapshot.isPlaying,
                 title: snapshot.currentTrack?.title
@@ -1248,11 +1297,18 @@ public final class AppModel: ObservableObject {
 
     public func previousTrack() async {
         do {
+            let previousTrackID = nowPlaying?.id
+            let previousPositionMS = playbackElapsedMS
             if isPlaying {
                 try playbackSystemIntegration?.prepareForPlayback()
             }
             let snapshot = try await invoke { try $0.previous() }
             apply(snapshot: snapshot)
+            publishPlaybackPositionDiscontinuity(
+                previousTrackID: previousTrackID,
+                previousPositionMS: previousPositionMS,
+                force: true
+            )
             status = PlaybackStatusText.afterTrackChange(
                 isPlaying: snapshot.isPlaying,
                 title: snapshot.currentTrack?.title
@@ -1275,9 +1331,16 @@ public final class AppModel: ObservableObject {
             return
         }
         do {
+            let previousTrackID = nowPlaying?.id
+            let previousPositionMS = playbackElapsedMS
             let clampedMS = min(max(targetMS, 0), durationMS)
             let snapshot = try await invoke { try $0.seek(positionMS: clampedMS) }
             apply(snapshot: snapshot)
+            publishPlaybackPositionDiscontinuity(
+                previousTrackID: previousTrackID,
+                previousPositionMS: previousPositionMS,
+                force: true
+            )
         } catch {
             report(error)
         }
@@ -1557,8 +1620,14 @@ public final class AppModel: ObservableObject {
         defer { isPolling = false }
 
         do {
-            let snapshot = try await invoke { try $0.poll() }
+            let previousTrackID = nowPlaying?.id
+            let previousPositionMS = playbackElapsedMS
+            let snapshot = try await invoke(priority: .utility) { try $0.poll() }
             apply(snapshot: snapshot)
+            publishPlaybackPositionDiscontinuity(
+                previousTrackID: previousTrackID,
+                previousPositionMS: previousPositionMS
+            )
         } catch {
             report(error)
         }
@@ -1855,21 +1924,44 @@ public final class AppModel: ObservableObject {
 
     private func apply(snapshot: PlaybackSnapshot, fallbackTrack: TrackItem? = nil) {
         let previousTrackID = nowPlaying?.id
-        playbackError = snapshot.error ?? ""
-        playbackElapsedMS = snapshot.positionMS
-        isPlaying = snapshot.isPlaying
-        isAudioInterrupted = snapshot.interruptionActive
+        let nextPlaybackError = snapshot.error ?? ""
+        if playbackError != nextPlaybackError {
+            playbackError = nextPlaybackError
+        }
+        if playbackElapsedMS != snapshot.positionMS {
+            playbackElapsedMS = snapshot.positionMS
+        }
+        if isPlaying != snapshot.isPlaying {
+            isPlaying = snapshot.isPlaying
+        }
+        if isAudioInterrupted != snapshot.interruptionActive {
+            isAudioInterrupted = snapshot.interruptionActive
+        }
         resumeAfterAudioInterruption = snapshot.resumeAfterInterruption
-        repeatMode = snapshot.repeatMode
-        isShuffleEnabled = snapshot.shuffleEnabled
-        queueCount = snapshot.queueLen
-        queuePosition = snapshot.queuePosition
+        if repeatMode != snapshot.repeatMode {
+            repeatMode = snapshot.repeatMode
+        }
+        if isShuffleEnabled != snapshot.shuffleEnabled {
+            isShuffleEnabled = snapshot.shuffleEnabled
+        }
+        if queueCount != snapshot.queueLen {
+            queueCount = snapshot.queueLen
+        }
+        if queuePosition != snapshot.queuePosition {
+            queuePosition = snapshot.queuePosition
+        }
 
         if let track = snapshot.currentTrack ?? fallbackTrack {
-            nowPlaying = track
-            setActiveView(track)
-            if !allTrackViews.isEmpty {
-                tracks = visibleTracks(from: allTrackViews)
+            let trackChanged = nowPlaying != track
+            if trackChanged {
+                nowPlaying = track
+                setActiveView(track)
+                if !allTrackViews.isEmpty {
+                    let visible = visibleTracks(from: allTrackViews)
+                    if tracks != visible {
+                        tracks = visible
+                    }
+                }
             }
             if previousTrackID != track.id {
                 let shouldFollowNowPlaying = selectedTrack == nil || selectedTrack?.id == previousTrackID
@@ -1882,24 +1974,40 @@ public final class AppModel: ObservableObject {
                 loadDetails(for: track)
             }
         } else if !snapshot.isPlaying {
-            nowPlaying = nil
+            if nowPlaying != nil {
+                nowPlaying = nil
+            }
             if let selectedTrack {
                 loadDetails(for: selectedTrack)
             } else {
                 clearDetails()
             }
-            playbackElapsedMS = 0
+            if playbackElapsedMS != 0 {
+                playbackElapsedMS = 0
+            }
         }
 
         if let gainDB = snapshot.gainDB {
-            playbackDetail = String(format: "Normalize gain %@ dB", String(format: "%+.1f", gainDB))
+            let detail = String(
+                format: "Normalize gain %@ dB",
+                String(format: "%+.1f", gainDB)
+            )
+            if playbackDetail != detail {
+                playbackDetail = detail
+            }
         } else if let loudnessStatus = snapshot.loudnessStatus {
-            playbackDetail = loudnessStatus
+            if playbackDetail != loudnessStatus {
+                playbackDetail = loudnessStatus
+            }
         }
 
         if let error = snapshot.error, !error.isEmpty {
-            status = "Playback error"
-            playbackError = error
+            if status != "Playback error" {
+                status = "Playback error"
+            }
+            if playbackError != error {
+                playbackError = error
+            }
         }
 
         if nowPlaying == nil {
@@ -1907,9 +2015,30 @@ public final class AppModel: ObservableObject {
                 playbackSystemIntegration?.playbackDidStop()
             }
             stopPlaybackTimer()
-        } else {
+        } else if PlaybackPollingPolicy.shouldPoll(
+            hasNowPlayingItem: true,
+            isPlaying: isPlaying
+        ) {
             startPlaybackTimer()
+        } else {
+            stopPlaybackTimer()
         }
+    }
+
+    private func publishPlaybackPositionDiscontinuity(
+        previousTrackID: String?,
+        previousPositionMS: Int,
+        force: Bool = false
+    ) {
+        guard
+            let previousTrackID,
+            nowPlaying?.id == previousTrackID,
+            playbackElapsedMS != previousPositionMS,
+            force || playbackElapsedMS < previousPositionMS
+        else {
+            return
+        }
+        playbackSystemIntegration?.playbackPositionDidChange()
     }
 
     private func loadDetails(for track: TrackItem, force: Bool = false) {
@@ -1983,11 +2112,16 @@ public final class AppModel: ObservableObject {
         guard playbackTimer == nil else {
             return
         }
-        playbackTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
+        let timer = Timer.scheduledTimer(
+            withTimeInterval: PlaybackPollingPolicy.timerInterval,
+            repeats: true
+        ) { [weak self] _ in
             Task { @MainActor in
                 await self?.pollPlayback()
             }
         }
+        timer.tolerance = PlaybackPollingPolicy.timerTolerance
+        playbackTimer = timer
     }
 
     private func stopPlaybackTimer() {
@@ -2096,9 +2230,12 @@ public final class AppModel: ObservableObject {
         return client
     }
 
-    private func invoke<T: Sendable>(_ operation: @escaping @Sendable (RustPlayerClient) throws -> T) async throws -> T {
+    private func invoke<T: Sendable>(
+        priority: TaskPriority = .userInitiated,
+        _ operation: @escaping @Sendable (RustPlayerClient) throws -> T
+    ) async throws -> T {
         let client = try requireClient()
-        return try await Task.detached(priority: .userInitiated) {
+        return try await Task.detached(priority: priority) {
             try operation(client)
         }.value
     }

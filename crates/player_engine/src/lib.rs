@@ -54,6 +54,7 @@ enum EngineCommand {
     SeekTo {
         position_ms: u64,
     },
+    Refresh,
     SetRepeatMode(RepeatMode),
     SetShuffle(bool),
     Shutdown,
@@ -93,6 +94,12 @@ pub struct PlayerEngine {
 struct EngineRequest {
     command: EngineCommand,
     completion: Sender<PlayerResult<()>>,
+}
+
+enum EngineInput {
+    Request(EngineRequest),
+    Poll,
+    Disconnected,
 }
 
 impl PlayerEngine {
@@ -183,6 +190,10 @@ impl PlayerEngine {
         self.execute(EngineCommand::SeekTo { position_ms })
     }
 
+    pub fn refresh(&self) -> PlayerResult<()> {
+        self.execute(EngineCommand::Refresh)
+    }
+
     pub fn set_repeat_mode(&self, repeat_mode: RepeatMode) -> PlayerResult<()> {
         self.execute(EngineCommand::SetRepeatMode(repeat_mode))
     }
@@ -258,40 +269,41 @@ fn run_engine<B, F>(
     let mut loaded_track_id = None;
 
     loop {
-        let result = match request_rx.recv_timeout(poll_interval) {
-            Ok(EngineRequest {
-                command: EngineCommand::Shutdown,
-                completion,
-            }) => {
-                let _ = event_tx.send(PlaybackEvent::Stopped);
-                let _ = completion.send(Ok(()));
-                break;
-            }
-            Ok(request) => {
-                let result = handle_command(
-                    request.command,
-                    &mut session,
-                    &mut backend,
-                    &mut loaded_track_id,
-                );
-                match result {
-                    Ok(()) => {
-                        publish_snapshot(&mut session, &backend, &event_tx);
-                        let _ = request.completion.send(Ok(()));
-                    }
-                    Err(error) => {
-                        let _ = event_tx.send(PlaybackEvent::Error(error.to_string()));
-                        publish_snapshot(&mut session, &backend, &event_tx);
-                        let _ = request.completion.send(Err(error));
-                    }
+        let result =
+            match receive_engine_input(&request_rx, session.state().is_playing, poll_interval) {
+                EngineInput::Request(EngineRequest {
+                    command: EngineCommand::Shutdown,
+                    completion,
+                }) => {
+                    let _ = event_tx.send(PlaybackEvent::Stopped);
+                    let _ = completion.send(Ok(()));
+                    break;
                 }
-                continue;
-            }
-            Err(RecvTimeoutError::Timeout) => {
-                poll_playback(&mut session, &mut backend, &mut loaded_track_id)
-            }
-            Err(RecvTimeoutError::Disconnected) => break,
-        };
+                EngineInput::Request(request) => {
+                    let result = handle_command(
+                        request.command,
+                        &mut session,
+                        &mut backend,
+                        &mut loaded_track_id,
+                    );
+                    match result {
+                        Ok(()) => {
+                            publish_snapshot(&mut session, &backend, &event_tx);
+                            let _ = request.completion.send(Ok(()));
+                        }
+                        Err(error) => {
+                            let _ = event_tx.send(PlaybackEvent::Error(error.to_string()));
+                            publish_snapshot(&mut session, &backend, &event_tx);
+                            let _ = request.completion.send(Err(error));
+                        }
+                    }
+                    continue;
+                }
+                EngineInput::Poll => {
+                    poll_playback(&mut session, &mut backend, &mut loaded_track_id)
+                }
+                EngineInput::Disconnected => break,
+            };
 
         match result {
             Ok(true) => publish_snapshot(&mut session, &backend, &event_tx),
@@ -300,6 +312,25 @@ fn run_engine<B, F>(
                 let _ = event_tx.send(PlaybackEvent::Error(error.to_string()));
                 publish_snapshot(&mut session, &backend, &event_tx);
             }
+        }
+    }
+}
+
+fn receive_engine_input(
+    request_rx: &Receiver<EngineRequest>,
+    is_playing: bool,
+    poll_interval: Duration,
+) -> EngineInput {
+    if is_playing {
+        match request_rx.recv_timeout(poll_interval) {
+            Ok(request) => EngineInput::Request(request),
+            Err(RecvTimeoutError::Timeout) => EngineInput::Poll,
+            Err(RecvTimeoutError::Disconnected) => EngineInput::Disconnected,
+        }
+    } else {
+        match request_rx.recv() {
+            Ok(request) => EngineInput::Request(request),
+            Err(_) => EngineInput::Disconnected,
         }
     }
 }
@@ -378,6 +409,10 @@ fn handle_command<B: AudioBackend>(
                 .map_err(player_error_from_playback)?;
             backend.seek_to(position_ms)
         }
+        EngineCommand::Refresh => {
+            poll_playback(session, backend, loaded_track_id)?;
+            Ok(())
+        }
         EngineCommand::SetRepeatMode(repeat_mode) => {
             session.set_repeat_mode(repeat_mode);
             Ok(())
@@ -418,15 +453,17 @@ fn poll_playback<B: AudioBackend>(
         return Ok(false);
     }
 
-    if backend.is_finished()? {
-        session
-            .apply(PlaybackCommand::Next)
-            .map_err(player_error_from_playback)?;
-        *loaded_track_id = None;
-        if session.current_track().is_some() {
-            load_current_if_needed(session, backend, loaded_track_id)?;
-            backend.play()?;
-        }
+    if !backend.is_finished()? {
+        return Ok(false);
+    }
+
+    session
+        .apply(PlaybackCommand::Next)
+        .map_err(player_error_from_playback)?;
+    *loaded_track_id = None;
+    if session.current_track().is_some() {
+        load_current_if_needed(session, backend, loaded_track_id)?;
+        backend.play()?;
     }
 
     Ok(true)
@@ -706,6 +743,13 @@ mod tests {
 
         engine.load_queue(vec![track("a")], 0).unwrap();
         engine.play().unwrap();
+        drain_events(&engine);
+        assert!(matches!(
+            engine.recv_event_timeout(Duration::from_millis(30)),
+            Err(RecvTimeoutError::Timeout)
+        ));
+
+        engine.refresh().unwrap();
         wait_for_event(
             &engine,
             |event| matches!(event, PlaybackEvent::PositionChanged(position_ms) if position_ms > 0),
@@ -716,13 +760,40 @@ mod tests {
     }
 
     #[test]
-    fn engine_advances_to_next_track_when_backend_finishes() {
+    fn idle_engine_waits_for_a_command_without_a_poll_deadline() {
+        let (request_tx, request_rx) = mpsc::channel();
+        let (result_tx, result_rx) = mpsc::channel();
+        let waiter = thread::spawn(move || {
+            let input = receive_engine_input(&request_rx, false, Duration::from_millis(5));
+            result_tx
+                .send(matches!(input, EngineInput::Request(_)))
+                .unwrap();
+        });
+
+        assert!(matches!(
+            result_rx.recv_timeout(Duration::from_millis(30)),
+            Err(RecvTimeoutError::Timeout)
+        ));
+
+        let (completion, _completion_rx) = mpsc::channel();
+        request_tx
+            .send(EngineRequest {
+                command: EngineCommand::Pause,
+                completion,
+            })
+            .unwrap();
+        assert!(result_rx.recv_timeout(Duration::from_millis(30)).unwrap());
+        waiter.join().unwrap();
+    }
+
+    #[test]
+    fn engine_refresh_advances_to_next_track_when_backend_finishes() {
         let calls = Calls(Arc::new(Mutex::new(Vec::new())));
         let backend_calls = calls.clone();
         let backend_finished_sequence = Arc::new(Mutex::new(vec![true]));
         let engine = PlayerEngine::spawn_with_options(
             EngineOptions {
-                poll_interval: Duration::from_millis(10),
+                poll_interval: Duration::from_secs(60),
                 ..EngineOptions::default()
             },
             move || {
@@ -737,6 +808,7 @@ mod tests {
 
         engine.load_queue(vec![track("a"), track("b")], 0).unwrap();
         engine.play().unwrap();
+        engine.refresh().unwrap();
         wait_for_call(&calls, "load:b:4.00");
         engine.shutdown().unwrap();
 
@@ -855,5 +927,9 @@ mod tests {
             }
         }
         panic!("missing expected engine event");
+    }
+
+    fn drain_events(engine: &PlayerEngine) {
+        while engine.try_recv_event().is_some() {}
     }
 }

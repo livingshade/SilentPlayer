@@ -883,12 +883,9 @@ pub unsafe extern "C" fn player_app_stop(app: *mut PlayerApp) -> *mut c_char {
                 app.poll_events();
                 app.finish_active_session("stopped").ok();
             }
-            if let Some(engine) = app.engine.as_ref() {
-                engine.load_queue(Vec::new(), 0)?;
-                app.poll_events();
-            }
-        } else {
-            app.engine = None;
+        }
+        if let Some(engine) = app.engine.take() {
+            engine.shutdown()?;
         }
         app.is_playing = false;
         app.position_ms = 0;
@@ -942,6 +939,11 @@ pub unsafe extern "C" fn player_app_seek(app: *mut PlayerApp, position_ms: u64) 
 pub unsafe extern "C" fn player_app_poll(app: *mut PlayerApp) -> *mut c_char {
     ffi_result(|| {
         let app = app_mut(app)?;
+        if app.is_playing {
+            if let Some(engine) = app.engine.as_ref() {
+                engine.refresh()?;
+            }
+        }
         app.poll_events();
         Ok(app.snapshot())
     })
@@ -1664,15 +1666,9 @@ impl PlayerApp {
     }
 
     fn zero_out_library(&mut self) -> PlayerResult<Empty> {
-        self.finish_active_session("library_zero_out")?;
+        self.finish_active_session("library_zero_out").ok();
         self.reset_library_runtime_state();
-        self.store()?.zero_out()?;
-        if self.media_root.exists() {
-            fs::remove_dir_all(&self.media_root)
-                .map_err(|source| PlayerError::io(&self.media_root, source))?;
-        }
-        fs::create_dir_all(&self.media_root)
-            .map_err(|source| PlayerError::io(&self.media_root, source))?;
+        remove_library_storage(&self.db_path, &self.media_root)?;
         Ok(Empty {})
     }
 
@@ -2168,6 +2164,46 @@ impl PlayerApp {
             failures,
         })
     }
+}
+
+fn remove_library_storage(db_path: &Path, media_root: &Path) -> PlayerResult<()> {
+    let mut first_error = None;
+
+    for path in sqlite_database_files(db_path) {
+        if let Err(source) = fs::remove_file(&path) {
+            if source.kind() != std::io::ErrorKind::NotFound && first_error.is_none() {
+                first_error = Some(PlayerError::io(path, source));
+            }
+        }
+    }
+
+    for path in [media_root.to_path_buf(), artwork_cache_root(db_path)] {
+        if let Err(source) = fs::remove_dir_all(&path) {
+            if source.kind() != std::io::ErrorKind::NotFound && first_error.is_none() {
+                first_error = Some(PlayerError::io(path, source));
+            }
+        }
+    }
+
+    match first_error {
+        Some(error) => Err(error),
+        None => Ok(()),
+    }
+}
+
+fn sqlite_database_files(db_path: &Path) -> [PathBuf; 4] {
+    [
+        db_path.to_path_buf(),
+        sqlite_companion_path(db_path, "-wal"),
+        sqlite_companion_path(db_path, "-shm"),
+        sqlite_companion_path(db_path, "-journal"),
+    ]
+}
+
+fn sqlite_companion_path(db_path: &Path, suffix: &str) -> PathBuf {
+    let mut path = db_path.as_os_str().to_os_string();
+    path.push(suffix);
+    path.into()
 }
 
 fn ffi_result<T, F>(operation: F) -> *mut c_char
@@ -2874,6 +2910,7 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     struct UnloadedBackend;
+    struct LoadedBackend;
 
     impl AudioBackend for UnloadedBackend {
         fn load(&mut self, _track: &Track, _settings: AudioRenderSettings) -> PlayerResult<()> {
@@ -2901,6 +2938,32 @@ mod tests {
         }
     }
 
+    impl AudioBackend for LoadedBackend {
+        fn load(&mut self, _track: &Track, _settings: AudioRenderSettings) -> PlayerResult<()> {
+            Ok(())
+        }
+
+        fn play(&mut self) -> PlayerResult<()> {
+            Ok(())
+        }
+
+        fn pause(&mut self) -> PlayerResult<()> {
+            Ok(())
+        }
+
+        fn seek_to(&mut self, _position_ms: u64) -> PlayerResult<()> {
+            Ok(())
+        }
+
+        fn set_gain(&mut self, _gain: player_core::GainDecision) -> PlayerResult<()> {
+            Ok(())
+        }
+
+        fn position_ms(&self) -> PlayerResult<u64> {
+            Ok(250)
+        }
+    }
+
     #[test]
     fn stopping_an_initialized_engine_without_a_track_is_idempotent() {
         let db_path = temp_db_path("stop_without_track");
@@ -2916,10 +2979,100 @@ mod tests {
         assert_ok(&stopped);
         assert_eq!(stopped["data"]["is_playing"], false);
         assert!(stopped["data"]["current_track"].is_null());
+        assert!(unsafe { (*app).engine.is_none() });
 
         unsafe { player_app_destroy(app) };
         fs::remove_file(db_path).ok();
         fs::remove_dir_all(media_root).ok();
+    }
+
+    #[test]
+    fn stopping_active_playback_releases_the_engine() {
+        let db_path = temp_db_path("stop_active_engine");
+        let media_root = temp_dir("stop_active_engine_media");
+        fs::create_dir_all(&media_root).unwrap();
+        let app = create_app(&db_path, &media_root);
+        let mut track = Track::from_path(media_root.join("active.ogg"));
+        track.title = "Active".to_owned();
+        track.set_primary_audio_hash("active-stop-hash");
+        LibraryStore::open(&db_path)
+            .unwrap()
+            .upsert_track(&track)
+            .unwrap();
+
+        let engine =
+            PlayerEngine::spawn(NormalizationSettings::default(), || Ok(LoadedBackend)).unwrap();
+        engine
+            .play_queue(vec![track.clone()], 0, RepeatMode::Off, false)
+            .unwrap();
+        unsafe {
+            (*app).queue_tracks = track_dtos(std::slice::from_ref(&track)).unwrap();
+            (*app).engine = Some(engine);
+            (*app).poll_events();
+            assert!((*app).current_track.is_some());
+        }
+
+        let stopped = unsafe { call_json(player_app_stop(app)) };
+        assert_ok(&stopped);
+        assert_eq!(stopped["data"]["is_playing"], false);
+        assert!(stopped["data"]["current_track"].is_null());
+        assert!(unsafe { (*app).engine.is_none() });
+
+        unsafe { player_app_destroy(app) };
+        fs::remove_file(db_path).ok();
+        fs::remove_dir_all(media_root).ok();
+    }
+
+    #[test]
+    fn zero_out_removes_an_unopenable_legacy_database_and_all_managed_files() {
+        let library_root = temp_dir("zero_out_legacy_library");
+        let db_path = library_root.join("player_library.sqlite3");
+        let db_wal_path = PathBuf::from(format!("{}-wal", db_path.display()));
+        let db_shm_path = PathBuf::from(format!("{}-shm", db_path.display()));
+        let db_journal_path = PathBuf::from(format!("{}-journal", db_path.display()));
+        let media_root = library_root.join("Music");
+        let artwork_root = library_root.join("Artwork");
+        let managed_audio = media_root.join("Album").join("track.mp3");
+        let cached_artwork = artwork_root.join("Assets").join("cover.png");
+
+        fs::create_dir_all(managed_audio.parent().unwrap()).unwrap();
+        fs::create_dir_all(cached_artwork.parent().unwrap()).unwrap();
+        fs::write(
+            &db_path,
+            b"legacy database that the current schema cannot open",
+        )
+        .unwrap();
+        fs::write(&db_wal_path, b"legacy wal").unwrap();
+        fs::write(&db_shm_path, b"legacy shm").unwrap();
+        fs::write(&db_journal_path, b"legacy journal").unwrap();
+        fs::write(&managed_audio, b"managed audio").unwrap();
+        fs::write(&cached_artwork, b"cached artwork").unwrap();
+
+        let app = create_app(&db_path, &media_root);
+        let engine =
+            PlayerEngine::spawn(NormalizationSettings::default(), || Ok(UnloadedBackend)).unwrap();
+        unsafe {
+            (*app).engine = Some(engine);
+        }
+
+        let zeroed = unsafe { call_json(player_app_zero_out_library(app)) };
+        assert_ok(&zeroed);
+        assert!(unsafe { (*app).engine.is_none() });
+        assert!(!db_path.exists());
+        assert!(!db_wal_path.exists());
+        assert!(!db_shm_path.exists());
+        assert!(!db_journal_path.exists());
+        assert!(!media_root.exists());
+        assert!(!artwork_root.exists());
+
+        assert!(LibraryStore::open(&db_path)
+            .unwrap()
+            .tracks()
+            .unwrap()
+            .is_empty());
+
+        unsafe { player_app_destroy(app) };
+        fs::remove_dir_all(library_root).ok();
     }
 
     #[test]
