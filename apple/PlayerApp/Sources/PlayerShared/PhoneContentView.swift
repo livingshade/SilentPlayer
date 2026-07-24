@@ -385,6 +385,14 @@ public struct PhoneContentView: View {
             }
 
             sortMenu
+
+            Divider()
+
+            Button(role: .destructive) {
+                isZeroOutConfirmationPresented = true
+            } label: {
+                Label("Zero Out Library", systemImage: "trash")
+            }
         } label: {
             Label("Actions", systemImage: "ellipsis.circle")
         }
