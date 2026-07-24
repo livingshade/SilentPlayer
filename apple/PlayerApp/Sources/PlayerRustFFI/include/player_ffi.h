@@ -27,6 +27,7 @@ char *player_app_user_data(PlayerApp *app);
 char *player_app_play_library(PlayerApp *app);
 char *player_app_play_path(PlayerApp *app, const char *path);
 char *player_app_play_queue(PlayerApp *app, const char *paths_json, const char *start_path);
+char *player_app_play_playlist(PlayerApp *app, const char *name, const char *start_path, bool shuffle);
 char *player_app_pause(PlayerApp *app);
 char *player_app_resume(PlayerApp *app);
 char *player_app_audio_interruption_began(PlayerApp *app);

@@ -439,6 +439,29 @@ public final class RustPlayerClient: @unchecked Sendable {
         }
     }
 
+    public func playPlaylist(
+        name: String,
+        startPath: String? = nil,
+        shuffle: Bool
+    ) throws -> PlaybackSnapshot {
+        try sync {
+            try name.withCString { nameValue in
+                if let startPath {
+                    return try startPath.withCString { startPathValue in
+                        try decode(
+                            player_app_play_playlist(app, nameValue, startPathValue, shuffle),
+                            as: PlaybackSnapshotDTO.self
+                        ).model
+                    }
+                }
+                return try decode(
+                    player_app_play_playlist(app, nameValue, nil, shuffle),
+                    as: PlaybackSnapshotDTO.self
+                ).model
+            }
+        }
+    }
+
     public func pause() throws -> PlaybackSnapshot {
         try sync {
             try decode(player_app_pause(app), as: PlaybackSnapshotDTO.self).model

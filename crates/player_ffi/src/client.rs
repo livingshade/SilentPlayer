@@ -15,15 +15,15 @@ use crate::{
     player_app_favorites, player_app_history, player_app_import_files, player_app_import_folder,
     player_app_import_library, player_app_library, player_app_library_page,
     player_app_move_playlist_track, player_app_next, player_app_pause, player_app_play_library,
-    player_app_play_path, player_app_play_queue, player_app_playlist_tracks, player_app_playlists,
-    player_app_poll, player_app_previous, player_app_queue, player_app_remove_from_playlist,
-    player_app_rename_playlist, player_app_resume, player_app_search, player_app_seek,
-    player_app_set_album_artwork, player_app_set_favorite, player_app_set_playlist_artwork,
-    player_app_set_repeat_mode, player_app_set_shuffle, player_app_set_track_artwork,
-    player_app_set_track_lyrics, player_app_set_track_metadata, player_app_set_track_notes,
-    player_app_set_track_rating, player_app_sort_playlist, player_app_stop,
-    player_app_track_details, player_app_user_data, player_app_zero_out_library,
-    player_string_free, PlayerApp,
+    player_app_play_path, player_app_play_playlist, player_app_play_queue,
+    player_app_playlist_tracks, player_app_playlists, player_app_poll, player_app_previous,
+    player_app_queue, player_app_remove_from_playlist, player_app_rename_playlist,
+    player_app_resume, player_app_search, player_app_seek, player_app_set_album_artwork,
+    player_app_set_favorite, player_app_set_playlist_artwork, player_app_set_repeat_mode,
+    player_app_set_shuffle, player_app_set_track_artwork, player_app_set_track_lyrics,
+    player_app_set_track_metadata, player_app_set_track_notes, player_app_set_track_rating,
+    player_app_sort_playlist, player_app_stop, player_app_track_details, player_app_user_data,
+    player_app_zero_out_library, player_string_free, PlayerApp,
 };
 
 /// Safe, typed-lifetime owner for the application service exposed by this crate.
@@ -151,6 +151,26 @@ impl SilentAppClient {
         )?;
         let start_path = c_path(start_path.as_ref())?;
         self.call(|app| unsafe { player_app_play_queue(app, paths.as_ptr(), start_path.as_ptr()) })
+    }
+
+    pub fn play_playlist(
+        &mut self,
+        name: &str,
+        start_path: Option<&Path>,
+        shuffle: bool,
+    ) -> ClientResult {
+        let name = CString::new(name)?;
+        let start_path = start_path.map(c_path).transpose()?;
+        self.call(|app| unsafe {
+            player_app_play_playlist(
+                app,
+                name.as_ptr(),
+                start_path
+                    .as_ref()
+                    .map_or(std::ptr::null(), |path| path.as_ptr()),
+                shuffle,
+            )
+        })
     }
 
     pub fn pause(&mut self) -> ClientResult {

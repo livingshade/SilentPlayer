@@ -72,6 +72,10 @@ fn cli_contracts() -> BTreeMap<&'static str, &'static str> {
         ),
         ("player_app_play_path", "silent --cli playback shell: play"),
         ("player_app_play_queue", "silent --cli playback shell: load"),
+        (
+            "player_app_play_playlist",
+            "silent --cli playback shell: play-playlist",
+        ),
         ("player_app_pause", "silent --cli playback shell: pause"),
         ("player_app_resume", "silent --cli playback shell: resume"),
         (

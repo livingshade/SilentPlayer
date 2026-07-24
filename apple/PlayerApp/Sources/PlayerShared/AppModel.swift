@@ -1147,6 +1147,36 @@ public final class AppModel: ObservableObject {
         await play(firstTrack)
     }
 
+    public func playPlaylist(
+        _ playlist: PlaylistItem,
+        startingAt track: TrackItem? = nil,
+        shuffled: Bool
+    ) async {
+        guard !isAudioInterrupted else {
+            status = "Wait for the audio interruption to end"
+            return
+        }
+        guard playlist.trackCount > 0 else {
+            status = "\(playlist.name) is empty"
+            return
+        }
+        await runBusy(nil) { [self] in
+            try playbackSystemIntegration?.prepareForPlayback()
+            let snapshot = try await invoke {
+                try $0.playPlaylist(
+                    name: playlist.name,
+                    startPath: track?.path,
+                    shuffle: shuffled
+                )
+            }
+            selectedTrack = snapshot.currentTrack
+            apply(snapshot: snapshot, fallbackTrack: track)
+            status = shuffled
+                ? "Shuffling \(playlist.name)"
+                : "Playing \(playlist.name)"
+        }
+    }
+
     public func play(_ track: TrackItem) async {
         guard !isAudioInterrupted else {
             status = "Wait for the audio interruption to end"

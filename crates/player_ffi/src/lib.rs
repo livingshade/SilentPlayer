@@ -682,6 +682,46 @@ pub unsafe extern "C" fn player_app_play_queue(
     })
 }
 
+#[no_mangle]
+pub unsafe extern "C" fn player_app_play_playlist(
+    app: *mut PlayerApp,
+    name: *const c_char,
+    start_path: *const c_char,
+    shuffle: bool,
+) -> *mut c_char {
+    ffi_result(|| {
+        let app = app_mut(app)?;
+        let name = c_string(name)?;
+        let tracks = app
+            .store()?
+            .playlist_tracks(&name)?
+            .into_iter()
+            .map(|entry| entry.track)
+            .collect::<Vec<_>>();
+        if tracks.is_empty() {
+            return Err(PlayerError::invalid_input(format!(
+                "playlist is empty: {name}"
+            )));
+        }
+        let start_index = if start_path.is_null() {
+            0
+        } else {
+            let start_path = PathBuf::from(c_string(start_path)?);
+            tracks
+                .iter()
+                .position(|track| track.path == start_path)
+                .ok_or_else(|| {
+                    PlayerError::invalid_input(format!(
+                        "playlist start track is not in {name}: {}",
+                        start_path.display()
+                    ))
+                })?
+        };
+        app.shuffle_enabled = shuffle;
+        app.play_queue_tracks(tracks, start_index)
+    })
+}
+
 fn library_playback_plan(
     store: &LibraryStore,
     db_path: &Path,
@@ -3404,6 +3444,90 @@ mod tests {
                 third_path.to_string_lossy().into_owned()
             ]
         );
+
+        unsafe { player_app_destroy(app) };
+        fs::remove_file(db_path).ok();
+        fs::remove_dir_all(media_root).ok();
+    }
+
+    #[test]
+    fn app_plays_only_the_requested_playlist_with_explicit_modes() {
+        let db_path = temp_db_path("play_playlist");
+        let media_root = temp_dir("play_playlist_media");
+        fs::create_dir_all(&media_root).unwrap();
+        let first_path = media_root.join("first.ogg");
+        let second_path = media_root.join("second.ogg");
+        let outside_path = media_root.join("outside.ogg");
+        let app = create_app(&db_path, &media_root);
+
+        {
+            let mut first = Track::from_path(first_path.clone());
+            first.title = "First".to_owned();
+            first.set_primary_audio_hash("playlist-first");
+            let mut second = Track::from_path(second_path.clone());
+            second.title = "Second".to_owned();
+            second.set_primary_audio_hash("playlist-second");
+            let mut outside = Track::from_path(outside_path);
+            outside.title = "Outside".to_owned();
+            outside.set_primary_audio_hash("playlist-outside");
+
+            let mut store = LibraryStore::open(&db_path).unwrap();
+            store.upsert_tracks(&[first, second, outside]).unwrap();
+            store.add_playlist_track("Phone Mix", &first_path).unwrap();
+            store.add_playlist_track("Phone Mix", &second_path).unwrap();
+            store.create_playlist("Empty").unwrap();
+        }
+
+        let engine =
+            PlayerEngine::spawn(NormalizationSettings::default(), || Ok(UnloadedBackend)).unwrap();
+        unsafe {
+            (*app).engine = Some(engine);
+        }
+
+        let shuffled = unsafe {
+            call_json(player_app_play_playlist(
+                app,
+                c_string_arg("Phone Mix").as_ptr(),
+                c_string_arg(&second_path).as_ptr(),
+                true,
+            ))
+        };
+        assert_ok(&shuffled);
+        assert_eq!(shuffled["data"]["queue_len"], 2);
+        assert_eq!(
+            shuffled["data"]["current_track"]["path"],
+            second_path.to_string_lossy().as_ref()
+        );
+        assert_eq!(shuffled["data"]["shuffle_enabled"], true);
+
+        let sequential = unsafe {
+            call_json(player_app_play_playlist(
+                app,
+                c_string_arg("Phone Mix").as_ptr(),
+                ptr::null(),
+                false,
+            ))
+        };
+        assert_ok(&sequential);
+        assert_eq!(
+            sequential["data"]["current_track"]["path"],
+            first_path.to_string_lossy().as_ref()
+        );
+        assert_eq!(sequential["data"]["shuffle_enabled"], false);
+
+        let empty = unsafe {
+            call_json(player_app_play_playlist(
+                app,
+                c_string_arg("Empty").as_ptr(),
+                ptr::null(),
+                false,
+            ))
+        };
+        assert_eq!(empty["ok"], false);
+        assert!(empty["error"]
+            .as_str()
+            .unwrap()
+            .contains("playlist is empty: Empty"));
 
         unsafe { player_app_destroy(app) };
         fs::remove_file(db_path).ok();

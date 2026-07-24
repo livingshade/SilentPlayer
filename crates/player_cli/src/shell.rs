@@ -81,6 +81,10 @@ fn run_shell_command(
             let (paths, first) = resolve_queue(client, &args)?;
             context.emit(&client.play_queue(&paths, &first)?)
         }
+        "play-playlist" => {
+            let (name, shuffle) = parse_playlist_play(args)?;
+            context.emit(&client.play_playlist(&name, None, shuffle)?)
+        }
         "pause" => {
             ensure_no_args(&args, "pause")?;
             context.emit(&client.pause()?)
@@ -276,6 +280,7 @@ fn print_shell_help() {
 Playback shell commands:
   play <path-or-view-id>              Play the selected track in library order
   play-all                            Play the full library from the beginning
+  play-playlist <name> [shuffle]      Play one playlist in order or shuffled
   load <selector>...                  Load and play an explicit queue
   pause | resume | stop
   next | previous
@@ -288,6 +293,14 @@ Playback shell commands:
   lifecycle output-disconnected
   help | quit"
     );
+}
+
+fn parse_playlist_play(args: Vec<String>) -> CliResult<(String, bool)> {
+    match args.as_slice() {
+        [name] => Ok((name.clone(), false)),
+        [name, mode] if mode == "shuffle" => Ok((name.clone(), true)),
+        _ => Err(CliError::usage("play-playlist requires <name> [shuffle]")),
+    }
 }
 
 #[cfg(test)]
@@ -313,5 +326,18 @@ mod tests {
         assert!(!parse_on_off("off").unwrap());
         assert!(parse_on_off("true").is_err());
         assert!(parse_on_off("1").is_err());
+    }
+
+    #[test]
+    fn playlist_play_parser_supports_ordered_and_shuffle_modes() {
+        assert_eq!(
+            parse_playlist_play(vec!["Road Trip".to_owned()]).unwrap(),
+            ("Road Trip".to_owned(), false)
+        );
+        assert_eq!(
+            parse_playlist_play(vec!["Road Trip".to_owned(), "shuffle".to_owned()]).unwrap(),
+            ("Road Trip".to_owned(), true)
+        );
+        assert!(parse_playlist_play(vec!["Road Trip".to_owned(), "random".to_owned()]).is_err());
     }
 }
