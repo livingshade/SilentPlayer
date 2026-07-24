@@ -121,6 +121,15 @@ final class IOSNowPlayingArtworkFactoryTests: XCTestCase {
 }
 #endif
 
+final class PhoneDisplayTextTests: XCTestCase {
+    func testCollapsesImportedLineBreaksAndWhitespace() {
+        XCTAssertEqual(
+            PhoneDisplayText.compact("  A title\nwith\tmetadata   spacing  "),
+            "A title with metadata spacing"
+        )
+    }
+}
+
 @MainActor
 final class AppModelStartupTests: XCTestCase {
     func testStartupFailureBecomesVisibleStateInsteadOfCrashing() async {

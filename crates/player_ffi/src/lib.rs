@@ -835,22 +835,27 @@ pub unsafe extern "C" fn player_app_stop(app: *mut PlayerApp) -> *mut c_char {
     ffi_result(|| {
         let app = app_mut(app)?;
         app.playback_lifecycle.user_stopped_playback();
-        if let Some(engine) = app.engine.as_ref() {
-            engine.pause()?;
-        }
-        if app.engine.is_some() {
-            app.poll_events();
-            app.finish_active_session("stopped").ok();
-        }
-        if let Some(engine) = app.engine.as_ref() {
-            engine.load_queue(Vec::new(), 0)?;
-            app.poll_events();
+        if app.current_track.is_some() {
+            if let Some(engine) = app.engine.as_ref() {
+                engine.pause()?;
+            }
+            if app.engine.is_some() {
+                app.poll_events();
+                app.finish_active_session("stopped").ok();
+            }
+            if let Some(engine) = app.engine.as_ref() {
+                engine.load_queue(Vec::new(), 0)?;
+                app.poll_events();
+            }
+        } else {
+            app.engine = None;
         }
         app.is_playing = false;
         app.position_ms = 0;
         app.current_track = None;
         app.queue_tracks.clear();
         app.queue_current_index = None;
+        app.last_error = None;
         Ok(app.snapshot())
     })
 }
@@ -2823,9 +2828,59 @@ const ALBUM_ARTWORK_STEMS: &[&str] = &["cover", "folder", "front", "album"];
 #[cfg(test)]
 mod tests {
     use super::*;
+    use player_engine::{AudioBackend, AudioRenderSettings};
     use serde_json::Value;
     use std::fs;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    struct UnloadedBackend;
+
+    impl AudioBackend for UnloadedBackend {
+        fn load(&mut self, _track: &Track, _settings: AudioRenderSettings) -> PlayerResult<()> {
+            Ok(())
+        }
+
+        fn play(&mut self) -> PlayerResult<()> {
+            Ok(())
+        }
+
+        fn pause(&mut self) -> PlayerResult<()> {
+            Err(PlayerError::audio("no track loaded"))
+        }
+
+        fn seek_to(&mut self, _position_ms: u64) -> PlayerResult<()> {
+            Ok(())
+        }
+
+        fn set_gain(&mut self, _gain: player_core::GainDecision) -> PlayerResult<()> {
+            Ok(())
+        }
+
+        fn position_ms(&self) -> PlayerResult<u64> {
+            Ok(0)
+        }
+    }
+
+    #[test]
+    fn stopping_an_initialized_engine_without_a_track_is_idempotent() {
+        let db_path = temp_db_path("stop_without_track");
+        let media_root = temp_dir("stop_without_track_media");
+        let app = create_app(&db_path, &media_root);
+        let engine =
+            PlayerEngine::spawn(NormalizationSettings::default(), || Ok(UnloadedBackend)).unwrap();
+        unsafe {
+            (*app).engine = Some(engine);
+        }
+
+        let stopped = unsafe { call_json(player_app_stop(app)) };
+        assert_ok(&stopped);
+        assert_eq!(stopped["data"]["is_playing"], false);
+        assert!(stopped["data"]["current_track"].is_null());
+
+        unsafe { player_app_destroy(app) };
+        fs::remove_file(db_path).ok();
+        fs::remove_dir_all(media_root).ok();
+    }
 
     #[test]
     fn app_import_search_collections_and_history_roundtrip() {

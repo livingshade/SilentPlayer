@@ -39,21 +39,9 @@ public struct PhoneContentView: View {
                         }
                         .tag(PhoneTab.library)
 
-                    searchTab
-                        .tabItem {
-                            Label("Search", systemImage: "magnifyingglass")
-                        }
-                        .tag(PhoneTab.search)
-
-                    playlistsTab
-                        .tabItem {
-                            Label("Playlists", systemImage: "music.note.house")
-                        }
-                        .tag(PhoneTab.playlists)
-
                     nowPlayingTab
                         .tabItem {
-                            Label("Now", systemImage: "play.circle")
+                            Label("Player", systemImage: "play.circle")
                         }
                         .tag(PhoneTab.nowPlaying)
                 }
@@ -62,25 +50,6 @@ public struct PhoneContentView: View {
             if model.isBusy {
                 busyOverlay
             }
-        }
-        .sheet(isPresented: $model.isViewEditPresented) {
-            PhoneTrackEditSheet(
-                model: model,
-                chooseArtwork: { presentFileImporter(.editArtwork) },
-                chooseLyrics: { presentFileImporter(.editLyrics) }
-            )
-        }
-        .sheet(isPresented: $model.isPlaylistCreatePresented) {
-            PhonePlaylistCreateSheet(model: model)
-        }
-        .sheet(isPresented: $model.isPlaylistPickerPresented) {
-            PhonePlaylistPickerSheet(model: model)
-        }
-        .sheet(isPresented: $model.isPlaylistSettingsPresented) {
-            PhonePlaylistSettingsSheet(
-                model: model,
-                chooseArtwork: { presentFileImporter(.playlistSettingsArtwork) }
-            )
         }
         .background(
             PhoneDocumentPickerBridge(
@@ -165,9 +134,9 @@ public struct PhoneContentView: View {
                         Button {
                             Task { await model.playEntireLibrary() }
                         } label: {
-                            Label("Play All Library", systemImage: "play.fill")
+                            Label("Play All \(model.libraryScope.title)", systemImage: "play.fill")
                         }
-                        .disabled(model.isBusy)
+                        .disabled(model.tracks.isEmpty || model.isBusy)
 
                         libraryActionsMenu
                     }
@@ -287,7 +256,7 @@ public struct PhoneContentView: View {
     private var nowPlayingTab: some View {
         NavigationStack {
             ScrollView {
-                VStack(spacing: 18) {
+                VStack(spacing: 22) {
                     let nowDetails = details(for: model.nowPlaying)
                     PhoneArtworkImage(
                         artworkURL: nowDetails?.artworkURL ?? model.nowPlaying?.artworkURL,
@@ -298,45 +267,26 @@ public struct PhoneContentView: View {
                     .padding(.top, 20)
 
                     VStack(spacing: 6) {
-                        Text(model.nowPlaying?.title ?? "Nothing Playing")
+                        Text(model.nowPlaying?.phoneDisplayTitle ?? "Nothing Playing")
                             .font(.title2.weight(.semibold))
                             .multilineTextAlignment(.center)
-                            .lineLimit(2)
-                        Text(model.nowPlaying?.subtitle ?? model.status)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .layoutPriority(1)
+                        Text(model.nowPlaying?.phoneDisplaySubtitle ?? model.status.phoneCompacted)
                             .font(.callout)
                             .foregroundStyle(.secondary)
                             .multilineTextAlignment(.center)
-                            .lineLimit(2)
+                            .fixedSize(horizontal: false, vertical: true)
                     }
                     .padding(.horizontal)
 
                     playerControls
-                        .padding(.horizontal)
-
-                    if let track = model.nowPlaying {
-                        PhoneTrackActionPanel(
-                            model: model,
-                            track: track,
-                            requestAddToPlaylist: { presentPlaylistPicker(for: track) },
-                            requestTrackCover: { presentFileImporter(.trackCover(track)) },
-                            requestAlbumCover: { presentFileImporter(.albumCover(track)) },
-                            exportView: { materialize(track) }
-                        )
-                        .padding(.horizontal)
-                    }
-
-                    PhoneLyricsNotesPanel(details: nowDetails)
                         .padding(.horizontal)
                 }
                 .padding(.bottom, 24)
             }
             .navigationTitle("Now Playing")
             .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
-                    libraryActionsMenu
-                }
-            }
         }
     }
 
@@ -351,65 +301,40 @@ public struct PhoneContentView: View {
 
     private func trackList(scopeTitle: String) -> some View {
         List {
-            Section {
-                ForEach(model.tracks) { track in
-                    HStack(spacing: 0) {
-                        Button {
-                            play(track)
-                        } label: {
-                            PhoneTrackRow(
-                                track: track,
-                                isCurrent: model.nowPlaying?.id == track.id,
-                                isPlaying: model.nowPlaying?.id == track.id && model.isPlaying
-                            )
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                        }
-                        .buttonStyle(.plain)
-                        .accessibilityLabel("Play \(track.title)")
-                        .accessibilityHint("Starts this track and queues the visible songs")
-
-                        NavigationLink {
-                            PhoneTrackDetailView(
-                                model: model,
-                                track: track,
-                                requestAddToPlaylist: { presentPlaylistPicker(for: $0) },
-                                requestTrackCover: { presentFileImporter(.trackCover($0)) },
-                                requestAlbumCover: { presentFileImporter(.albumCover($0)) },
-                                exportView: { materialize($0) }
-                            )
-                        } label: {
-                            Image(systemName: "chevron.right")
-                                .font(.caption.weight(.semibold))
-                                .foregroundStyle(.tertiary)
-                                .frame(width: 44, height: 44)
-                                .contentShape(Rectangle())
-                        }
-                        .buttonStyle(.plain)
-                        .accessibilityLabel("Details for \(track.title)")
-                    }
-                    .swipeActions(edge: .leading) {
-                        Button {
-                            play(track)
-                        } label: {
-                            Label("Play", systemImage: "play.fill")
-                        }
-                        .tint(.green)
-                    }
-                    .swipeActions(edge: .trailing) {
-                        Button {
-                            model.selectTrack(id: track.id)
-                            Task { await model.setSelectedFavorite(true) }
-                        } label: {
-                            Label("Favorite", systemImage: "heart")
-                        }
-                        .tint(.pink)
-                    }
-                    .contextMenu {
-                        trackContextMenu(for: track)
-                    }
+            ForEach(model.tracks) { track in
+                Button {
+                    play(track)
+                } label: {
+                    PhoneTrackRow(
+                        track: track,
+                        isCurrent: model.nowPlaying?.id == track.id,
+                        isPlaying: model.nowPlaying?.id == track.id && model.isPlaying
+                    )
+                    .frame(maxWidth: .infinity, alignment: .leading)
                 }
-            } header: {
-                Text(scopeTitle)
+                .buttonStyle(.plain)
+                .accessibilityLabel("Play \(track.phoneDisplayTitle)")
+                .accessibilityHint("Starts this track and queues the visible songs")
+                .swipeActions(edge: .leading) {
+                    Button {
+                        play(track)
+                    } label: {
+                        Label("Play", systemImage: "play.fill")
+                    }
+                    .tint(.green)
+                }
+                .swipeActions(edge: .trailing) {
+                    Button {
+                        model.selectTrack(id: track.id)
+                        Task { await model.setSelectedFavorite(true) }
+                    } label: {
+                        Label("Favorite", systemImage: "heart")
+                    }
+                    .tint(.pink)
+                }
+                .contextMenu {
+                    trackContextMenu(for: track)
+                }
             }
         }
         .overlay {
@@ -440,36 +365,9 @@ public struct PhoneContentView: View {
             Divider()
 
             Button {
-                Task { await prepareLibraryExport() }
-            } label: {
-                Label("Export Library", systemImage: "square.and.arrow.up")
-            }
-
-            Button {
                 presentFileImporter(.libraryPackage)
             } label: {
                 Label("Import Library", systemImage: "square.and.arrow.down")
-            }
-
-            Button(role: .destructive) {
-                isZeroOutConfirmationPresented = true
-            } label: {
-                Label("Zero Out Library", systemImage: "trash")
-            }
-
-            Divider()
-
-            Button {
-                Task { await model.analyzeLibrary() }
-            } label: {
-                Label("Analyze Loudness", systemImage: "waveform")
-            }
-            .disabled(model.isAnalyzing)
-
-            Button {
-                Task { await model.auditDatabase() }
-            } label: {
-                Label("Audit Database", systemImage: "checklist.checked")
             }
 
             Divider()
@@ -516,13 +414,15 @@ public struct PhoneContentView: View {
                     )
 
                     VStack(alignment: .leading, spacing: 2) {
-                        Text(track.title)
+                        Text(track.phoneDisplayTitle)
                             .font(.subheadline.weight(.semibold))
-                            .lineLimit(1)
-                        Text(model.queueStatusText)
+                            .lineLimit(2)
+                            .layoutPriority(1)
+                        Text(track.phoneDisplaySubtitle)
                             .font(.caption2)
                             .foregroundStyle(.secondary)
                             .lineLimit(1)
+                            .layoutPriority(1)
                     }
 
                     Spacer()
@@ -571,10 +471,6 @@ public struct PhoneContentView: View {
                     .font(.caption.monospacedDigit())
                     .foregroundStyle(.secondary)
                 Spacer()
-                Text(model.normalizeText)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
             }
 
             HStack(spacing: 28) {
@@ -624,7 +520,7 @@ public struct PhoneContentView: View {
                 if let progress = model.libraryProgress {
                     ProgressView(value: progress)
                         .progressViewStyle(.linear)
-                        .frame(width: 220)
+                        .frame(maxWidth: .infinity)
                 } else {
                     ProgressView()
                         .controlSize(.large)
@@ -632,10 +528,12 @@ public struct PhoneContentView: View {
                 Text(model.libraryStatus.isEmpty ? model.status : model.libraryStatus)
                     .font(.callout.weight(.medium))
                     .multilineTextAlignment(.center)
-                    .lineLimit(3)
+                    .lineLimit(5)
+                    .fixedSize(horizontal: false, vertical: true)
             }
             .padding(20)
-            .frame(maxWidth: 280)
+            .frame(maxWidth: 320)
+            .padding(.horizontal, 24)
             .background(.regularMaterial)
             .clipShape(RoundedRectangle(cornerRadius: 12))
         }
@@ -703,39 +601,6 @@ public struct PhoneContentView: View {
             Task { await model.setSelectedFavorite(true) }
         } label: {
             Label("Favorite", systemImage: "heart")
-        }
-
-        Button {
-            model.selectTrack(id: track.id)
-            presentPlaylistPicker(for: track)
-        } label: {
-            Label("Add to Playlist", systemImage: "text.badge.plus")
-        }
-
-        Button {
-            model.selectTrack(id: track.id)
-            model.presentViewEdit()
-        } label: {
-            Label("Edit View", systemImage: "pencil")
-        }
-
-        Button {
-            presentFileImporter(.trackCover(track))
-        } label: {
-            Label("Set Track Cover", systemImage: "photo")
-        }
-
-        Button {
-            presentFileImporter(.albumCover(track))
-        } label: {
-            Label("Set Album Cover", systemImage: "rectangle.stack.badge.plus")
-        }
-        .disabled(!track.hasAlbumIdentity)
-
-        Button {
-            materialize(track)
-        } label: {
-            Label("Export View", systemImage: "square.and.arrow.up")
         }
     }
 
@@ -912,8 +777,6 @@ public struct PhoneContentView: View {
 
 private enum PhoneTab: Hashable {
     case library
-    case search
-    case playlists
     case nowPlaying
 }
 
@@ -2077,28 +1940,39 @@ private struct PhoneTrackRow: View {
             )
 
             VStack(alignment: .leading, spacing: 3) {
-                Text(track.title)
+                Text(track.phoneDisplayTitle)
                     .font(.body.weight(isCurrent ? .semibold : .regular))
-                    .lineLimit(1)
-                Text(track.subtitle)
+                    .fixedSize(horizontal: false, vertical: true)
+                Text(track.phoneDisplaySubtitle)
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                    .lineLimit(1)
+                    .fixedSize(horizontal: false, vertical: true)
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .layoutPriority(1)
 
-            Spacer()
-
-            VStack(alignment: .trailing, spacing: 4) {
-                Text(track.durationText)
-                    .font(.caption2.monospacedDigit())
-                    .foregroundStyle(.secondary)
-                Label(track.ratingText, systemImage: track.rating == nil ? "star" : "star.fill")
-                    .font(.caption2)
-                    .foregroundStyle(track.rating == nil ? Color.secondary : Color.accentColor)
-                    .labelStyle(.titleAndIcon)
-            }
+            Text(track.durationText)
+                .font(.caption2.monospacedDigit())
+                .foregroundStyle(.secondary)
+                .fixedSize()
         }
         .padding(.vertical, 4)
+    }
+}
+
+private extension String {
+    var phoneCompacted: String {
+        PhoneDisplayText.compact(self)
+    }
+}
+
+private extension TrackItem {
+    var phoneDisplayTitle: String {
+        title.phoneCompacted
+    }
+
+    var phoneDisplaySubtitle: String {
+        subtitle.phoneCompacted
     }
 }
 
