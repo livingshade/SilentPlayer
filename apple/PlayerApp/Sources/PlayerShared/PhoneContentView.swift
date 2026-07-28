@@ -11,10 +11,25 @@ private extension UTType {
     )
 }
 
+private enum PhoneRoute: Hashable {
+    case playlist(Int64)
+
+    var playlistID: Int64 {
+        switch self {
+        case .playlist(let id):
+            return id
+        }
+    }
+}
+
 public struct PhoneContentView: View {
     @ObservedObject private var model: AppModel
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
-    @State private var selectedTab: PhoneTab = .library
+    @Environment(\.scenePhase) private var scenePhase
+    @SceneStorage("PhoneContentView.sceneSession.v1") private var sceneSession = ""
+    @State private var selectedTab: PhonePresentationTab = .library
+    @State private var playlistPath: [PhoneRoute] = []
+    @State private var isRestoringPresentation = true
     @State private var fileImportPurpose: PhoneFileImportPurpose?
     @State private var isFileImporterPresented = false
     @State private var pendingLibraryExportURL: URL?
@@ -33,25 +48,27 @@ public struct PhoneContentView: View {
         ZStack {
             if let startupError = model.startupError {
                 startupFailureView(message: startupError)
+            } else if isRestoringPresentation {
+                restorationPlaceholder
             } else {
                 TabView(selection: $selectedTab) {
                     libraryTab
                         .tabItem {
                             Label("Library", systemImage: "music.note.list")
                         }
-                        .tag(PhoneTab.library)
+                        .tag(PhonePresentationTab.library)
 
                     playlistsTab
                         .tabItem {
                             Label("Playlists", systemImage: "music.note.house")
                         }
-                        .tag(PhoneTab.playlists)
+                        .tag(PhonePresentationTab.playlists)
 
                     nowPlayingTab
                         .tabItem {
                             Label("Player", systemImage: "play.circle")
                         }
-                        .tag(PhoneTab.nowPlaying)
+                        .tag(PhonePresentationTab.nowPlaying)
                 }
             }
 
@@ -109,20 +126,47 @@ public struct PhoneContentView: View {
             )
         }
         .task {
-            await model.bootstrap()
-            presentError(model.playbackError)
+            await restorePresentation()
         }
         .onChange(of: model.playbackError) { error in
             presentError(error)
         }
         .onChange(of: selectedTab) { tab in
+            guard !isRestoringPresentation else {
+                return
+            }
             switch tab {
             case .library:
-                Task { await model.showLibrary() }
+                Task {
+                    await model.showLibrary()
+                    persistPresentation()
+                }
             case .playlists:
-                Task { await model.refreshPlaylists() }
+                Task {
+                    await model.refreshPlaylists()
+                    repairPlaylistPath()
+                    persistPresentation()
+                }
             case .nowPlaying:
-                break
+                persistPresentation()
+            }
+        }
+        .onChange(of: playlistPath) { _ in
+            persistPresentation()
+        }
+        .onChange(of: model.libraryScope) { _ in
+            persistPresentation()
+        }
+        .onChange(of: model.selectedTrack?.id) { _ in
+            persistPresentation()
+        }
+        .onChange(of: model.playlists) { _ in
+            repairPlaylistPath()
+            persistPresentation()
+        }
+        .onChange(of: scenePhase) { phase in
+            if phase == .background {
+                persistPresentation()
             }
         }
         .alert(item: $activeAlert) { alert in
@@ -205,7 +249,7 @@ public struct PhoneContentView: View {
     }
 
     private var playlistsTab: some View {
-        NavigationStack {
+        NavigationStack(path: $playlistPath) {
             List {
                 if !model.recentPlaylists.isEmpty {
                     Section("Recent") {
@@ -252,13 +296,27 @@ public struct PhoneContentView: View {
             .safeAreaInset(edge: .bottom) {
                 miniPlayerBar
             }
+            .navigationDestination(for: PhoneRoute.self) { route in
+                switch route {
+                case .playlist(let id):
+                    if let playlist = model.playlists.first(where: { $0.id == id }) {
+                        PhonePlaylistDetailView(model: model, playlist: playlist)
+                    } else {
+                        PhoneEmptyState(
+                            title: "Playlist Unavailable",
+                            message: "This playlist may have been removed.",
+                            systemImage: "music.note.slash"
+                        )
+                        .navigationTitle("Playlist")
+                        .navigationBarTitleDisplayMode(.inline)
+                    }
+                }
+            }
         }
     }
 
     private func phonePlaylistLink(_ playlist: PlaylistItem) -> some View {
-        NavigationLink {
-            PhonePlaylistDetailView(model: model, playlist: playlist)
-        } label: {
+        NavigationLink(value: PhoneRoute.playlist(playlist.id)) {
             HStack(spacing: 12) {
                 PhoneArtworkImage(
                     artworkURL: playlist.artworkURL,
@@ -295,6 +353,68 @@ public struct PhoneContentView: View {
                 Label("Edit Playlist", systemImage: "pencil")
             }
         }
+    }
+
+    @MainActor
+    private func restorePresentation() async {
+        let requestedSnapshot = PhonePresentationPersistence.decode(sceneSession)
+            ?? PhonePresentationPersistence.load()
+            ?? .initial
+
+        selectedTab = requestedSnapshot.selectedTab
+        await model.bootstrap(
+            restoring: requestedSnapshot.bootstrapScope,
+            preferredSelectedViewID: requestedSnapshot.selectedViewID
+        )
+
+        let validatedSnapshot = requestedSnapshot.validated(against: model.playlists)
+        if validatedSnapshot.selectedTab == .playlists,
+           let playlistID = validatedSnapshot.playlistDetailID {
+            playlistPath = [.playlist(playlistID)]
+        } else {
+            playlistPath = []
+        }
+
+        isRestoringPresentation = false
+        persistPresentation()
+        presentError(model.playbackError)
+    }
+
+    private func persistPresentation() {
+        guard !isRestoringPresentation else {
+            return
+        }
+
+        let snapshot = PhonePresentationSnapshot(
+            selectedTab: selectedTab,
+            contentScope: presentationScope,
+            playlistDetailID: playlistPath.last?.playlistID,
+            selectedViewID: model.selectedTrack?.id
+        )
+        guard let encoded = PhonePresentationPersistence.encode(snapshot) else {
+            return
+        }
+        sceneSession = encoded
+        PhonePresentationPersistence.save(snapshot)
+    }
+
+    private var presentationScope: PhonePresentationScope {
+        switch model.restorableLibraryScope {
+        case .library:
+            return .library
+        case .history:
+            return .history
+        case .playlist(let id):
+            return .playlist(id)
+        }
+    }
+
+    private func repairPlaylistPath() {
+        guard let route = playlistPath.last,
+              !model.playlists.contains(where: { $0.id == route.playlistID }) else {
+            return
+        }
+        playlistPath = []
     }
 
     private var nowPlayingTab: some View {
@@ -659,6 +779,19 @@ public struct PhoneContentView: View {
         }
     }
 
+    private var restorationPlaceholder: some View {
+        VStack(spacing: 14) {
+            ProgressView()
+                .controlSize(.large)
+            Text("Restoring Player")
+                .font(.callout.weight(.medium))
+                .foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Restoring player")
+    }
+
     private func startupFailureView(message: String) -> some View {
         VStack(spacing: 14) {
             Image(systemName: "exclamationmark.triangle.fill")
@@ -904,12 +1037,6 @@ public struct PhoneContentView: View {
             model.playbackError = error.localizedDescription
         }
     }
-}
-
-private enum PhoneTab: Hashable {
-    case library
-    case playlists
-    case nowPlaying
 }
 
 private struct PhonePlaybackQueueSheet: View {
@@ -1700,8 +1827,10 @@ private struct PhonePlaylistDetailView: View {
                 }
             }
         }
-        .task {
-            await model.showPlaylist(playlist)
+        .task(id: playlist.id) {
+            if model.activePlaylistName != playlist.name {
+                await model.showPlaylist(playlist)
+            }
         }
     }
 }

@@ -190,6 +190,70 @@ final class PhoneDisplayTextTests: XCTestCase {
     }
 }
 
+final class PhonePresentationStateTests: XCTestCase {
+    func testSnapshotRoundTripsThroughSceneStorageEncoding() throws {
+        let snapshot = PhonePresentationSnapshot(
+            selectedTab: .playlists,
+            contentScope: .playlist(42),
+            playlistDetailID: 42,
+            selectedViewID: "view:favorite"
+        )
+
+        let encoded = try XCTUnwrap(PhonePresentationPersistence.encode(snapshot))
+
+        XCTAssertEqual(PhonePresentationPersistence.decode(encoded), snapshot)
+        XCTAssertEqual(snapshot.bootstrapScope, .playlist(42))
+    }
+
+    func testUnknownSnapshotVersionIsIgnored() throws {
+        let snapshot = PhonePresentationSnapshot(
+            version: PhonePresentationSnapshot.currentVersion + 1,
+            selectedTab: .nowPlaying,
+            contentScope: .history,
+            playlistDetailID: nil,
+            selectedViewID: nil
+        )
+
+        let encoded = try XCTUnwrap(PhonePresentationPersistence.encode(snapshot))
+
+        XCTAssertNil(PhonePresentationPersistence.decode(encoded))
+    }
+
+    func testDeletedPlaylistFallsBackToLibraryAndClearsDetailRoute() {
+        let snapshot = PhonePresentationSnapshot(
+            selectedTab: .playlists,
+            contentScope: .playlist(42),
+            playlistDetailID: 42,
+            selectedViewID: nil
+        )
+
+        let validated = snapshot.validated(against: [])
+
+        XCTAssertEqual(validated.contentScope, .library)
+        XCTAssertNil(validated.playlistDetailID)
+    }
+
+    func testFallbackPersistenceUsesVersionedDefaultsEntry() throws {
+        let suiteName = "PhonePresentationStateTests.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer {
+            defaults.removePersistentDomain(forName: suiteName)
+        }
+        let snapshot = PhonePresentationSnapshot(
+            selectedTab: .nowPlaying,
+            contentScope: .history,
+            playlistDetailID: nil,
+            selectedViewID: "view:current"
+        )
+
+        PhonePresentationPersistence.save(snapshot, defaults: defaults)
+
+        XCTAssertEqual(PhonePresentationPersistence.load(defaults: defaults), snapshot)
+        PhonePresentationPersistence.clear(defaults: defaults)
+        XCTAssertNil(PhonePresentationPersistence.load(defaults: defaults))
+    }
+}
+
 @MainActor
 final class AppModelStartupTests: XCTestCase {
     func testStartupFailureBecomesVisibleStateInsteadOfCrashing() async {
@@ -209,6 +273,45 @@ final class AppModelStartupTests: XCTestCase {
         XCTAssertEqual(model.status, "Player unavailable")
         XCTAssertEqual(model.playbackError, model.startupError)
         XCTAssertTrue(model.tracks.isEmpty)
+    }
+}
+
+@MainActor
+final class AppModelPresentationRestorationTests: XCTestCase {
+    func testBootstrapRestoresPlaylistByStableID() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let client = try RustPlayerClient(
+            dbURL: root.appendingPathComponent("library.sqlite3"),
+            mediaRootURL: root.appendingPathComponent("Music", isDirectory: true),
+            repoRoot: root
+        )
+        try client.createPlaylist(name: "Road Trip")
+        let playlist = try XCTUnwrap(client.playlists().first)
+        let model = AppModel(client: client)
+
+        await model.bootstrap(restoring: .playlist(playlist.id))
+
+        XCTAssertEqual(model.libraryScope, .playlist("Road Trip"))
+        XCTAssertEqual(model.restorableLibraryScope, .playlist(playlist.id))
+    }
+
+    func testBootstrapFallsBackWhenRestoredPlaylistWasDeleted() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let client = try RustPlayerClient(
+            dbURL: root.appendingPathComponent("library.sqlite3"),
+            mediaRootURL: root.appendingPathComponent("Music", isDirectory: true),
+            repoRoot: root
+        )
+        let model = AppModel(client: client)
+
+        await model.bootstrap(restoring: .playlist(Int64.max))
+
+        XCTAssertEqual(model.libraryScope, .library)
+        XCTAssertEqual(model.restorableLibraryScope, .library)
     }
 }
 

@@ -304,6 +304,20 @@ public final class AppModel: ObservableObject {
         return nil
     }
 
+    public var restorableLibraryScope: RestorableLibraryScope {
+        switch libraryScope {
+        case .library, .favorites:
+            return .library
+        case .history:
+            return .history
+        case .playlist(let name):
+            guard let playlist = playlists.first(where: { $0.name == name }) else {
+                return .library
+            }
+            return .playlist(playlist.id)
+        }
+    }
+
     public var detailTrack: TrackItem? {
         selectedTrack ?? nowPlaying
     }
@@ -348,7 +362,10 @@ public final class AppModel: ObservableObject {
         isLoadingDetails && nowPlayingDetails == nil
     }
 
-    public func bootstrap() async {
+    public func bootstrap(
+        restoring restorationScope: RestorableLibraryScope? = nil,
+        preferredSelectedViewID: String? = nil
+    ) async {
         guard client != nil else {
             status = "Player unavailable"
             playbackError = startupError ?? "Unable to start the player service"
@@ -358,8 +375,14 @@ public final class AppModel: ObservableObject {
             return
         }
         hasBootstrapped = true
-        await reloadActiveScope()
         await refreshPlaylists()
+        if let restorationScope {
+            applyRestoredLibraryScope(restorationScope)
+        }
+        await reloadActiveScope(
+            preferredSelectedViewID: preferredSelectedViewID,
+            forceDetails: false
+        )
         await refreshPlaybackState()
     }
 
@@ -726,6 +749,23 @@ public final class AppModel: ObservableObject {
                 ? "\(loadingScope.title) is empty"
                 : "\(loadingScope.title): \(tracks.count) tracks, \(loaded.count) views"
         }
+    }
+
+    private func applyRestoredLibraryScope(_ scope: RestorableLibraryScope) {
+        switch scope {
+        case .library:
+            libraryScope = .library
+        case .history:
+            libraryScope = .history
+        case .playlist(let id):
+            if let playlist = playlists.first(where: { $0.id == id }) {
+                libraryScope = .playlist(playlist.name)
+            } else {
+                libraryScope = .library
+            }
+        }
+        playlistSortMode = .defaultOrder
+        query = ""
     }
 
     public func selectTrack(id: String?) {

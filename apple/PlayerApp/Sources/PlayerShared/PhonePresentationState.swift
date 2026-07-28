@@ -1,0 +1,154 @@
+import Foundation
+
+public enum RestorableLibraryScope: Equatable, Sendable {
+    case library
+    case history
+    case playlist(Int64)
+}
+
+public enum PhonePresentationTab: String, Codable, Hashable, Sendable {
+    case library
+    case playlists
+    case nowPlaying
+}
+
+public enum PhonePresentationScopeKind: String, Codable, Hashable, Sendable {
+    case library
+    case history
+    case playlist
+}
+
+public struct PhonePresentationScope: Codable, Equatable, Sendable {
+    public let kind: PhonePresentationScopeKind
+    public let playlistID: Int64?
+
+    public init(kind: PhonePresentationScopeKind, playlistID: Int64? = nil) {
+        self.kind = kind
+        self.playlistID = playlistID
+    }
+
+    public static let library = PhonePresentationScope(kind: .library)
+    public static let history = PhonePresentationScope(kind: .history)
+
+    public static func playlist(_ id: Int64) -> PhonePresentationScope {
+        PhonePresentationScope(kind: .playlist, playlistID: id)
+    }
+
+    public var restorationScope: RestorableLibraryScope {
+        switch kind {
+        case .library:
+            return .library
+        case .history:
+            return .history
+        case .playlist:
+            guard let playlistID else {
+                return .library
+            }
+            return .playlist(playlistID)
+        }
+    }
+}
+
+public struct PhonePresentationSnapshot: Codable, Equatable, Sendable {
+    public static let currentVersion = 1
+
+    public let version: Int
+    public let selectedTab: PhonePresentationTab
+    public let contentScope: PhonePresentationScope
+    public let playlistDetailID: Int64?
+    public let selectedViewID: String?
+
+    public init(
+        version: Int = currentVersion,
+        selectedTab: PhonePresentationTab,
+        contentScope: PhonePresentationScope,
+        playlistDetailID: Int64?,
+        selectedViewID: String?
+    ) {
+        self.version = version
+        self.selectedTab = selectedTab
+        self.contentScope = contentScope
+        self.playlistDetailID = playlistDetailID
+        self.selectedViewID = selectedViewID
+    }
+
+    public static let initial = PhonePresentationSnapshot(
+        selectedTab: .library,
+        contentScope: .library,
+        playlistDetailID: nil,
+        selectedViewID: nil
+    )
+
+    public var bootstrapScope: RestorableLibraryScope {
+        if selectedTab == .playlists, let playlistDetailID {
+            return .playlist(playlistDetailID)
+        }
+        return contentScope.restorationScope
+    }
+
+    public func validated(against playlists: [PlaylistItem]) -> PhonePresentationSnapshot {
+        let playlistIDs = Set(playlists.map(\.id))
+        let validatedScope: PhonePresentationScope
+        switch contentScope.kind {
+        case .playlist:
+            if let playlistID = contentScope.playlistID, playlistIDs.contains(playlistID) {
+                validatedScope = contentScope
+            } else {
+                validatedScope = .library
+            }
+        case .library, .history:
+            validatedScope = contentScope
+        }
+
+        let validatedDetailID = playlistDetailID.flatMap { id in
+            playlistIDs.contains(id) ? id : nil
+        }
+
+        return PhonePresentationSnapshot(
+            selectedTab: selectedTab,
+            contentScope: validatedScope,
+            playlistDetailID: validatedDetailID,
+            selectedViewID: selectedViewID
+        )
+    }
+}
+
+public enum PhonePresentationPersistence {
+    public static let fallbackKey = "PhoneContentView.lastSession.v1"
+
+    public static func encode(_ snapshot: PhonePresentationSnapshot) -> String? {
+        guard let data = try? JSONEncoder().encode(snapshot) else {
+            return nil
+        }
+        return data.base64EncodedString()
+    }
+
+    public static func decode(_ encoded: String?) -> PhonePresentationSnapshot? {
+        guard let encoded,
+              let data = Data(base64Encoded: encoded),
+              let snapshot = try? JSONDecoder().decode(PhonePresentationSnapshot.self, from: data),
+              snapshot.version == PhonePresentationSnapshot.currentVersion
+        else {
+            return nil
+        }
+        return snapshot
+    }
+
+    public static func load(defaults: UserDefaults = .standard) -> PhonePresentationSnapshot? {
+        decode(defaults.string(forKey: fallbackKey))
+    }
+
+    public static func save(
+        _ snapshot: PhonePresentationSnapshot,
+        defaults: UserDefaults = .standard
+    ) {
+        guard let encoded = encode(snapshot) else {
+            return
+        }
+        defaults.set(encoded, forKey: fallbackKey)
+    }
+
+    public static func clear(defaults: UserDefaults = .standard) {
+        defaults.removeObject(forKey: fallbackKey)
+    }
+}
