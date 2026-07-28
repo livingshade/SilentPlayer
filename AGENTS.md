@@ -20,3 +20,15 @@ UI targets should continue to call stable Rust/FFI APIs designed for app use.
 For SwiftUI/macOS and future iOS UI work, design against official Apple documentation and best practices rather than ad hoc layout guesses. Use Apple Human Interface Guidelines, official SwiftUI documentation, and platform-appropriate controls, navigation, sizing, and accessibility patterns when making meaningful UI or layout changes.
 
 When a UI issue depends on platform behavior, verify the relevant official documentation before implementing the fix, then validate the result with a local build and, when practical, by running the app.
+
+## macOS App Installation
+
+After every macOS app update:
+
+1. Build and verify the new `Silent.app` bundle first.
+2. Quit any running installed copy of Silent.
+3. Delete the existing `/Applications/Silent.app` bundle completely. Do not merge or copy the new bundle over the old bundle.
+4. Remove stale distributable copies such as `dist/Silent.app` when they are not the newly built bundle being installed. Do not leave an outdated app bundle that Finder, Spotlight, or Launch Services can present as a second Silent installation. The current hidden build-staging bundle under `.build` may remain.
+5. Install the newly built bundle at `/Applications/Silent.app`.
+6. Launch the installed copy and verify that it is the updated build.
+7. Before reporting completion, verify that system application search resolves Silent to the single installed path `/Applications/Silent.app`.
