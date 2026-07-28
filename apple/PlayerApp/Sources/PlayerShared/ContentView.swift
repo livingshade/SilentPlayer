@@ -9,6 +9,8 @@ public struct ContentView: View {
     @State private var pendingSingleClick: DispatchWorkItem?
     @State private var isViewChecksExpanded = false
     @State private var isZeroOutConfirmationPresented = false
+    @State private var isQueuePresented = false
+    @State private var isLibraryInformationPresented = false
     private let chooseFolder: () async -> URL?
     private let chooseArtworkFile: () async -> URL?
     private let chooseLyricsFile: () async -> URL?
@@ -60,6 +62,16 @@ public struct ContentView: View {
                 chooseArtworkFile: chooseArtworkFile
             )
         }
+        .sheet(isPresented: $isQueuePresented) {
+            PlaybackQueueSheet(model: model)
+        }
+        .sheet(isPresented: $isLibraryInformationPresented) {
+            LibraryInformationSheet(
+                status: model.status,
+                databasePath: model.dbPath,
+                musicPath: model.mediaRootPath
+            )
+        }
         .confirmationDialog(
             "Zero Out Library?",
             isPresented: $isZeroOutConfirmationPresented,
@@ -80,7 +92,7 @@ public struct ContentView: View {
     private func detailPane(layout: DetailPaneLayout) -> some View {
         ZStack {
             VStack(spacing: 0) {
-                toolbar
+                contentHeader
                 Divider()
                 if let track = model.detailTrack {
                     nowPlayingPanel(for: track, layout: layout)
@@ -145,10 +157,7 @@ public struct ContentView: View {
 
             VStack(spacing: 6) {
                 scopeButton("Library", icon: "music.note.list", selected: model.libraryScope == .library) {
-                    await model.refreshLibrary()
-                }
-                scopeButton("Favorites", icon: "heart.fill", selected: model.libraryScope == .favorites) {
-                    await model.showFavorites()
+                    await model.showLibrary()
                 }
                 scopeButton("History", icon: "clock.arrow.circlepath", selected: model.libraryScope == .history) {
                     await model.showHistory()
@@ -158,7 +167,7 @@ public struct ContentView: View {
             Divider()
 
             HStack {
-                Text("Playlists")
+                Text("Recent Playlists")
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(.secondary)
                 Spacer()
@@ -172,9 +181,25 @@ public struct ContentView: View {
             }
 
             ScrollView {
-                VStack(spacing: 4) {
-                    ForEach(model.playlists) { playlist in
-                        playlistButton(playlist)
+                VStack(alignment: .leading, spacing: 10) {
+                    VStack(spacing: 4) {
+                        ForEach(model.recentPlaylists) { playlist in
+                            playlistButton(playlist)
+                        }
+                    }
+
+                    if model.playlists != model.recentPlaylists {
+                        Text("All Playlists")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                            .padding(.horizontal, 10)
+                            .padding(.top, 4)
+
+                        VStack(spacing: 4) {
+                            ForEach(model.playlists) { playlist in
+                                playlistButton(playlist)
+                            }
+                        }
                     }
                 }
             }
@@ -192,145 +217,243 @@ public struct ContentView: View {
                 if model.isAnalyzing || !model.analyzeStatus.isEmpty {
                     analyzerProgress
                 }
-                Text("DB: \(model.dbPath)")
-                    .font(.caption2.monospaced())
-                    .foregroundStyle(.tertiary)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                Text("Music: \(model.mediaRootPath)")
-                    .font(.caption2.monospaced())
-                    .foregroundStyle(.tertiary)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
             }
         }
         .padding()
         .frame(minWidth: 220, idealWidth: 270, maxWidth: 340)
     }
 
-    private var toolbar: some View {
-        HStack(spacing: 10) {
-            Image(systemName: "magnifyingglass")
-                .foregroundStyle(.secondary)
-            TextField("Search title, artist, album, or path", text: $model.query)
-                .textFieldStyle(.roundedBorder)
-                .onSubmit {
-                    Task { await model.search() }
+    private var contentHeader: some View {
+        HStack(spacing: 14) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(model.libraryScope.title)
+                    .font(.title3.weight(.semibold))
+                    .lineLimit(1)
+                Text("\(model.tracks.count) songs")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            Spacer(minLength: 12)
+
+            HStack(spacing: 7) {
+                Image(systemName: "magnifyingglass")
+                    .foregroundStyle(.secondary)
+
+                TextField("Search this view", text: $model.query)
+                    .textFieldStyle(.plain)
+                    .onSubmit {
+                        Task { await model.search() }
+                    }
+
+                if !model.query.isEmpty {
+                    Button {
+                        clearSearch()
+                    } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .foregroundStyle(.secondary)
+                    }
+                    .buttonStyle(.borderless)
+                    .help("Clear search")
                 }
-
-            Button {
-                Task { await model.search() }
-            } label: {
-                Label("Search", systemImage: "magnifyingglass")
             }
-            .help("Search")
+            .padding(.horizontal, 10)
+            .padding(.vertical, 7)
+            .frame(width: 280)
+            .background(Color(nsColor: .controlBackgroundColor))
+            .clipShape(RoundedRectangle(cornerRadius: 7))
+            .overlay {
+                RoundedRectangle(cornerRadius: 7)
+                    .stroke(Color(nsColor: .separatorColor).opacity(0.55), lineWidth: 1)
+            }
 
             Button {
-                model.query = ""
+                Task { await model.playAllVisible() }
+            } label: {
+                Label("Play All", systemImage: "play.fill")
+                    .labelStyle(.iconOnly)
+            }
+            .buttonStyle(.borderless)
+            .disabled(model.tracks.isEmpty)
+            .help("Play all songs in \(model.libraryScope.title)")
+
+            Menu {
+                contentActionsMenu
+            } label: {
+                Label("More", systemImage: "ellipsis.circle")
+                    .labelStyle(.iconOnly)
+            }
+            .menuStyle(.borderlessButton)
+            .help("More actions")
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 10)
+    }
+
+    @ViewBuilder
+    private var contentActionsMenu: some View {
+        Button {
+            if model.isLibraryWorking {
+                model.stopLibraryWork()
+            } else {
                 Task { await model.reloadActiveScope() }
-            } label: {
-                Label("Clear", systemImage: "xmark.circle")
             }
-            .help("Clear search")
+        } label: {
+            Label(
+                model.isLibraryWorking ? "Stop Library Task" : "Refresh",
+                systemImage: model.isLibraryWorking ? "stop.circle" : "arrow.clockwise"
+            )
+        }
 
+        Menu {
+            playlistSortButton(.defaultOrder)
             Divider()
+            playlistSortButton(.title)
+            playlistSortButton(.artist)
+            playlistSortButton(.album)
+            playlistSortButton(.rating)
+        } label: {
+            Label("Sort By", systemImage: "arrow.up.arrow.down")
+        }
+
+        if model.activePlaylistName != nil {
+            activePlaylistMenu
+        }
+
+        Divider()
+
+        Button {
+            Task {
+                if let folder = await chooseFolder() {
+                    await model.importFolder(folder)
+                }
+            }
+        } label: {
+            Label("Import Music…", systemImage: "folder.badge.plus")
+        }
+        .disabled(model.isLibraryWorking)
+
+        Button {
+            if model.isAnalyzing {
+                model.stopAnalyze()
+            } else {
+                Task { await model.analyzeLibrary() }
+            }
+        } label: {
+            Label(
+                model.isAnalyzing ? "Stop Analysis" : "Analyze Library",
+                systemImage: model.isAnalyzing ? "stop.circle" : "waveform"
+            )
+        }
+
+        Button {
+            Task { await model.auditDatabase() }
+        } label: {
+            Label("Audit Library", systemImage: "checklist.checked")
+        }
+        .disabled(model.isLibraryWorking)
+
+        Menu {
+            Button {
+                Task {
+                    if let packageURL = await chooseLibraryExportPackage() {
+                        _ = await model.exportLibrary(to: packageURL)
+                    }
+                }
+            } label: {
+                Label("Export Library…", systemImage: "square.and.arrow.up")
+            }
 
             Button {
                 Task {
-                    if let folder = await chooseFolder() {
-                        await model.importFolder(folder)
+                    if let packageURL = await chooseLibraryImportPackage() {
+                        await model.importLibrary(from: packageURL)
                     }
                 }
             } label: {
-                Label("Import Music", systemImage: "folder.badge.plus")
+                Label("Import Library…", systemImage: "square.and.arrow.down")
             }
-            .disabled(model.isLibraryWorking)
-
-            Menu {
-                Button {
-                    Task {
-                        if let packageURL = await chooseLibraryExportPackage() {
-                            _ = await model.exportLibrary(to: packageURL)
-                        }
-                    }
-                } label: {
-                    Label("Export Library…", systemImage: "square.and.arrow.up")
-                }
-
-                Button {
-                    Task {
-                        if let packageURL = await chooseLibraryImportPackage() {
-                            await model.importLibrary(from: packageURL)
-                        }
-                    }
-                } label: {
-                    Label("Import Library…", systemImage: "square.and.arrow.down")
-                }
-
-                Divider()
-
-                Button(role: .destructive) {
-                    isZeroOutConfirmationPresented = true
-                } label: {
-                    Label("Zero Out Library…", systemImage: "trash")
-                }
-            } label: {
-                Label("Library", systemImage: "externaldrive")
-            }
-            .help("Export, replace, or clear the complete library")
-            .disabled(model.isBusy || model.isLibraryWorking || model.isAnalyzing)
-
-            Button {
-                if model.isLibraryWorking {
-                    model.stopLibraryWork()
-                } else {
-                    Task { await model.reloadActiveScope() }
-                }
-            } label: {
-                Label(model.isLibraryWorking ? "Stop" : "Refresh", systemImage: model.isLibraryWorking ? "stop.circle" : "arrow.clockwise")
-            }
-            .help(model.isLibraryWorking ? "Stop library task" : "Refresh")
-
-            Button {
-                Task { await model.auditDatabase() }
-            } label: {
-                Label("Audit Library", systemImage: "checklist.checked")
-            }
-            .disabled(model.isLibraryWorking)
 
             Divider()
 
-            Menu {
-                playlistSortButton(.defaultOrder)
-                Divider()
-                playlistSortButton(.title)
-                playlistSortButton(.artist)
-                playlistSortButton(.album)
-                playlistSortButton(.rating)
+            Button(role: .destructive) {
+                isZeroOutConfirmationPresented = true
             } label: {
-                Label("Sort", systemImage: "arrow.up.arrow.down")
+                Label("Zero Out Library…", systemImage: "trash")
             }
-            .help("Sort tracks")
-
-            if model.activePlaylistName != nil {
-                playlistActionsMenu
-            }
-
-            if model.isAnalyzing {
-                Button {
-                    model.stopAnalyze()
-                } label: {
-                    Label("Stop Analyze", systemImage: "stop.circle")
-                }
-            } else {
-                Button {
-                    Task { await model.analyzeLibrary() }
-                } label: {
-                    Label("Analyze", systemImage: "waveform")
-                }
-            }
+        } label: {
+            Label("Library Package", systemImage: "externaldrive")
         }
-        .padding()
+        .disabled(model.isBusy || model.isLibraryWorking || model.isAnalyzing)
+
+        Divider()
+
+        Button {
+            isLibraryInformationPresented = true
+        } label: {
+            Label("Library Information…", systemImage: "info.circle")
+        }
+    }
+
+    private var activePlaylistMenu: some View {
+        Menu {
+            if let playlist = activePlaylist {
+                Button {
+                    model.presentPlaylistSettings(playlist)
+                } label: {
+                    Label("Edit Playlist…", systemImage: "pencil")
+                }
+            }
+
+            Button {
+                Task { await model.moveSelectedInActivePlaylist(delta: -1) }
+            } label: {
+                Label("Move Selected Up", systemImage: "arrow.up")
+            }
+            .disabled(model.selectedTrack == nil)
+
+            Button {
+                Task { await model.moveSelectedInActivePlaylist(delta: 1) }
+            } label: {
+                Label("Move Selected Down", systemImage: "arrow.down")
+            }
+            .disabled(model.selectedTrack == nil)
+
+            Button {
+                Task { await model.removeSelectedFromActivePlaylist() }
+            } label: {
+                Label("Remove Selected", systemImage: "minus.circle")
+            }
+            .disabled(model.selectedTrack == nil)
+
+            Divider()
+
+            Button(role: .destructive) {
+                Task { await model.clearActivePlaylist() }
+            } label: {
+                Label("Clear Playlist", systemImage: "clear")
+            }
+
+            Button(role: .destructive) {
+                Task { await model.deleteActivePlaylist() }
+            } label: {
+                Label("Delete Playlist", systemImage: "trash")
+            }
+        } label: {
+            Label("Playlist", systemImage: "music.note.list")
+        }
+    }
+
+    private var activePlaylist: PlaylistItem? {
+        guard let name = model.activePlaylistName else {
+            return nil
+        }
+        return model.playlists.first { $0.name == name }
+    }
+
+    private func clearSearch() {
+        model.query = ""
+        Task { await model.reloadActiveScope() }
     }
 
     private var trackList: some View {
@@ -359,18 +482,44 @@ public struct ContentView: View {
     }
 
     private var playerBar: some View {
-        VStack(spacing: 8) {
-            HStack(spacing: 14) {
-                Button {
-                    Task { await model.toggleShuffle() }
-                } label: {
-                    Label("Shuffle", systemImage: "shuffle")
-                        .foregroundStyle(model.isShuffleEnabled ? Color.accentColor : Color.secondary)
+        VStack(spacing: 9) {
+            HStack(spacing: 12) {
+                if let track = model.nowPlaying {
+                    TrackArtworkThumbnail(
+                        artworkURL: track.artworkURL,
+                        isCurrent: true,
+                        isPlaying: model.isPlaying,
+                        hasArtworkHint: track.artworkCount > 0
+                    )
+                } else {
+                    Image(systemName: "music.note")
+                        .foregroundStyle(.secondary)
+                        .frame(width: 34, height: 34)
+                        .background(Color(nsColor: .separatorColor).opacity(0.18))
+                        .clipShape(RoundedRectangle(cornerRadius: 5))
                 }
-                .buttonStyle(.borderless)
-                .help(model.isShuffleEnabled ? "Shuffle on" : "Shuffle off")
 
-                HStack(spacing: 10) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(model.nowPlaying?.title ?? "Nothing playing")
+                        .font(.headline)
+                        .lineLimit(1)
+                    Text(model.nowPlaying?.subtitle ?? "Choose a song to start listening")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+
+                HStack(spacing: 12) {
+                    Button {
+                        Task { await model.toggleShuffle() }
+                    } label: {
+                        Label("Shuffle", systemImage: "shuffle")
+                            .labelStyle(.iconOnly)
+                            .foregroundStyle(model.isShuffleEnabled ? Color.accentColor : Color.secondary)
+                    }
+                    .help(model.isShuffleEnabled ? "Shuffle on" : "Shuffle off")
+
                     Button {
                         Task { await model.previousTrack() }
                     } label: {
@@ -388,14 +537,6 @@ public struct ContentView: View {
                     }
                     .keyboardShortcut(.space, modifiers: [])
                     .help(model.isPlaying ? "Pause" : "Play")
-
-                    Button {
-                        Task { await model.stopPlayback() }
-                    } label: {
-                        Label("Stop", systemImage: "stop.fill")
-                            .labelStyle(.iconOnly)
-                    }
-                    .help("Stop")
 
                     Button {
                         Task { await model.nextTrack() }
@@ -422,33 +563,24 @@ public struct ContentView: View {
                 .menuStyle(.borderlessButton)
                 .help("Repeat mode")
 
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(model.nowPlaying?.title ?? "Nothing playing")
-                        .font(.headline)
-                        .lineLimit(1)
-                    Text(model.nowPlaying?.subtitle ?? model.status)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                }
-
-                Spacer()
-
-                Button {
-                    Task { await model.setSelectedFavorite(true) }
-                } label: {
-                    Label("Favorite", systemImage: "heart")
-                }
-                .buttonStyle(.borderless)
-                .help("Favorite")
-
                 Button {
                     Task { await model.addSelectedToPlaylist() }
                 } label: {
-                    Label("Playlist", systemImage: "text.badge.plus")
+                    Label("Add to Playlist", systemImage: "text.badge.plus")
+                        .labelStyle(.iconOnly)
                 }
                 .buttonStyle(.borderless)
+                .disabled(model.selectedTrack == nil)
                 .help("Add to playlist")
+
+                Button {
+                    isQueuePresented = true
+                } label: {
+                    Label("Queue", systemImage: "music.note.list")
+                        .labelStyle(.iconOnly)
+                }
+                .buttonStyle(.borderless)
+                .help("Show queue")
 
                 if model.isBusy {
                     ProgressView()
@@ -473,29 +605,18 @@ public struct ContentView: View {
                     }
                 )
                 .disabled(model.nowPlaying?.durationMS == nil)
-
-                Text(model.normalizeText)
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                    .frame(width: 128, alignment: .trailing)
-                    .lineLimit(1)
-
-                Text(model.queueStatusText)
-                    .font(.caption2.monospacedDigit())
-                    .foregroundStyle(.secondary)
-                    .frame(width: 96, alignment: .trailing)
-                    .lineLimit(1)
             }
 
-            HStack {
-                Text(model.playbackError.isEmpty ? model.playbackDetail : model.playbackError)
-                    .font(.caption2)
-                    .foregroundStyle(model.playbackError.isEmpty ? Color.secondary : Color.red)
-                    .lineLimit(2)
-                    .textSelection(.enabled)
-                Spacer()
+            if !model.playbackError.isEmpty {
+                HStack {
+                    Label(model.playbackError, systemImage: "exclamationmark.triangle.fill")
+                        .font(.caption2)
+                        .foregroundStyle(.red)
+                        .lineLimit(2)
+                        .textSelection(.enabled)
+                    Spacer()
+                }
             }
-            .frame(minHeight: 16)
         }
         .padding()
         .background(.bar)
@@ -536,23 +657,7 @@ public struct ContentView: View {
                                 .frame(maxWidth: 140, alignment: .trailing)
                             viewPicker
                                 .frame(maxWidth: 220, alignment: .trailing)
-                            HStack(spacing: 8) {
-                                artworkMenu(for: track)
-
-                                Button {
-                                    model.presentViewEdit()
-                                } label: {
-                                    Label("Edit View", systemImage: "pencil")
-                                }
-                                .disabled(model.isLoadingDetails || model.detailTrack == nil)
-
-                                Button {
-                                    materialize(track)
-                                } label: {
-                                    Label("Export View", systemImage: "square.and.arrow.down")
-                                }
-                                .disabled(model.detailTrack == nil)
-                            }
+                            trackActionsMenu(for: track)
                         }
                     }
 
@@ -612,7 +717,7 @@ public struct ContentView: View {
         .help("Set rating")
     }
 
-    private func artworkMenu(for track: TrackItem) -> some View {
+    private func trackActionsMenu(for track: TrackItem) -> some View {
         Menu {
             Button {
                 setTrackCover(for: track)
@@ -626,10 +731,28 @@ public struct ContentView: View {
                 Label("Set Album Cover", systemImage: "rectangle.stack.badge.plus")
             }
             .disabled(!track.hasAlbumIdentity)
+
+            Divider()
+
+            Button {
+                model.presentViewEdit()
+            } label: {
+                Label("Edit Track View…", systemImage: "pencil")
+            }
+            .disabled(model.isLoadingDetails || model.detailTrack == nil)
+
+            Button {
+                materialize(track)
+            } label: {
+                Label("Export Track View…", systemImage: "square.and.arrow.down")
+            }
+            .disabled(model.detailTrack == nil)
         } label: {
-            Label("Cover", systemImage: "photo.on.rectangle")
+            Label("Track Actions", systemImage: "ellipsis.circle")
+                .labelStyle(.iconOnly)
         }
-        .help("Cover artwork")
+        .menuStyle(.borderlessButton)
+        .help("Track actions")
     }
 
     private func viewChoiceTitle(_ choice: TrackViewChoice) -> String {
@@ -886,48 +1009,6 @@ public struct ContentView: View {
         }
     }
 
-    private var playlistActionsMenu: some View {
-        Menu {
-            Button {
-                Task { await model.moveSelectedInActivePlaylist(delta: -1) }
-            } label: {
-                Label("Move Up", systemImage: "arrow.up")
-            }
-            .disabled(model.selectedTrack == nil)
-
-            Button {
-                Task { await model.moveSelectedInActivePlaylist(delta: 1) }
-            } label: {
-                Label("Move Down", systemImage: "arrow.down")
-            }
-            .disabled(model.selectedTrack == nil)
-
-            Button {
-                Task { await model.removeSelectedFromActivePlaylist() }
-            } label: {
-                Label("Remove Selected", systemImage: "minus.circle")
-            }
-            .disabled(model.selectedTrack == nil)
-
-            Divider()
-
-            Button(role: .destructive) {
-                Task { await model.clearActivePlaylist() }
-            } label: {
-                Label("Clear Playlist", systemImage: "clear")
-            }
-
-            Button(role: .destructive) {
-                Task { await model.deleteActivePlaylist() }
-            } label: {
-                Label("Delete Playlist", systemImage: "trash")
-            }
-        } label: {
-            Label("Playlist", systemImage: "ellipsis.circle")
-        }
-        .help("Playlist actions")
-    }
-
     private func playlistSortButton(_ sortMode: PlaylistSortMode) -> some View {
         Button {
             Task { await model.sortVisibleTracks(sortMode) }
@@ -999,10 +1080,15 @@ public struct ContentView: View {
         }
 
         Button {
-            selectTrackImmediately(track)
-            Task { await model.setSelectedFavorite(true) }
+            Task { await model.playNext(track) }
         } label: {
-            Label("Favorite", systemImage: "heart")
+            Label("Play Next", systemImage: "text.line.first.and.arrowtriangle.forward")
+        }
+
+        Button {
+            Task { await model.addToQueue(track) }
+        } label: {
+            Label("Add to Queue", systemImage: "text.badge.plus")
         }
 
         Button {
@@ -1151,6 +1237,162 @@ public struct ContentView: View {
                 await model.setAlbumArtwork(for: track, imageURL: imageURL)
             }
         }
+    }
+}
+
+private struct LibraryInformationSheet: View {
+    let status: String
+    let databasePath: String
+    let musicPath: String
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            HStack {
+                Text("Library Information")
+                    .font(.title2.weight(.semibold))
+                Spacer()
+                Button("Done") {
+                    dismiss()
+                }
+                .keyboardShortcut(.defaultAction)
+            }
+
+            Divider()
+
+            Grid(alignment: .leading, horizontalSpacing: 16, verticalSpacing: 12) {
+                informationRow("Status", status)
+                informationRow("Database", databasePath)
+                informationRow("Music Folder", musicPath)
+            }
+        }
+        .padding(22)
+        .frame(minWidth: 560, idealWidth: 640, maxWidth: 760)
+    }
+
+    private func informationRow(_ label: String, _ value: String) -> some View {
+        GridRow {
+            Text(label)
+                .foregroundStyle(.secondary)
+            Text(value)
+                .font(label == "Status" ? .body : .callout.monospaced())
+                .lineLimit(3)
+                .truncationMode(.middle)
+                .textSelection(.enabled)
+        }
+    }
+}
+
+private struct PlaybackQueueSheet: View {
+    @ObservedObject var model: AppModel
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            List {
+                if model.playbackQueue.isEmpty {
+                    VStack(spacing: 10) {
+                        Image(systemName: "music.note.list")
+                            .font(.system(size: 36))
+                            .foregroundStyle(.secondary)
+                        Text("Queue Is Empty")
+                            .font(.headline)
+                        Text("Use Play Next or Add to Queue from any track.")
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
+                    }
+                    .frame(maxWidth: .infinity, minHeight: 220)
+                    .listRowSeparator(.hidden)
+                } else {
+                    ForEach(Array(model.playbackQueue.enumerated()), id: \.element.id) { index, track in
+                        queueRow(track, at: index)
+                    }
+                    .onMove(perform: move)
+                    .onDelete { offsets in
+                        Task {
+                            for index in offsets.sorted(by: >) {
+                                await model.removeQueueItem(at: index)
+                            }
+                        }
+                    }
+                }
+            }
+            .navigationTitle("Playing Queue")
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Done") {
+                        dismiss()
+                    }
+                }
+                ToolbarItem(placement: .destructiveAction) {
+                    Button("Clear", role: .destructive) {
+                        Task { await model.clearPlaybackQueue() }
+                    }
+                    .disabled(model.playbackQueue.isEmpty)
+                }
+            }
+        }
+        .frame(minWidth: 520, idealWidth: 620, minHeight: 420, idealHeight: 560)
+        .task {
+            await model.refreshPlaybackState()
+        }
+    }
+
+    private func queueRow(_ track: TrackItem, at index: Int) -> some View {
+        HStack(spacing: 10) {
+            Image(systemName: model.queuePosition == index ? "speaker.wave.2.fill" : "line.3.horizontal")
+                .foregroundStyle(model.queuePosition == index ? Color.accentColor : Color.secondary)
+                .frame(width: 20)
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(track.title)
+                    .lineLimit(1)
+                Text(track.subtitle)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+
+            Spacer()
+
+            Button {
+                Task { await model.moveQueueItem(from: index, to: index - 1) }
+            } label: {
+                Image(systemName: "arrow.up")
+            }
+            .buttonStyle(.borderless)
+            .disabled(index == 0)
+            .help("Move up")
+
+            Button {
+                Task { await model.moveQueueItem(from: index, to: index + 1) }
+            } label: {
+                Image(systemName: "arrow.down")
+            }
+            .buttonStyle(.borderless)
+            .disabled(index + 1 >= model.playbackQueue.count)
+            .help("Move down")
+
+            Button(role: .destructive) {
+                Task { await model.removeQueueItem(at: index) }
+            } label: {
+                Image(systemName: "minus.circle")
+            }
+            .buttonStyle(.borderless)
+            .help("Remove from queue")
+        }
+        .padding(.vertical, 3)
+    }
+
+    private func move(from offsets: IndexSet, to destination: Int) {
+        guard let source = offsets.first else {
+            return
+        }
+        let target = destination > source ? destination - 1 : destination
+        guard model.playbackQueue.indices.contains(target) else {
+            return
+        }
+        Task { await model.moveQueueItem(from: source, to: target) }
     }
 }
 

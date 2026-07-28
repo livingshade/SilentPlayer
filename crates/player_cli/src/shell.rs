@@ -48,7 +48,6 @@ pub fn run_playback_shell(context: &CliContext, startup: Vec<String>) -> CliResu
             eprintln!("silent: {error}");
         }
     }
-    client.stop()?;
     Ok(())
 }
 
@@ -113,10 +112,7 @@ fn run_shell_command(
             ensure_no_args(&args, "status")?;
             context.emit(&client.poll()?)
         }
-        "queue" => {
-            ensure_no_args(&args, "queue")?;
-            context.emit(&client.queue()?)
-        }
+        "queue" => run_queue_command(context, client, args),
         "repeat" => {
             let mode = exactly_one(args, "repeat requires <off|one|all>")?;
             if !matches!(mode.as_str(), "off" | "one" | "all") {
@@ -133,6 +129,58 @@ fn run_shell_command(
             "unknown playback command `{command}`; type `help`"
         ))),
     }
+}
+
+fn run_queue_command(
+    context: &CliContext,
+    client: &mut SilentAppClient,
+    mut args: Vec<String>,
+) -> CliResult<()> {
+    if args.is_empty() {
+        return context.emit(&client.queue()?);
+    }
+    let action = args.remove(0);
+    match action.as_str() {
+        "add" | "next" => {
+            let selector = exactly_one(args, "queue add/next requires <path-or-view-id>")?;
+            let selected = resolve_track(client, &selector)?;
+            let value = if action == "next" {
+                client.queue_play_next(selected.path)?
+            } else {
+                client.queue_add(selected.path)?
+            };
+            context.emit(&value)
+        }
+        "move" => {
+            if args.len() != 2 {
+                return Err(CliError::usage(
+                    "queue move requires <from-position> <to-position>",
+                ));
+            }
+            let from = parse_queue_position(&args[0])?;
+            let to = parse_queue_position(&args[1])?;
+            context.emit(&client.queue_move(from, to)?)
+        }
+        "remove" => {
+            let position = exactly_one(args, "queue remove requires <position>")?;
+            context.emit(&client.queue_remove(parse_queue_position(&position)?)?)
+        }
+        "clear" => {
+            ensure_no_args(&args, "queue clear")?;
+            context.emit(&client.queue_clear()?)
+        }
+        _ => Err(CliError::usage(
+            "queue supports add, next, move, remove, or clear",
+        )),
+    }
+}
+
+fn parse_queue_position(value: &str) -> CliResult<usize> {
+    value
+        .parse::<usize>()
+        .ok()
+        .and_then(|position| position.checked_sub(1))
+        .ok_or_else(|| CliError::usage("queue positions are 1-based positive integers"))
 }
 
 fn run_lifecycle(
@@ -286,6 +334,10 @@ Playback shell commands:
   next | previous
   seek <milliseconds|mm:ss>
   status | queue
+  queue add <selector>                Add a track to the end
+  queue next <selector>               Play a track next
+  queue move <from> <to>              Reorder using 1-based positions
+  queue remove <position> | queue clear
   repeat off|one|all
   shuffle on|off
   lifecycle interruption-begin

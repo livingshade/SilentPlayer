@@ -82,6 +82,7 @@ silent --cli --db ./silent.sqlite3 --media-root ./Music favorites add <selector>
 silent --cli --db ./silent.sqlite3 --media-root ./Music favorites remove <selector>
 
 silent --cli --db ./silent.sqlite3 --media-root ./Music playlist list
+silent --cli --db ./silent.sqlite3 --media-root ./Music playlist recent --limit 6
 silent --cli --db ./silent.sqlite3 --media-root ./Music playlist create "Road Trip"
 silent --cli --db ./silent.sqlite3 --media-root ./Music playlist add "Road Trip" <selector>
 silent --cli --db ./silent.sqlite3 --media-root ./Music playlist move "Road Trip" <selector> up
@@ -94,6 +95,10 @@ silent --cli --db ./silent.sqlite3 --media-root ./Music --yes playlist delete "H
 silent --cli --db ./silent.sqlite3 --media-root ./Music history list --limit 100
 silent --cli --db ./silent.sqlite3 --media-root ./Music user show
 ```
+
+Playlists, their manual order, covers, and recent-use timestamps live in SQLite. A complete
+`library package export` copies that state with the managed audio, and package import relocates
+the stored track references to the destination media root.
 
 ## Playback
 
@@ -118,6 +123,11 @@ previous
 seek 1:23
 status
 queue
+queue add <selector>
+queue next <selector>
+queue move <from> <to>
+queue remove <position>
+queue clear
 repeat off|one|all
 shuffle on|off
 lifecycle interruption-begin
@@ -125,6 +135,10 @@ lifecycle interruption-end on|off
 lifecycle output-disconnected
 quit
 ```
+
+Queue positions in the shell are 1-based. Leaving the shell preserves the queue, selected item,
+position, repeat mode, and shuffle mode; the next app or CLI session restores it paused. `stop`
+and `queue clear` explicitly clear the persisted queue.
 
 ## Target parity
 
@@ -134,8 +148,8 @@ quit
 | Library package export/import/zero | Yes | Yes | Yes |
 | Search, loudness analysis, database audit | Yes | Yes | Yes |
 | Music View details/edit/rating/artwork/lyrics/export | Yes | Yes | Yes |
-| Favorites, playlists, history, local user data | Yes | Yes | Yes |
-| Queue, seek, repeat, shuffle, lifecycle rules | Yes | Yes | Yes, in playback shell |
+| Persistent playlists, covers, recent playlists, history, local user data | Yes | Yes | Yes |
+| Persistent editable queue, seek, repeat, shuffle, lifecycle rules | Yes | Yes | Yes, in playback shell |
 | Lock screen, headset commands, Now Playing, background audio session | Yes | Yes | Not applicable |
 
 The internal `player_analyzer` and `player_library_worker` executables remain app workers for

@@ -107,6 +107,26 @@ fn cli_contracts() -> BTreeMap<&'static str, &'static str> {
             "silent --cli playback shell: shuffle",
         ),
         ("player_app_queue", "silent --cli playback shell: queue"),
+        (
+            "player_app_queue_play_next",
+            "silent --cli playback shell: queue next",
+        ),
+        (
+            "player_app_queue_add",
+            "silent --cli playback shell: queue add",
+        ),
+        (
+            "player_app_queue_move",
+            "silent --cli playback shell: queue move",
+        ),
+        (
+            "player_app_queue_remove",
+            "silent --cli playback shell: queue remove",
+        ),
+        (
+            "player_app_queue_clear",
+            "silent --cli playback shell: queue clear",
+        ),
         ("player_app_track_details", "silent --cli track show"),
         ("player_app_edit_track_view", "silent --cli track edit"),
         ("player_app_set_track_notes", "silent --cli track notes set"),
@@ -135,6 +155,10 @@ fn cli_contracts() -> BTreeMap<&'static str, &'static str> {
         ("player_app_favorites", "silent --cli favorites list"),
         ("player_app_history", "silent --cli history list"),
         ("player_app_playlists", "silent --cli playlist list"),
+        (
+            "player_app_recent_playlists",
+            "silent --cli playlist recent",
+        ),
         ("player_app_create_playlist", "silent --cli playlist create"),
         ("player_app_rename_playlist", "silent --cli playlist rename"),
         (

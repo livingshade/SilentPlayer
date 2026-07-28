@@ -41,12 +41,27 @@ enum EngineCommand {
         queue: Vec<Track>,
         start_index: usize,
     },
+    RestoreQueue {
+        queue: Vec<Track>,
+        start_index: usize,
+        position_ms: u64,
+        repeat_mode: RepeatMode,
+        shuffle: bool,
+    },
     PlayQueue {
         queue: Vec<Track>,
         start_index: usize,
         repeat_mode: RepeatMode,
         shuffle: bool,
     },
+    AppendToQueue(Vec<Track>),
+    InsertNext(Vec<Track>),
+    MoveQueueItem {
+        from: usize,
+        to: usize,
+    },
+    RemoveQueueItem(usize),
+    ClearQueue,
     Play,
     Pause,
     Next,
@@ -155,6 +170,23 @@ impl PlayerEngine {
         self.execute(EngineCommand::LoadQueue { queue, start_index })
     }
 
+    pub fn restore_queue(
+        &self,
+        queue: Vec<Track>,
+        start_index: usize,
+        position_ms: u64,
+        repeat_mode: RepeatMode,
+        shuffle: bool,
+    ) -> PlayerResult<()> {
+        self.execute(EngineCommand::RestoreQueue {
+            queue,
+            start_index,
+            position_ms,
+            repeat_mode,
+            shuffle,
+        })
+    }
+
     pub fn play_queue(
         &self,
         queue: Vec<Track>,
@@ -172,6 +204,26 @@ impl PlayerEngine {
 
     pub fn play(&self) -> PlayerResult<()> {
         self.execute(EngineCommand::Play)
+    }
+
+    pub fn append_to_queue(&self, tracks: Vec<Track>) -> PlayerResult<()> {
+        self.execute(EngineCommand::AppendToQueue(tracks))
+    }
+
+    pub fn insert_next(&self, tracks: Vec<Track>) -> PlayerResult<()> {
+        self.execute(EngineCommand::InsertNext(tracks))
+    }
+
+    pub fn move_queue_item(&self, from: usize, to: usize) -> PlayerResult<()> {
+        self.execute(EngineCommand::MoveQueueItem { from, to })
+    }
+
+    pub fn remove_queue_item(&self, index: usize) -> PlayerResult<()> {
+        self.execute(EngineCommand::RemoveQueueItem(index))
+    }
+
+    pub fn clear_queue(&self) -> PlayerResult<()> {
+        self.execute(EngineCommand::ClearQueue)
     }
 
     pub fn pause(&self) -> PlayerResult<()> {
@@ -353,6 +405,29 @@ fn handle_command<B: AudioBackend>(
             }
             Ok(())
         }
+        EngineCommand::RestoreQueue {
+            queue,
+            start_index,
+            position_ms,
+            repeat_mode,
+            shuffle,
+        } => {
+            *loaded_track_id = None;
+            session
+                .set_queue(queue, start_index)
+                .map_err(player_error_from_playback)?;
+            session.set_repeat_mode(repeat_mode);
+            session.set_shuffle(shuffle);
+            session
+                .apply(PlaybackCommand::SeekTo { position_ms })
+                .map_err(player_error_from_playback)?;
+            if session.current_track().is_some() {
+                load_current_if_needed(session, backend, loaded_track_id)?;
+                backend.seek_to(position_ms)?;
+                backend.pause()?;
+            }
+            Ok(())
+        }
         EngineCommand::PlayQueue {
             queue,
             start_index,
@@ -366,6 +441,47 @@ fn handle_command<B: AudioBackend>(
             session.set_repeat_mode(repeat_mode);
             session.set_shuffle(shuffle);
             start_playback(session, backend, loaded_track_id)
+        }
+        EngineCommand::AppendToQueue(tracks) => {
+            session.append_to_queue(tracks);
+            Ok(())
+        }
+        EngineCommand::InsertNext(tracks) => {
+            session.insert_next(tracks);
+            Ok(())
+        }
+        EngineCommand::MoveQueueItem { from, to } => {
+            session
+                .move_queue_item(from, to)
+                .map_err(player_error_from_playback)?;
+            Ok(())
+        }
+        EngineCommand::RemoveQueueItem(index) => {
+            let before = session.current_track().map(|track| track.id);
+            session
+                .remove_queue_item(index)
+                .map_err(player_error_from_playback)?;
+            let after = session.current_track().map(|track| track.id);
+            if before != after {
+                *loaded_track_id = None;
+                if session.current_track().is_some() {
+                    load_current_if_needed(session, backend, loaded_track_id)?;
+                    if session.state().is_playing {
+                        backend.play()?;
+                    }
+                } else {
+                    backend.pause()?;
+                }
+            }
+            Ok(())
+        }
+        EngineCommand::ClearQueue => {
+            if loaded_track_id.is_some() {
+                backend.pause()?;
+            }
+            session.clear_queue();
+            *loaded_track_id = None;
+            Ok(())
         }
         EngineCommand::Play => start_playback(session, backend, loaded_track_id),
         EngineCommand::Pause => {
@@ -720,6 +836,55 @@ mod tests {
         let values = calls.values();
         assert!(values.iter().any(|value| value == "load:a:4.00"));
         assert!(values.iter().any(|value| value == "load:b:4.00"));
+    }
+
+    #[test]
+    fn engine_restores_and_edits_queue_without_restarting_unchanged_current_track() {
+        let calls = Calls(Arc::new(Mutex::new(Vec::new())));
+        let backend_calls = calls.clone();
+        let engine = PlayerEngine::spawn(NormalizationSettings::default(), move || {
+            Ok(FakeBackend {
+                calls: backend_calls,
+                position_ms: Arc::new(AtomicU64::new(0)),
+                finished_sequence: Arc::new(Mutex::new(Vec::new())),
+            })
+        })
+        .unwrap();
+
+        engine
+            .restore_queue(
+                vec![track("a"), track("d")],
+                0,
+                1_200,
+                RepeatMode::All,
+                false,
+            )
+            .unwrap();
+        wait_for_call(&calls, "load:a:4.00");
+        wait_for_call(&calls, "seek:1200");
+        engine.insert_next(vec![track("b"), track("c")]).unwrap();
+        engine.append_to_queue(vec![track("e")]).unwrap();
+        engine.move_queue_item(4, 1).unwrap();
+
+        assert_eq!(
+            calls
+                .values()
+                .iter()
+                .filter(|value| value.starts_with("load:a:"))
+                .count(),
+            1
+        );
+
+        engine.remove_queue_item(0).unwrap();
+        wait_for_call(&calls, "load:e:4.00");
+        engine.play().unwrap();
+        engine.next().unwrap();
+        wait_for_call(&calls, "load:b:4.00");
+        engine.clear_queue().unwrap();
+        wait_for_event(&engine, |event| {
+            matches!(event, PlaybackEvent::TrackChanged(None))
+        });
+        engine.shutdown().unwrap();
     }
 
     #[test]

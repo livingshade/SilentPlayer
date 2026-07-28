@@ -11,6 +11,12 @@ Set `SILENT_SKIP_OPEN=1` when only a build-and-bundle verification is needed.
 
 The macOS executable uses shared SwiftUI view/model code in `PlayerShared` and talks to Rust through the `player_ffi` C ABI. Silent's generic CLI is a first-class third target that uses the same Rust application behavior as macOS and iPhone. The app stores managed audio copies under `~/Music/NormalPlayer/Music` and persistent SQLite state, including loudness analysis results, at `~/Music/NormalPlayer/player_library.sqlite3`.
 
+The shared app service also persists the editable playback queue and playlist state. macOS and
+iPhone expose Play Next, Add to Queue, reorder, remove, and clear actions; reopening the app
+restores the queue paused at its saved item and position. Playlist covers, order, and recent-use
+timestamps are stored in the same database and travel with complete library package
+export/import.
+
 ## iPhone App
 
 The package also contains an iOS entry point:

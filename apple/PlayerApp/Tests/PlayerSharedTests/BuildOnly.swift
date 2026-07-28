@@ -69,23 +69,33 @@ final class PlaybackPolicyTests: XCTestCase {
     func testRemotePlayCommandsAreDisabledDuringAnInterruption() {
         XCTAssertTrue(PlaybackRemoteCommandPolicy.canPlay(
             hasTrack: true,
-            isPlaying: false,
             isInterrupted: false
         ))
         XCTAssertFalse(PlaybackRemoteCommandPolicy.canPlay(
-            hasTrack: true,
-            isPlaying: false,
-            isInterrupted: true
-        ))
-        XCTAssertFalse(PlaybackRemoteCommandPolicy.canTogglePlayPause(
             hasTrack: true,
             isInterrupted: true
         ))
         XCTAssertFalse(PlaybackRemoteCommandPolicy.canPlay(
             hasTrack: false,
-            isPlaying: false,
             isInterrupted: false
         ))
+    }
+
+    func testLockScreenPlaybackCommandsStayAvailableAndRateRepresentsState() {
+        XCTAssertTrue(PlaybackRemoteCommandPolicy.canPlay(
+            hasTrack: true,
+            isInterrupted: false
+        ))
+        XCTAssertTrue(PlaybackRemoteCommandPolicy.canPause(
+            hasTrack: true,
+            isInterrupted: false
+        ))
+        XCTAssertTrue(PlaybackRemoteCommandPolicy.canTogglePlayPause(
+            hasTrack: true,
+            isInterrupted: false
+        ))
+        XCTAssertEqual(PlaybackNowPlayingPolicy.playbackRate(isPlaying: true), 1)
+        XCTAssertEqual(PlaybackNowPlayingPolicy.playbackRate(isPlaying: false), 0)
     }
 
     func testPlaybackPollingOnlyRunsWhileActivelyPlaying() {
@@ -199,6 +209,42 @@ final class AppModelStartupTests: XCTestCase {
         XCTAssertEqual(model.status, "Player unavailable")
         XCTAssertEqual(model.playbackError, model.startupError)
         XCTAssertTrue(model.tracks.isEmpty)
+    }
+}
+
+@MainActor
+final class LibraryPresentationCacheTests: XCTestCase {
+    func testReturningToLibraryUsesSessionCacheUntilExplicitRefresh() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let client = try RustPlayerClient(
+            dbURL: root.appendingPathComponent("library.sqlite3"),
+            mediaRootURL: root.appendingPathComponent("Music", isDirectory: true),
+            repoRoot: root
+        )
+        let model = AppModel(client: client)
+        var loadingMessages: [String] = []
+        let observation = model.$libraryStatus
+            .filter { !$0.isEmpty }
+            .sink { loadingMessages.append($0) }
+
+        await model.bootstrap()
+        let messagesAfterFirstLoad = loadingMessages.count
+        XCTAssertGreaterThan(messagesAfterFirstLoad, 0)
+
+        await model.bootstrap()
+        XCTAssertEqual(loadingMessages.count, messagesAfterFirstLoad)
+
+        await model.showFavorites()
+        await model.showLibrary()
+        XCTAssertEqual(model.libraryScope, .library)
+        XCTAssertEqual(loadingMessages.count, messagesAfterFirstLoad)
+
+        await model.refreshLibrary()
+        XCTAssertGreaterThan(loadingMessages.count, messagesAfterFirstLoad)
+        withExtendedLifetime(observation) {}
     }
 }
 

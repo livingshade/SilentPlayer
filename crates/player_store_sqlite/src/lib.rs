@@ -2,7 +2,8 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use player_core::{
-    ArtworkImage, FileFingerprint, LoudnessInfo, Track, TrackId, TrackViewId, TrackViewKind,
+    ArtworkImage, FileFingerprint, LoudnessInfo, RepeatMode, Track, TrackId, TrackViewId,
+    TrackViewKind,
 };
 use player_error::{PlayerError, PlayerResult};
 use rusqlite::{params, Connection, OptionalExtension};
@@ -23,6 +24,7 @@ pub struct PlaylistSummary {
     pub has_artwork: bool,
     pub created_at_unix_seconds: i64,
     pub updated_at_unix_seconds: i64,
+    pub last_used_at_unix_seconds: i64,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -30,6 +32,15 @@ pub struct PlaylistEntry {
     pub item_id: i64,
     pub position: u32,
     pub track: Track,
+}
+
+#[derive(Clone, Debug)]
+pub struct StoredPlaybackQueue {
+    pub tracks: Vec<Track>,
+    pub current_index: Option<usize>,
+    pub position_ms: u64,
+    pub repeat_mode: RepeatMode,
+    pub shuffle_enabled: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -522,6 +533,7 @@ impl LibraryStore {
                     "track_artwork_refs",
                     "album_artwork_refs",
                     "track_notes",
+                    "playback_queue_items",
                 ] {
                     tx.execute(
                         &format!("UPDATE {table} SET track_path = ?2 WHERE track_path = ?1"),
@@ -546,6 +558,10 @@ impl LibraryStore {
 
     pub fn zero_out(&mut self) -> PlayerResult<()> {
         let tx = self.conn.transaction().map_err(to_store_error)?;
+        tx.execute("DELETE FROM playback_queue_items", [])
+            .map_err(to_store_error)?;
+        tx.execute("DELETE FROM playback_queue_state", [])
+            .map_err(to_store_error)?;
         tx.execute("DELETE FROM playlists", [])
             .map_err(to_store_error)?;
         tx.execute("DELETE FROM tracks", [])
@@ -657,14 +673,20 @@ impl LibraryStore {
     pub fn create_playlist(&mut self, name: &str) -> PlayerResult<i64> {
         let name = clean_required_name(name)?;
         let now = now_unix_seconds();
+        let last_used = self.next_playlist_use_timestamp()?;
         self.conn
             .execute(
                 r#"
-                INSERT INTO playlists (name, created_at_unix_seconds, updated_at_unix_seconds)
-                VALUES (?1, ?2, ?2)
+                INSERT INTO playlists (
+                    name,
+                    created_at_unix_seconds,
+                    updated_at_unix_seconds,
+                    last_used_at_unix_seconds
+                )
+                VALUES (?1, ?2, ?2, ?3)
                 ON CONFLICT(name) DO UPDATE SET updated_at_unix_seconds = playlists.updated_at_unix_seconds
                 "#,
-                params![name, now],
+                params![name, now, last_used],
             )
             .map_err(to_store_error)?;
 
@@ -684,7 +706,8 @@ impl LibraryStore {
                            WHERE playlist_artwork_refs.playlist_id = playlists.id
                        ) AS has_artwork,
                        playlists.created_at_unix_seconds,
-                       playlists.updated_at_unix_seconds
+                       playlists.updated_at_unix_seconds,
+                       playlists.last_used_at_unix_seconds
                 FROM playlists
                 LEFT JOIN playlist_items ON playlist_items.playlist_id = playlists.id
                 GROUP BY playlists.id, playlists.name
@@ -699,6 +722,55 @@ impl LibraryStore {
             .collect::<Result<Vec<_>, _>>()
             .map_err(to_store_error)?;
         Ok(rows)
+    }
+
+    pub fn recent_playlists(&self, limit: usize) -> PlayerResult<Vec<PlaylistSummary>> {
+        let mut stmt = self
+            .conn
+            .prepare(
+                r#"
+                SELECT playlists.id, playlists.name,
+                       COUNT(playlist_items.id) AS track_count,
+                       EXISTS(
+                           SELECT 1 FROM playlist_artwork_refs
+                           WHERE playlist_artwork_refs.playlist_id = playlists.id
+                       ) AS has_artwork,
+                       playlists.created_at_unix_seconds,
+                       playlists.updated_at_unix_seconds,
+                       playlists.last_used_at_unix_seconds
+                FROM playlists
+                LEFT JOIN playlist_items ON playlist_items.playlist_id = playlists.id
+                GROUP BY playlists.id, playlists.name
+                ORDER BY playlists.last_used_at_unix_seconds DESC,
+                         playlists.updated_at_unix_seconds DESC,
+                         lower(playlists.name)
+                LIMIT ?1
+                "#,
+            )
+            .map_err(to_store_error)?;
+
+        let rows = stmt
+            .query_map(
+                params![saturating_i64_from_u64(limit.max(1) as u64)],
+                row_to_playlist_summary,
+            )
+            .map_err(to_store_error)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(to_store_error)?;
+        Ok(rows)
+    }
+
+    pub fn touch_playlist(&mut self, name: &str) -> PlayerResult<bool> {
+        let name = clean_required_name(name)?;
+        let last_used = self.next_playlist_use_timestamp()?;
+        let updated = self
+            .conn
+            .execute(
+                "UPDATE playlists SET last_used_at_unix_seconds = ?2 WHERE name = ?1",
+                params![name, last_used],
+            )
+            .map_err(to_store_error)?;
+        Ok(updated > 0)
     }
 
     pub fn rename_playlist(&mut self, old_name: &str, new_name: &str) -> PlayerResult<()> {
@@ -918,6 +990,146 @@ impl LibraryStore {
         let item_ids = items.iter().map(|item| item.item_id).collect::<Vec<_>>();
         self.rewrite_playlist_positions(playlist_id, &item_ids)?;
         Ok(item_ids.len())
+    }
+
+    pub fn save_playback_queue(
+        &mut self,
+        track_paths: &[PathBuf],
+        current_index: Option<usize>,
+        position_ms: u64,
+        repeat_mode: RepeatMode,
+        shuffle_enabled: bool,
+    ) -> PlayerResult<()> {
+        if let Some(index) = current_index {
+            if index >= track_paths.len() {
+                return Err(PlayerError::invalid_input(format!(
+                    "invalid persisted queue index {index} for queue length {}",
+                    track_paths.len()
+                )));
+            }
+        }
+
+        let tx = self.conn.transaction().map_err(to_store_error)?;
+        tx.execute("DELETE FROM playback_queue_items", [])
+            .map_err(to_store_error)?;
+        {
+            let mut stmt = tx
+                .prepare(
+                    r#"
+                    INSERT INTO playback_queue_items (position, track_path)
+                    VALUES (?1, ?2)
+                    "#,
+                )
+                .map_err(to_store_error)?;
+            for (index, path) in track_paths.iter().enumerate() {
+                stmt.execute(params![
+                    saturating_i64_from_u64(index as u64),
+                    path_to_string(path)
+                ])
+                .map_err(to_store_error)?;
+            }
+        }
+        tx.execute(
+            r#"
+            INSERT INTO playback_queue_state (
+                singleton_id,
+                current_index,
+                position_ms,
+                repeat_mode,
+                shuffle_enabled,
+                updated_at_unix_seconds
+            )
+            VALUES (1, ?1, ?2, ?3, ?4, ?5)
+            ON CONFLICT(singleton_id) DO UPDATE SET
+                current_index = excluded.current_index,
+                position_ms = excluded.position_ms,
+                repeat_mode = excluded.repeat_mode,
+                shuffle_enabled = excluded.shuffle_enabled,
+                updated_at_unix_seconds = excluded.updated_at_unix_seconds
+            "#,
+            params![
+                current_index.map(|index| saturating_i64_from_u64(index as u64)),
+                saturating_i64_from_u64(position_ms),
+                repeat_mode_to_store_value(repeat_mode),
+                shuffle_enabled,
+                now_unix_seconds(),
+            ],
+        )
+        .map_err(to_store_error)?;
+        tx.commit().map_err(to_store_error)
+    }
+
+    pub fn load_playback_queue(&self) -> PlayerResult<StoredPlaybackQueue> {
+        let state = self
+            .conn
+            .query_row(
+                r#"
+                SELECT current_index, position_ms, repeat_mode, shuffle_enabled
+                FROM playback_queue_state
+                WHERE singleton_id = 1
+                "#,
+                [],
+                |row| {
+                    Ok((
+                        row.get::<_, Option<i64>>(0)?,
+                        row.get::<_, i64>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, bool>(3)?,
+                    ))
+                },
+            )
+            .optional()
+            .map_err(to_store_error)?;
+
+        let mut stmt = self
+            .conn
+            .prepare(
+                r#"
+                SELECT tracks.id, tracks.path, tracks.title, tracks.artist, tracks.album,
+                       tracks.album_artist, tracks.genre, tracks.track_number, tracks.disc_number,
+                       tracks.year, tracks.duration_ms, tracks.artwork_count,
+                       tracks.size_bytes, tracks.modified_unix_seconds, tracks.integrated_lufs,
+                       tracks.true_peak_dbtp, tracks.album_integrated_lufs,
+                       tracks.album_true_peak_dbtp, tracks.analysis_version,
+                       tracks.file_hash, tracks.audio_hash,
+                       tracks.view_id, tracks.primary_view_id, tracks.view_kind,
+                       tracks.transform_spec, tracks.quality_profile, tracks.format_name,
+                       tracks.view_name, tracks.user_rating
+                FROM playback_queue_items
+                JOIN tracks ON tracks.path = playback_queue_items.track_path
+                ORDER BY playback_queue_items.position
+                "#,
+            )
+            .map_err(to_store_error)?;
+        let tracks = stmt
+            .query_map([], row_to_track)
+            .map_err(to_store_error)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(to_store_error)?;
+
+        let Some((stored_index, position_ms, repeat_mode, shuffle_enabled)) = state else {
+            return Ok(StoredPlaybackQueue {
+                tracks,
+                current_index: None,
+                position_ms: 0,
+                repeat_mode: RepeatMode::Off,
+                shuffle_enabled: false,
+            });
+        };
+        let current_index = stored_index
+            .and_then(|value| optional_usize(Some(value)))
+            .filter(|index| *index < tracks.len());
+        Ok(StoredPlaybackQueue {
+            position_ms: if current_index.is_some() {
+                position_ms.max(0) as u64
+            } else {
+                0
+            },
+            tracks,
+            current_index,
+            repeat_mode: repeat_mode_from_store_value(&repeat_mode)?,
+            shuffle_enabled,
+        })
     }
 
     pub fn set_favorite(&mut self, path: impl AsRef<Path>, favorite: bool) -> PlayerResult<()> {
@@ -2059,6 +2271,19 @@ impl LibraryStore {
             .map_err(to_store_error)
     }
 
+    fn next_playlist_use_timestamp(&self) -> PlayerResult<i64> {
+        let latest = self
+            .conn
+            .query_row(
+                "SELECT MAX(last_used_at_unix_seconds) FROM playlists",
+                [],
+                |row| row.get::<_, Option<i64>>(0),
+            )
+            .map_err(to_store_error)?
+            .unwrap_or(0);
+        Ok(now_unix_seconds().max(latest.saturating_add(1)))
+    }
+
     fn next_playlist_position(&self, playlist_id: i64) -> PlayerResult<u32> {
         let position: i64 = self
             .conn
@@ -2250,7 +2475,8 @@ impl LibraryStore {
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     name TEXT NOT NULL UNIQUE,
                     created_at_unix_seconds INTEGER NOT NULL,
-                    updated_at_unix_seconds INTEGER NOT NULL
+                    updated_at_unix_seconds INTEGER NOT NULL,
+                    last_used_at_unix_seconds INTEGER NOT NULL DEFAULT 0
                 );
 
                 CREATE TABLE IF NOT EXISTS playlist_artwork (
@@ -2287,6 +2513,20 @@ impl LibraryStore {
 
                 CREATE INDEX IF NOT EXISTS playlist_items_playlist_idx
                     ON playlist_items(playlist_id, position);
+
+                CREATE TABLE IF NOT EXISTS playback_queue_state (
+                    singleton_id INTEGER PRIMARY KEY CHECK(singleton_id = 1),
+                    current_index INTEGER,
+                    position_ms INTEGER NOT NULL DEFAULT 0,
+                    repeat_mode TEXT NOT NULL DEFAULT 'off',
+                    shuffle_enabled INTEGER NOT NULL DEFAULT 0,
+                    updated_at_unix_seconds INTEGER NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS playback_queue_items (
+                    position INTEGER PRIMARY KEY,
+                    track_path TEXT NOT NULL REFERENCES tracks(path) ON DELETE CASCADE
+                );
 
                 CREATE TABLE IF NOT EXISTS favorite_tracks (
                     track_path TEXT PRIMARY KEY REFERENCES tracks(path) ON DELETE CASCADE,
@@ -2353,6 +2593,11 @@ impl LibraryStore {
         self.ensure_column("format_name", "TEXT")?;
         self.ensure_column("view_name", "TEXT")?;
         self.ensure_column("user_rating", "INTEGER")?;
+        self.ensure_table_column(
+            "playlists",
+            "last_used_at_unix_seconds",
+            "INTEGER NOT NULL DEFAULT 0",
+        )?;
         self.ensure_table_column("track_artwork_refs", "asset_id", "TEXT")?;
         self.ensure_table_column("album_artwork_refs", "asset_id", "TEXT")?;
         self.migrate_artwork_references_to_assets()?;
@@ -2739,7 +2984,27 @@ fn row_to_playlist_summary(row: &rusqlite::Row<'_>) -> rusqlite::Result<Playlist
         has_artwork: row.get::<_, i64>(3)? != 0,
         created_at_unix_seconds: row.get(4)?,
         updated_at_unix_seconds: row.get(5)?,
+        last_used_at_unix_seconds: row.get(6)?,
     })
+}
+
+fn repeat_mode_to_store_value(mode: RepeatMode) -> &'static str {
+    match mode {
+        RepeatMode::Off => "off",
+        RepeatMode::One => "one",
+        RepeatMode::All => "all",
+    }
+}
+
+fn repeat_mode_from_store_value(value: &str) -> PlayerResult<RepeatMode> {
+    match value {
+        "off" => Ok(RepeatMode::Off),
+        "one" => Ok(RepeatMode::One),
+        "all" => Ok(RepeatMode::All),
+        _ => Err(PlayerError::store(format!(
+            "invalid persisted repeat mode: {value}"
+        ))),
+    }
 }
 
 fn row_to_artwork(row: &rusqlite::Row<'_>) -> rusqlite::Result<ArtworkImage> {
@@ -3546,6 +3811,88 @@ mod tests {
         assert!(store.playlist_tracks("Road").unwrap().is_empty());
         assert!(store.delete_playlist("Road").unwrap());
         assert!(store.playlists().unwrap().is_empty());
+    }
+
+    #[test]
+    fn orders_recent_playlists_by_last_use() {
+        let mut store = LibraryStore::in_memory().unwrap();
+        store.create_playlist("Morning").unwrap();
+        store.create_playlist("Night").unwrap();
+        store
+            .conn
+            .execute(
+                "UPDATE playlists SET last_used_at_unix_seconds = 10 WHERE name = 'Morning'",
+                [],
+            )
+            .unwrap();
+        store
+            .conn
+            .execute(
+                "UPDATE playlists SET last_used_at_unix_seconds = 20 WHERE name = 'Night'",
+                [],
+            )
+            .unwrap();
+
+        let recent = store.recent_playlists(1).unwrap();
+        assert_eq!(recent.len(), 1);
+        assert_eq!(recent[0].name, "Night");
+        assert_eq!(recent[0].last_used_at_unix_seconds, 20);
+
+        assert!(store.touch_playlist("Morning").unwrap());
+        assert_eq!(
+            store.recent_playlists(2).unwrap()[0].name,
+            "Morning",
+            "opening a playlist should move it to the front of Recents"
+        );
+        assert!(!store.touch_playlist("Missing").unwrap());
+    }
+
+    #[test]
+    fn persists_playback_queue_and_updates_exported_track_paths() {
+        let mut store = LibraryStore::in_memory().unwrap();
+        let first = Track::from_path("/old-library/a.ogg".into());
+        let second = Track::from_path("/old-library/b.ogg".into());
+        store
+            .upsert_tracks(&[first.clone(), second.clone()])
+            .unwrap();
+        store
+            .save_playback_queue(
+                &[first.path.clone(), second.path.clone()],
+                Some(1),
+                2_345,
+                RepeatMode::All,
+                true,
+            )
+            .unwrap();
+
+        let restored = store.load_playback_queue().unwrap();
+        assert_eq!(
+            restored
+                .tracks
+                .iter()
+                .map(|track| track.path.clone())
+                .collect::<Vec<_>>(),
+            vec![first.path.clone(), second.path.clone()]
+        );
+        assert_eq!(restored.current_index, Some(1));
+        assert_eq!(restored.position_ms, 2_345);
+        assert_eq!(restored.repeat_mode, RepeatMode::All);
+        assert!(restored.shuffle_enabled);
+
+        let relocated = PathBuf::from("/new-library/b.ogg");
+        store
+            .replace_track_paths(&[(second.path.clone(), relocated.clone())])
+            .unwrap();
+        assert_eq!(
+            store.load_playback_queue().unwrap().tracks[1].path,
+            relocated
+        );
+
+        store.zero_out().unwrap();
+        let empty = store.load_playback_queue().unwrap();
+        assert!(empty.tracks.is_empty());
+        assert_eq!(empty.current_index, None);
+        assert_eq!(empty.position_ms, 0);
     }
 
     #[test]

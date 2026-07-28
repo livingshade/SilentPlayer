@@ -23,6 +23,7 @@ public struct PhoneContentView: View {
     @State private var pendingSeekProgress: Double?
     @State private var lastExportURL: URL?
     @State private var activeAlert: PhoneAppAlert?
+    @State private var isQueuePresented = false
 
     public init(model: AppModel) {
         self.model = model
@@ -86,6 +87,27 @@ public struct PhoneContentView: View {
         } message: {
             Text("This permanently deletes the current database and managed music files. No internal backup will be created.")
         }
+        .sheet(isPresented: $isQueuePresented) {
+            PhonePlaybackQueueSheet(model: model)
+        }
+        .sheet(isPresented: $model.isPlaylistCreatePresented) {
+            PhonePlaylistCreateSheet(model: model)
+        }
+        .sheet(isPresented: $model.isPlaylistPickerPresented) {
+            PhonePlaylistPickerSheet(model: model)
+        }
+        .sheet(isPresented: $model.isPlaylistSettingsPresented) {
+            PhonePlaylistSettingsSheet(model: model) {
+                presentFileImporter(.playlistSettingsArtwork)
+            }
+        }
+        .sheet(isPresented: $model.isViewEditPresented) {
+            PhoneTrackEditSheet(
+                model: model,
+                chooseArtwork: { presentFileImporter(.editArtwork) },
+                chooseLyrics: { presentFileImporter(.editLyrics) }
+            )
+        }
         .task {
             await model.bootstrap()
             presentError(model.playbackError)
@@ -96,7 +118,7 @@ public struct PhoneContentView: View {
         .onChange(of: selectedTab) { tab in
             switch tab {
             case .library:
-                Task { await model.refreshLibrary(quiet: true) }
+                Task { await model.showLibrary() }
             case .playlists:
                 Task { await model.refreshPlaylists() }
             case .nowPlaying:
@@ -126,15 +148,9 @@ public struct PhoneContentView: View {
                     ToolbarItem(placement: .topBarLeading) {
                         Menu {
                             Button {
-                                Task { await model.refreshLibrary() }
+                                Task { await model.showLibrary() }
                             } label: {
                                 Label("Library", systemImage: "music.note.list")
-                            }
-
-                            Button {
-                                Task { await model.showFavorites() }
-                            } label: {
-                                Label("Favorites", systemImage: "heart")
                             }
 
                             Button {
@@ -191,44 +207,17 @@ public struct PhoneContentView: View {
     private var playlistsTab: some View {
         NavigationStack {
             List {
-                Section {
-                    ForEach(model.playlists) { playlist in
-                        NavigationLink {
-                            PhonePlaylistDetailView(
-                                model: model,
-                                playlist: playlist
-                            )
-                        } label: {
-                            HStack(spacing: 12) {
-                                PhoneArtworkImage(
-                                    artworkURL: playlist.artworkURL,
-                                    placeholderSystemImage: "music.note.house",
-                                    size: 42,
-                                    cornerRadius: 8
-                                )
-                                VStack(alignment: .leading, spacing: 3) {
-                                    Text(playlist.name.phoneCompacted)
-                                        .font(.body.weight(.medium))
-                                        .fixedSize(horizontal: false, vertical: true)
-                                    Text("\(playlist.trackCount) tracks")
-                                        .font(.caption)
-                                        .foregroundStyle(.secondary)
-                                }
-                            }
+                if !model.recentPlaylists.isEmpty {
+                    Section("Recent") {
+                        ForEach(model.recentPlaylists) { playlist in
+                            phonePlaylistLink(playlist)
                         }
-                        .contextMenu {
-                            Button {
-                                Task { await model.playPlaylist(playlist, shuffled: false) }
-                            } label: {
-                                Label("Play in Order", systemImage: "play.fill")
-                            }
+                    }
+                }
 
-                            Button {
-                                Task { await model.playPlaylist(playlist, shuffled: true) }
-                            } label: {
-                                Label("Shuffle", systemImage: "shuffle")
-                            }
-                        }
+                Section(model.recentPlaylists.isEmpty ? "Playlists" : "All Playlists") {
+                    ForEach(model.playlists) { playlist in
+                        phonePlaylistLink(playlist)
                     }
                 }
             }
@@ -243,11 +232,17 @@ public struct PhoneContentView: View {
             }
             .navigationTitle("Playlists")
             .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
+                ToolbarItemGroup(placement: .topBarTrailing) {
                     Button {
                         Task { await model.refreshPlaylists() }
                     } label: {
                         Label("Refresh", systemImage: "arrow.clockwise")
+                    }
+
+                    Button {
+                        model.presentCreatePlaylist()
+                    } label: {
+                        Label("New Playlist", systemImage: "plus")
                     }
                 }
             }
@@ -256,6 +251,48 @@ public struct PhoneContentView: View {
             }
             .safeAreaInset(edge: .bottom) {
                 miniPlayerBar
+            }
+        }
+    }
+
+    private func phonePlaylistLink(_ playlist: PlaylistItem) -> some View {
+        NavigationLink {
+            PhonePlaylistDetailView(model: model, playlist: playlist)
+        } label: {
+            HStack(spacing: 12) {
+                PhoneArtworkImage(
+                    artworkURL: playlist.artworkURL,
+                    placeholderSystemImage: "music.note.house",
+                    size: 42,
+                    cornerRadius: 8
+                )
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(playlist.name.phoneCompacted)
+                        .font(.body.weight(.medium))
+                        .fixedSize(horizontal: false, vertical: true)
+                    Text("\(playlist.trackCount) tracks")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+        .contextMenu {
+            Button {
+                Task { await model.playPlaylist(playlist, shuffled: false) }
+            } label: {
+                Label("Play in Order", systemImage: "play.fill")
+            }
+
+            Button {
+                Task { await model.playPlaylist(playlist, shuffled: true) }
+            } label: {
+                Label("Shuffle", systemImage: "shuffle")
+            }
+
+            Button {
+                model.presentPlaylistSettings(playlist)
+            } label: {
+                Label("Edit Playlist", systemImage: "pencil")
             }
         }
     }
@@ -302,6 +339,15 @@ public struct PhoneContentView: View {
             }
             .navigationTitle("Now Playing")
             .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button {
+                        isQueuePresented = true
+                    } label: {
+                        Label("Queue", systemImage: "music.note.list")
+                    }
+                }
+            }
         }
     }
 
@@ -376,12 +422,11 @@ public struct PhoneContentView: View {
                 }
                 .swipeActions(edge: .trailing) {
                     Button {
-                        model.selectTrack(id: track.id)
-                        Task { await model.setSelectedFavorite(true) }
+                        Task { await model.playNext(track) }
                     } label: {
-                        Label("Favorite", systemImage: "heart")
+                        Label("Play Next", systemImage: "text.line.first.and.arrowtriangle.forward")
                     }
-                    .tint(.pink)
+                    .tint(.blue)
                 }
                 .contextMenu {
                     trackContextMenu(for: track)
@@ -672,10 +717,21 @@ public struct PhoneContentView: View {
         }
 
         Button {
-            model.selectTrack(id: track.id)
-            Task { await model.setSelectedFavorite(true) }
+            Task { await model.playNext(track) }
         } label: {
-            Label("Favorite", systemImage: "heart")
+            Label("Play Next", systemImage: "text.line.first.and.arrowtriangle.forward")
+        }
+
+        Button {
+            Task { await model.addToQueue(track) }
+        } label: {
+            Label("Add to Queue", systemImage: "text.badge.plus")
+        }
+
+        Button {
+            presentPlaylistPicker(for: track)
+        } label: {
+            Label("Add to Playlist", systemImage: "music.note.list")
         }
     }
 
@@ -854,6 +910,93 @@ private enum PhoneTab: Hashable {
     case library
     case playlists
     case nowPlaying
+}
+
+private struct PhonePlaybackQueueSheet: View {
+    @ObservedObject var model: AppModel
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            List {
+                if model.playbackQueue.isEmpty {
+                    VStack(spacing: 10) {
+                        Image(systemName: "music.note.list")
+                            .font(.system(size: 36))
+                            .foregroundStyle(.secondary)
+                        Text("Queue Is Empty")
+                            .font(.headline)
+                        Text("Use Play Next or Add to Queue from a song.")
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
+                            .multilineTextAlignment(.center)
+                    }
+                    .frame(maxWidth: .infinity, minHeight: 220)
+                    .listRowSeparator(.hidden)
+                } else {
+                    ForEach(Array(model.playbackQueue.enumerated()), id: \.element.id) { index, track in
+                        HStack(spacing: 12) {
+                            Image(systemName: model.queuePosition == index ? "speaker.wave.2.fill" : "line.3.horizontal")
+                                .foregroundStyle(model.queuePosition == index ? Color.accentColor : Color.secondary)
+                                .frame(width: 20)
+
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(track.phoneDisplayTitle)
+                                    .lineLimit(2)
+                                Text(track.phoneDisplaySubtitle)
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(1)
+                            }
+                        }
+                        .accessibilityElement(children: .combine)
+                        .accessibilityValue(model.queuePosition == index ? "Currently selected" : "")
+                    }
+                    .onMove(perform: move)
+                    .onDelete { offsets in
+                        Task {
+                            for index in offsets.sorted(by: >) {
+                                await model.removeQueueItem(at: index)
+                            }
+                        }
+                    }
+                }
+            }
+            .navigationTitle("Playing Queue")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Done") {
+                        dismiss()
+                    }
+                }
+
+                ToolbarItemGroup(placement: .topBarTrailing) {
+                    EditButton()
+                        .disabled(model.playbackQueue.isEmpty)
+
+                    Button("Clear", role: .destructive) {
+                        Task { await model.clearPlaybackQueue() }
+                    }
+                    .disabled(model.playbackQueue.isEmpty)
+                }
+            }
+        }
+        .task {
+            await model.refreshPlaybackState()
+        }
+    }
+
+    private func move(from offsets: IndexSet, to destination: Int) {
+        guard let source = offsets.first else {
+            return
+        }
+        let target = destination > source ? destination - 1 : destination
+        guard model.playbackQueue.indices.contains(target) else {
+            return
+        }
+        Task { await model.moveQueueItem(from: source, to: target) }
+    }
 }
 
 private struct PhoneAppAlert: Identifiable {
@@ -1198,10 +1341,15 @@ private struct PhoneTrackDetailView: View {
 
             Section("Actions") {
                 Button {
-                    model.selectTrack(id: currentTrack.id)
-                    Task { await model.setSelectedFavorite(true) }
+                    Task { await model.playNext(currentTrack) }
                 } label: {
-                    Label("Add to Favorites", systemImage: "heart")
+                    Label("Play Next", systemImage: "text.line.first.and.arrowtriangle.forward")
+                }
+
+                Button {
+                    Task { await model.addToQueue(currentTrack) }
+                } label: {
+                    Label("Add to Queue", systemImage: "text.badge.plus")
                 }
 
                 Button {
@@ -1520,6 +1668,18 @@ private struct PhonePlaylistDetailView: View {
                         } label: {
                             Label("Shuffle from Here", systemImage: "shuffle")
                         }
+
+                        Button {
+                            Task { await model.playNext(track) }
+                        } label: {
+                            Label("Play Next", systemImage: "text.line.first.and.arrowtriangle.forward")
+                        }
+
+                        Button {
+                            Task { await model.addToQueue(track) }
+                        } label: {
+                            Label("Add to Queue", systemImage: "text.badge.plus")
+                        }
                     }
                 }
 
@@ -1531,6 +1691,15 @@ private struct PhonePlaylistDetailView: View {
         }
         .navigationTitle(playlist.name.phoneCompacted)
         .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                Button {
+                    model.presentPlaylistSettings(playlist)
+                } label: {
+                    Label("Edit Playlist", systemImage: "ellipsis.circle")
+                }
+            }
+        }
         .task {
             await model.showPlaylist(playlist)
         }
@@ -1572,20 +1741,25 @@ private struct PhoneTrackActionPanel: View {
             Grid(horizontalSpacing: 12, verticalSpacing: 12) {
                 GridRow {
                     Button {
-                        model.selectTrack(id: track.id)
-                        Task { await model.setSelectedFavorite(true) }
+                        Task { await model.playNext(track) }
                     } label: {
-                        Label("Favorite", systemImage: "heart")
+                        Label("Play Next", systemImage: "text.line.first.and.arrowtriangle.forward")
                     }
 
                     Button {
-                        requestAddToPlaylist()
+                        Task { await model.addToQueue(track) }
                     } label: {
-                        Label("Playlist", systemImage: "text.badge.plus")
+                        Label("Queue", systemImage: "text.badge.plus")
                     }
                 }
 
                 GridRow {
+                    Button {
+                        requestAddToPlaylist()
+                    } label: {
+                        Label("Playlist", systemImage: "music.note.list")
+                    }
+
                     Button {
                         model.selectTrack(id: track.id)
                         model.presentViewEdit()
@@ -1594,25 +1768,25 @@ private struct PhoneTrackActionPanel: View {
                     }
 
                     Button {
-                        exportView()
-                    } label: {
-                        Label("Export", systemImage: "square.and.arrow.up")
-                    }
-                }
-
-                GridRow {
-                    Button {
                         requestTrackCover()
                     } label: {
                         Label("Track Cover", systemImage: "photo")
                     }
+                }
 
+                GridRow {
                     Button {
                         requestAlbumCover()
                     } label: {
                         Label("Album Cover", systemImage: "rectangle.stack.badge.plus")
                     }
                     .disabled(!track.hasAlbumIdentity)
+
+                    Button {
+                        exportView()
+                    } label: {
+                        Label("Export", systemImage: "square.and.arrow.up")
+                    }
                 }
             }
             .buttonStyle(.bordered)

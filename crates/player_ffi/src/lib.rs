@@ -46,6 +46,8 @@ pub struct PlayerApp {
     shuffle_enabled: bool,
     is_playing: bool,
     position_ms: u64,
+    last_persisted_queue_position_ms: u64,
+    last_persisted_queue_index: Option<usize>,
     gain_db: Option<f32>,
     loudness_status: Option<String>,
     last_error: Option<String>,
@@ -109,6 +111,7 @@ struct LibraryPackageTrack {
 #[derive(Serialize)]
 struct LibraryPackageSummary {
     tracks: usize,
+    playlists: usize,
     audio_files: usize,
     sidecar_files: usize,
 }
@@ -215,6 +218,9 @@ struct PlaylistDto {
     track_count: usize,
     artwork_path: Option<String>,
     artwork_source: Option<String>,
+    created_at_unix_seconds: i64,
+    updated_at_unix_seconds: i64,
+    last_used_at_unix_seconds: i64,
 }
 
 #[derive(Clone, Debug)]
@@ -310,7 +316,7 @@ pub unsafe extern "C" fn player_app_create(
 fn create_app(db_path: PathBuf, media_root: PathBuf) -> *mut PlayerApp {
     let activity_store = UserActivityStore::for_db(&db_path);
     let local_user = activity_store.load_or_create_profile().ok();
-    Box::into_raw(Box::new(PlayerApp {
+    let mut app = PlayerApp {
         db_path,
         media_root,
         activity_store,
@@ -325,11 +331,17 @@ fn create_app(db_path: PathBuf, media_root: PathBuf) -> *mut PlayerApp {
         shuffle_enabled: false,
         is_playing: false,
         position_ms: 0,
+        last_persisted_queue_position_ms: 0,
+        last_persisted_queue_index: None,
         gain_db: None,
         loudness_status: None,
         last_error: None,
         playback_lifecycle: PlaybackLifecycle::default(),
-    }))
+    };
+    if let Err(error) = app.restore_persisted_queue() {
+        app.last_error = Some(error.to_string());
+    }
+    Box::into_raw(Box::new(app))
 }
 
 #[no_mangle]
@@ -339,6 +351,7 @@ pub unsafe extern "C" fn player_app_destroy(app: *mut PlayerApp) {
     }
     let mut app = Box::from_raw(app);
     app.poll_events();
+    app.persist_queue_state().ok();
     app.finish_active_session("app_destroy").ok();
     drop(app);
 }
@@ -359,6 +372,8 @@ pub unsafe extern "C" fn player_app_export_library(
     ffi_result(|| {
         let app = app_mut(app)?;
         let package_path = PathBuf::from(c_string(package_path)?);
+        app.poll_events();
+        app.persist_queue_state()?;
         app.export_library(&package_path)
     })
 }
@@ -692,8 +707,8 @@ pub unsafe extern "C" fn player_app_play_playlist(
     ffi_result(|| {
         let app = app_mut(app)?;
         let name = c_string(name)?;
-        let tracks = app
-            .store()?
+        let mut store = app.store()?;
+        let tracks = store
             .playlist_tracks(&name)?
             .into_iter()
             .map(|entry| entry.track)
@@ -717,6 +732,7 @@ pub unsafe extern "C" fn player_app_play_playlist(
                     ))
                 })?
         };
+        store.touch_playlist(&name)?;
         app.shuffle_enabled = shuffle;
         app.play_queue_tracks(tracks, start_index)
     })
@@ -817,6 +833,7 @@ pub unsafe extern "C" fn player_app_pause(app: *mut PlayerApp) -> *mut c_char {
         } else {
             app.is_playing = false;
         }
+        app.persist_queue_state()?;
         Ok(app.snapshot())
     })
 }
@@ -826,8 +843,9 @@ pub unsafe extern "C" fn player_app_resume(app: *mut PlayerApp) -> *mut c_char {
     ffi_result(|| {
         let app = app_mut(app)?;
         app.ensure_playback_can_start()?;
-        app.engine()?.play()?;
+        app.ensure_engine_queue_loaded()?.play()?;
         app.poll_events();
+        app.persist_queue_state()?;
         Ok(app.snapshot())
     })
 }
@@ -893,6 +911,7 @@ pub unsafe extern "C" fn player_app_stop(app: *mut PlayerApp) -> *mut c_char {
         app.queue_tracks.clear();
         app.queue_current_index = None;
         app.last_error = None;
+        app.persist_queue_state()?;
         Ok(app.snapshot())
     })
 }
@@ -902,8 +921,9 @@ pub unsafe extern "C" fn player_app_next(app: *mut PlayerApp) -> *mut c_char {
     ffi_result(|| {
         let app = app_mut(app)?;
         app.pending_session_end_reason = Some("next".to_owned());
-        app.engine()?.next()?;
+        app.ensure_engine_queue_loaded()?.next()?;
         app.poll_events();
+        app.persist_queue_state()?;
         Ok(app.snapshot())
     })
 }
@@ -913,8 +933,9 @@ pub unsafe extern "C" fn player_app_previous(app: *mut PlayerApp) -> *mut c_char
     ffi_result(|| {
         let app = app_mut(app)?;
         app.pending_session_end_reason = Some("previous".to_owned());
-        app.engine()?.previous()?;
+        app.ensure_engine_queue_loaded()?.previous()?;
         app.poll_events();
+        app.persist_queue_state()?;
         Ok(app.snapshot())
     })
 }
@@ -924,13 +945,14 @@ pub unsafe extern "C" fn player_app_seek(app: *mut PlayerApp, position_ms: u64) 
     ffi_result(|| {
         let app = app_mut(app)?;
         app.observe_active_position(app.position_ms);
-        app.engine()?.seek_to(position_ms)?;
+        app.ensure_engine_queue_loaded()?.seek_to(position_ms)?;
         app.position_ms = position_ms;
         if let Some(session) = &mut app.active_session {
             session.seek_count = session.seek_count.saturating_add(1);
             session.last_position_ms = position_ms;
         }
         app.poll_events();
+        app.persist_queue_state()?;
         Ok(app.snapshot())
     })
 }
@@ -945,6 +967,7 @@ pub unsafe extern "C" fn player_app_poll(app: *mut PlayerApp) -> *mut c_char {
             }
         }
         app.poll_events();
+        app.persist_queue_if_progressed()?;
         Ok(app.snapshot())
     })
 }
@@ -962,6 +985,7 @@ pub unsafe extern "C" fn player_app_set_repeat_mode(
             engine.set_repeat_mode(repeat_mode)?;
             app.poll_events();
         }
+        app.persist_queue_state()?;
         Ok(app.snapshot())
     })
 }
@@ -975,6 +999,7 @@ pub unsafe extern "C" fn player_app_set_shuffle(app: *mut PlayerApp, enabled: bo
             engine.set_shuffle(enabled)?;
             app.poll_events();
         }
+        app.persist_queue_state()?;
         Ok(app.snapshot())
     })
 }
@@ -990,6 +1015,58 @@ pub unsafe extern "C" fn player_app_queue(app: *mut PlayerApp) -> *mut c_char {
             repeat_mode: repeat_mode_name(app.repeat_mode).to_owned(),
             shuffle_enabled: app.shuffle_enabled,
         })
+    })
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn player_app_queue_play_next(
+    app: *mut PlayerApp,
+    path: *const c_char,
+) -> *mut c_char {
+    ffi_result(|| {
+        let app = app_mut(app)?;
+        let path = PathBuf::from(c_string(path)?);
+        app.add_path_to_queue(&path, true)
+    })
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn player_app_queue_add(
+    app: *mut PlayerApp,
+    path: *const c_char,
+) -> *mut c_char {
+    ffi_result(|| {
+        let app = app_mut(app)?;
+        let path = PathBuf::from(c_string(path)?);
+        app.add_path_to_queue(&path, false)
+    })
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn player_app_queue_move(
+    app: *mut PlayerApp,
+    from: usize,
+    to: usize,
+) -> *mut c_char {
+    ffi_result(|| {
+        let app = app_mut(app)?;
+        app.move_queue_item(from, to)
+    })
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn player_app_queue_remove(app: *mut PlayerApp, index: usize) -> *mut c_char {
+    ffi_result(|| {
+        let app = app_mut(app)?;
+        app.remove_queue_item(index)
+    })
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn player_app_queue_clear(app: *mut PlayerApp) -> *mut c_char {
+    ffi_result(|| {
+        let app = app_mut(app)?;
+        app.clear_queue()
     })
 }
 
@@ -1273,6 +1350,22 @@ pub unsafe extern "C" fn player_app_playlists(app: *mut PlayerApp) -> *mut c_cha
 }
 
 #[no_mangle]
+pub unsafe extern "C" fn player_app_recent_playlists(
+    app: *mut PlayerApp,
+    limit: usize,
+) -> *mut c_char {
+    ffi_result(|| {
+        let app = app_mut(app)?;
+        let store = app.store()?;
+        store
+            .recent_playlists(limit.max(1))?
+            .into_iter()
+            .map(|playlist| app.playlist_to_dto(&store, playlist))
+            .collect::<PlayerResult<Vec<_>>>()
+    })
+}
+
+#[no_mangle]
 pub unsafe extern "C" fn player_app_create_playlist(
     app: *mut PlayerApp,
     name: *const c_char,
@@ -1411,12 +1504,13 @@ pub unsafe extern "C" fn player_app_playlist_tracks(
     ffi_result(|| {
         let app = app_mut(app)?;
         let name = c_string(name)?;
-        let store = app.store()?;
+        let mut store = app.store()?;
         let tracks = store
             .playlist_tracks(&name)?
             .into_iter()
             .map(|entry| entry.track)
             .collect::<Vec<_>>();
+        store.touch_playlist(&name)?;
         track_dtos_with_artwork(&tracks, &store, &app.db_path)
     })
 }
@@ -1528,8 +1622,77 @@ impl ActivePlaybackSession {
 }
 
 impl PlayerApp {
+    fn restore_persisted_queue(&mut self) -> PlayerResult<()> {
+        let store = self.store()?;
+        let restored = store.load_playback_queue()?;
+        let queue_tracks = track_dtos_with_artwork(&restored.tracks, &store, &self.db_path)?;
+        let current_index = if queue_tracks.is_empty() {
+            None
+        } else {
+            Some(
+                restored
+                    .current_index
+                    .unwrap_or(0)
+                    .min(queue_tracks.len() - 1),
+            )
+        };
+
+        self.queue_tracks = queue_tracks;
+        self.queue_current_index = current_index;
+        self.current_track = current_index.and_then(|index| self.queue_tracks.get(index).cloned());
+        self.position_ms = if current_index.is_some() {
+            restored.position_ms
+        } else {
+            0
+        };
+        self.last_persisted_queue_position_ms = self.position_ms;
+        self.last_persisted_queue_index = current_index;
+        self.repeat_mode = restored.repeat_mode;
+        self.shuffle_enabled = restored.shuffle_enabled;
+        self.is_playing = false;
+        Ok(())
+    }
+
+    fn persist_queue_state(&mut self) -> PlayerResult<()> {
+        let paths = self
+            .queue_tracks
+            .iter()
+            .map(|track| PathBuf::from(&track.path))
+            .collect::<Vec<_>>();
+        let current_index = self
+            .queue_current_index
+            .filter(|index| *index < paths.len());
+        let position_ms = if current_index.is_some() {
+            self.position_ms
+        } else {
+            0
+        };
+        self.store()?.save_playback_queue(
+            &paths,
+            current_index,
+            position_ms,
+            self.repeat_mode,
+            self.shuffle_enabled,
+        )?;
+        self.last_persisted_queue_position_ms = position_ms;
+        self.last_persisted_queue_index = current_index;
+        Ok(())
+    }
+
+    fn persist_queue_if_progressed(&mut self) -> PlayerResult<()> {
+        let position_delta = self
+            .position_ms
+            .abs_diff(self.last_persisted_queue_position_ms);
+        if self.queue_current_index != self.last_persisted_queue_index || position_delta >= 5_000 {
+            self.persist_queue_state()?;
+        }
+        Ok(())
+    }
+
     fn export_library(&self, package_path: &Path) -> PlayerResult<LibraryPackageSummary> {
-        let tracks = self.store()?.tracks()?;
+        let store = self.store()?;
+        let tracks = store.tracks()?;
+        let playlist_count = store.playlists()?.len();
         let package_music_root = package_path.join(LIBRARY_PACKAGE_MUSIC_DIRECTORY);
         fs::create_dir_all(&package_music_root)
             .map_err(|source| PlayerError::io(&package_music_root, source))?;
@@ -1563,6 +1726,7 @@ impl PlayerApp {
 
         Ok(LibraryPackageSummary {
             tracks: tracks.len(),
+            playlists: playlist_count,
             audio_files: tracks.len(),
             sidecar_files,
         })
@@ -1658,8 +1822,11 @@ impl PlayerApp {
         }
 
         self.store()?.replace_track_paths(&replacements)?;
+        self.restore_persisted_queue()?;
+        let playlist_count = self.store()?.playlists()?.len();
         Ok(LibraryPackageSummary {
             tracks: manifest.tracks.len(),
+            playlists: playlist_count,
             audio_files: manifest.tracks.len(),
             sidecar_files,
         })
@@ -1679,8 +1846,12 @@ impl PlayerApp {
         self.current_track = None;
         self.queue_tracks.clear();
         self.queue_current_index = None;
+        self.repeat_mode = RepeatMode::Off;
+        self.shuffle_enabled = false;
         self.is_playing = false;
         self.position_ms = 0;
+        self.last_persisted_queue_position_ms = 0;
+        self.last_persisted_queue_index = None;
         self.gain_db = None;
         self.loudness_status = None;
         self.last_error = None;
@@ -1863,6 +2034,149 @@ impl PlayerApp {
         self.queue_tracks = queue_tracks;
         self.last_error = None;
         self.poll_events();
+        self.persist_queue_state()?;
+        Ok(self.snapshot())
+    }
+
+    fn add_path_to_queue(
+        &mut self,
+        path: &Path,
+        play_next: bool,
+    ) -> PlayerResult<PlaybackSnapshot> {
+        self.poll_events();
+        let store = self.store()?;
+        let track = store.track_by_path(path)?.ok_or_else(|| {
+            PlayerError::store(format!("track is not in library: {}", path.display()))
+        })?;
+        let existing_index = self
+            .queue_tracks
+            .iter()
+            .position(|queued| queued.primary_view_id == track.primary_view_id.value());
+
+        if let Some(existing_index) = existing_index {
+            if play_next {
+                let current_index = self.queue_current_index.unwrap_or(0);
+                if existing_index != current_index {
+                    let target_index = if existing_index < current_index {
+                        current_index
+                    } else {
+                        (current_index + 1).min(self.queue_tracks.len() - 1)
+                    };
+                    if let Some(engine) = self.engine.as_ref() {
+                        engine.move_queue_item(existing_index, target_index)?;
+                    } else {
+                        self.queue_current_index = moved_queue_index(
+                            self.queue_current_index,
+                            existing_index,
+                            target_index,
+                        );
+                    }
+                    let queued = self.queue_tracks.remove(existing_index);
+                    self.queue_tracks.insert(target_index, queued);
+                    self.poll_events();
+                }
+            }
+            self.persist_queue_state()?;
+            return Ok(self.snapshot());
+        }
+
+        let dto = track_to_dto_with_artwork(&track, &store, &self.db_path)?;
+        let insert_index = if play_next {
+            self.queue_current_index
+                .map(|index| (index + 1).min(self.queue_tracks.len()))
+                .unwrap_or(self.queue_tracks.len())
+        } else {
+            self.queue_tracks.len()
+        };
+        if play_next {
+            if let Some(engine) = self.engine.as_ref() {
+                engine.insert_next(vec![track])?;
+            }
+            self.queue_tracks.insert(insert_index, dto);
+        } else {
+            if let Some(engine) = self.engine.as_ref() {
+                engine.append_to_queue(vec![track])?;
+            }
+            self.queue_tracks.push(dto);
+        }
+        if self.queue_current_index.is_none() {
+            self.queue_current_index = Some(0);
+            self.current_track = self.queue_tracks.first().cloned();
+            self.position_ms = 0;
+        }
+        self.poll_events();
+        self.persist_queue_state()?;
+        Ok(self.snapshot())
+    }
+
+    fn move_queue_item(&mut self, from: usize, to: usize) -> PlayerResult<PlaybackSnapshot> {
+        let len = self.queue_tracks.len();
+        if from >= len || to >= len {
+            return Err(PlayerError::invalid_input(format!(
+                "queue move indexes must be below {len}: {from} -> {to}"
+            )));
+        }
+        if let Some(engine) = self.engine.as_ref() {
+            engine.move_queue_item(from, to)?;
+        } else {
+            self.queue_current_index = moved_queue_index(self.queue_current_index, from, to);
+        }
+        let track = self.queue_tracks.remove(from);
+        self.queue_tracks.insert(to, track);
+        self.poll_events();
+        self.persist_queue_state()?;
+        Ok(self.snapshot())
+    }
+
+    fn remove_queue_item(&mut self, index: usize) -> PlayerResult<PlaybackSnapshot> {
+        if index >= self.queue_tracks.len() {
+            return Err(PlayerError::invalid_input(format!(
+                "queue index {index} is outside queue length {}",
+                self.queue_tracks.len()
+            )));
+        }
+        let removed_current = self.queue_current_index == Some(index);
+        if removed_current {
+            self.pending_session_end_reason = Some("removed_from_queue".to_owned());
+        }
+        if let Some(engine) = self.engine.as_ref() {
+            engine.remove_queue_item(index)?;
+        }
+        self.queue_tracks.remove(index);
+        if self.engine.is_none() {
+            self.queue_current_index = match self.queue_current_index {
+                _ if self.queue_tracks.is_empty() => None,
+                Some(current) if current == index => Some(index.min(self.queue_tracks.len() - 1)),
+                Some(current) if index < current => Some(current - 1),
+                current => current,
+            };
+            self.current_track = self
+                .queue_current_index
+                .and_then(|current| self.queue_tracks.get(current).cloned());
+            if removed_current {
+                self.position_ms = 0;
+            }
+        }
+        self.poll_events();
+        self.persist_queue_state()?;
+        Ok(self.snapshot())
+    }
+
+    fn clear_queue(&mut self) -> PlayerResult<PlaybackSnapshot> {
+        let had_engine = self.engine.is_some();
+        if let Some(engine) = self.engine.as_ref() {
+            self.pending_session_end_reason = Some("queue_cleared".to_owned());
+            engine.clear_queue()?;
+        }
+        self.queue_tracks.clear();
+        self.queue_current_index = None;
+        self.is_playing = false;
+        self.position_ms = 0;
+        self.poll_events();
+        if !had_engine {
+            self.current_track = None;
+        }
+        self.persist_queue_state()?;
         Ok(self.snapshot())
     }
 
@@ -1901,6 +2215,48 @@ impl PlayerApp {
         Ok(self.engine.as_ref().expect("engine just initialized"))
     }
 
+    fn ensure_engine_queue_loaded(&mut self) -> PlayerResult<&PlayerEngine> {
+        if self.engine.is_none() {
+            let restored = if self.queue_tracks.is_empty() {
+                None
+            } else {
+                let store = self.store()?;
+                let mut tracks = Vec::with_capacity(self.queue_tracks.len());
+                for queued in &self.queue_tracks {
+                    tracks.push(store.track_by_path(&queued.path)?.ok_or_else(|| {
+                        PlayerError::store(format!(
+                            "queued track is not in library: {}",
+                            queued.path
+                        ))
+                    })?);
+                }
+                Some((
+                    tracks,
+                    self.queue_current_index.unwrap_or(0),
+                    self.position_ms,
+                    self.repeat_mode,
+                    self.shuffle_enabled,
+                ))
+            };
+            let engine =
+                PlayerEngine::spawn(NormalizationSettings::default(), RodioBackend::open_default)?;
+            if let Some((tracks, current_index, position_ms, repeat_mode, shuffle_enabled)) =
+                restored
+            {
+                engine.restore_queue(
+                    tracks,
+                    current_index,
+                    position_ms,
+                    repeat_mode,
+                    shuffle_enabled,
+                )?;
+            }
+            self.engine = Some(engine);
+            self.poll_events();
+        }
+        Ok(self.engine.as_ref().expect("engine just initialized"))
+    }
+
     fn ensure_playback_can_start(&mut self) -> PlayerResult<()> {
         if self.playback_lifecycle.request_playback_start() {
             Ok(())
@@ -1926,7 +2282,7 @@ impl PlayerApp {
             }
             PlaybackLifecycleAction::Resume => {
                 if self.current_track.is_some() {
-                    self.engine()?.play()?;
+                    self.ensure_engine_queue_loaded()?.play()?;
                     self.poll_events();
                 }
             }
@@ -2089,6 +2445,9 @@ impl PlayerApp {
             track_count: playlist.track_count,
             artwork_path,
             artwork_source,
+            created_at_unix_seconds: playlist.created_at_unix_seconds,
+            updated_at_unix_seconds: playlist.updated_at_unix_seconds,
+            last_used_at_unix_seconds: playlist.last_used_at_unix_seconds,
         })
     }
 
@@ -2349,6 +2708,20 @@ fn repeat_mode_name(repeat_mode: RepeatMode) -> &'static str {
         RepeatMode::One => "one",
         RepeatMode::All => "all",
     }
+}
+
+fn moved_queue_index(current: Option<usize>, from: usize, to: usize) -> Option<usize> {
+    current.map(|current| {
+        if current == from {
+            to
+        } else if from < current && to >= current {
+            current - 1
+        } else if from > current && to <= current {
+            current + 1
+        } else {
+            current
+        }
+    })
 }
 
 fn derived_view_audio_path(
@@ -3224,6 +3597,7 @@ mod tests {
         };
         assert_ok(&exported);
         assert_eq!(exported["data"]["tracks"], 1);
+        assert_eq!(exported["data"]["playlists"], 1);
         assert_eq!(exported["data"]["audio_files"], 1);
         assert_eq!(exported["data"]["sidecar_files"], 2);
         assert!(package_root.join(LIBRARY_PACKAGE_DATABASE_FILE).is_file());
@@ -3260,6 +3634,7 @@ mod tests {
         };
         assert_ok(&imported);
         assert_eq!(imported["data"]["tracks"], 1);
+        assert_eq!(imported["data"]["playlists"], 1);
         assert_eq!(imported["data"]["audio_files"], 1);
         assert_eq!(imported["data"]["sidecar_files"], 2);
 
@@ -4609,6 +4984,10 @@ mod tests {
             track.set_primary_audio_hash("queue-second");
             track
         };
+        LibraryStore::open(&db_path)
+            .unwrap()
+            .upsert_tracks(&[first.clone(), second.clone()])
+            .unwrap();
 
         unsafe {
             let app_ref = &mut *app;
@@ -4630,6 +5009,108 @@ mod tests {
         assert_eq!(snapshot["data"]["repeat_mode"], "all");
         assert_eq!(snapshot["data"]["shuffle_enabled"], true);
         assert_eq!(snapshot["data"]["current_track"]["title"], "Second");
+
+        unsafe { player_app_destroy(app) };
+        fs::remove_file(db_path).ok();
+        fs::remove_dir_all(media_root).ok();
+    }
+
+    #[test]
+    fn app_edits_and_restores_the_persisted_queue_without_opening_audio() {
+        let db_path = temp_db_path("persisted_queue");
+        let media_root = temp_dir("persisted_queue_media");
+        fs::create_dir_all(&media_root).unwrap();
+        let tracks = ["first", "second", "third"]
+            .into_iter()
+            .map(|name| {
+                let path = media_root.join(format!("{name}.ogg"));
+                fs::write(&path, b"queue fixture").unwrap();
+                let mut track = Track::from_path(path);
+                track.title = name.to_owned();
+                track.set_primary_audio_hash(format!("queue-{name}"));
+                track
+            })
+            .collect::<Vec<_>>();
+        LibraryStore::open(&db_path)
+            .unwrap()
+            .upsert_tracks(&tracks)
+            .unwrap();
+
+        let app = create_app(&db_path, &media_root);
+        for track in &tracks[..2] {
+            let response = unsafe {
+                call_json(player_app_queue_add(
+                    app,
+                    c_string_arg(&track.path).as_ptr(),
+                ))
+            };
+            assert_ok(&response);
+        }
+        let play_next = unsafe {
+            call_json(player_app_queue_play_next(
+                app,
+                c_string_arg(&tracks[2].path).as_ptr(),
+            ))
+        };
+        assert_ok(&play_next);
+        unsafe { player_app_destroy(app) };
+
+        let restored_app = create_app(&db_path, &media_root);
+        let restored = unsafe { call_json(player_app_queue(restored_app)) };
+        assert_ok(&restored);
+        assert_eq!(
+            queue_paths(&restored),
+            vec![
+                path_to_string_lossy(&tracks[0].path),
+                path_to_string_lossy(&tracks[2].path),
+                path_to_string_lossy(&tracks[1].path),
+            ]
+        );
+        assert_eq!(restored["data"]["current_index"], 0);
+
+        assert_ok(&unsafe { call_json(player_app_queue_move(restored_app, 2, 1)) });
+        assert_ok(&unsafe { call_json(player_app_queue_remove(restored_app, 0)) });
+        let edited = unsafe { call_json(player_app_queue(restored_app)) };
+        assert_eq!(
+            queue_paths(&edited),
+            vec![
+                path_to_string_lossy(&tracks[1].path),
+                path_to_string_lossy(&tracks[2].path),
+            ]
+        );
+        assert_eq!(edited["data"]["current_index"], 0);
+
+        assert_ok(&unsafe { call_json(player_app_queue_clear(restored_app)) });
+        let cleared = unsafe { call_json(player_app_queue(restored_app)) };
+        assert!(cleared["data"]["tracks"].as_array().unwrap().is_empty());
+
+        unsafe { player_app_destroy(restored_app) };
+        fs::remove_file(db_path).ok();
+        fs::remove_dir_all(media_root).ok();
+    }
+
+    #[test]
+    fn app_exposes_recent_playlists_with_portable_timestamps() {
+        let db_path = temp_db_path("recent_playlists");
+        let media_root = temp_dir("recent_playlists_media");
+        fs::create_dir_all(&media_root).unwrap();
+        let app = create_app(&db_path, &media_root);
+        for name in ["Morning", "Night"] {
+            assert_ok(&unsafe {
+                call_json(player_app_create_playlist(app, c_string_arg(name).as_ptr()))
+            });
+        }
+
+        let recent = unsafe { call_json(player_app_recent_playlists(app, 1)) };
+        assert_ok(&recent);
+        let playlists = recent["data"].as_array().unwrap();
+        assert_eq!(playlists.len(), 1);
+        assert!(playlists[0]["created_at_unix_seconds"]
+            .as_i64()
+            .is_some_and(|value| value > 0));
+        assert!(playlists[0]["last_used_at_unix_seconds"]
+            .as_i64()
+            .is_some_and(|value| value > 0));
 
         unsafe { player_app_destroy(app) };
         fs::remove_file(db_path).ok();
@@ -5016,6 +5497,15 @@ mod tests {
 
     fn playlist_paths(response: &Value) -> Vec<String> {
         response["data"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|track| track["path"].as_str().unwrap().to_owned())
+            .collect()
+    }
+
+    fn queue_paths(response: &Value) -> Vec<String> {
+        response["data"]["tracks"]
             .as_array()
             .unwrap()
             .iter()

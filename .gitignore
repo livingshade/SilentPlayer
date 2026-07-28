@@ -2,6 +2,7 @@
 /dist/
 /apple/PlayerApp/.build/
 /apple/PlayerApp/.build-*/
+/apple/PlayerApp/.derived-ios-*/
 /apple/PlayerApp/.xcode-derived-*/
 /apple/PlayerApp/Vendor/PlayerFFI.xcframework/
 /apple/PlayerApp/player_library.sqlite3

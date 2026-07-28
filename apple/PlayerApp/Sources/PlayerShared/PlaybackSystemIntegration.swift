@@ -63,10 +63,16 @@ public enum PlaybackRouteChangePolicy {
 public enum PlaybackRemoteCommandPolicy {
     public static func canPlay(
         hasTrack: Bool,
-        isPlaying: Bool,
         isInterrupted: Bool
     ) -> Bool {
-        hasTrack && !isPlaying && !isInterrupted
+        hasTrack && !isInterrupted
+    }
+
+    public static func canPause(
+        hasTrack: Bool,
+        isInterrupted: Bool
+    ) -> Bool {
+        hasTrack && !isInterrupted
     }
 
     public static func canTogglePlayPause(
@@ -74,6 +80,12 @@ public enum PlaybackRemoteCommandPolicy {
         isInterrupted: Bool
     ) -> Bool {
         hasTrack && !isInterrupted
+    }
+}
+
+public enum PlaybackNowPlayingPolicy {
+    public static func playbackRate(isPlaying: Bool) -> Double {
+        isPlaying ? 1 : 0
     }
 }
 
@@ -139,7 +151,6 @@ public final class IOSPlaybackSystemIntegration: NSObject, PlaybackSystemIntegra
 
     public func playbackDidStop() {
         MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
-        MPNowPlayingInfoCenter.default().playbackState = .stopped
         try? audioSession.setActive(false, options: .notifyOthersOnDeactivation)
     }
 
@@ -380,14 +391,17 @@ public final class IOSPlaybackSystemIntegration: NSObject, PlaybackSystemIntegra
         let hasTrack = model.nowPlaying != nil
         center.playCommand.isEnabled = PlaybackRemoteCommandPolicy.canPlay(
             hasTrack: hasTrack,
-            isPlaying: model.isPlaying,
             isInterrupted: model.isAudioInterrupted
         )
-        center.pauseCommand.isEnabled = hasTrack && model.isPlaying
-        center.togglePlayPauseCommand.isEnabled = PlaybackRemoteCommandPolicy.canTogglePlayPause(
+        center.pauseCommand.isEnabled = PlaybackRemoteCommandPolicy.canPause(
             hasTrack: hasTrack,
             isInterrupted: model.isAudioInterrupted
         )
+        center.togglePlayPauseCommand.isEnabled =
+            PlaybackRemoteCommandPolicy.canTogglePlayPause(
+                hasTrack: hasTrack,
+                isInterrupted: model.isAudioInterrupted
+            )
         center.nextTrackCommand.isEnabled = model.queueCount > 1
         center.previousTrackCommand.isEnabled = model.queueCount > 1
         center.changePlaybackPositionCommand.isEnabled = model.nowPlaying?.durationMS != nil
@@ -413,7 +427,9 @@ public final class IOSPlaybackSystemIntegration: NSObject, PlaybackSystemIntegra
             MPMediaItemPropertyArtist: track.artist,
             MPMediaItemPropertyAlbumTitle: track.album,
             MPNowPlayingInfoPropertyElapsedPlaybackTime: Double(model.playbackElapsedMS) / 1_000,
-            MPNowPlayingInfoPropertyPlaybackRate: model.isPlaying ? 1.0 : 0.0,
+            MPNowPlayingInfoPropertyPlaybackRate: PlaybackNowPlayingPolicy.playbackRate(
+                isPlaying: model.isPlaying
+            ),
             MPNowPlayingInfoPropertyDefaultPlaybackRate: 1.0,
             MPNowPlayingInfoPropertyMediaType: MPNowPlayingInfoMediaType.audio.rawValue
         ]
@@ -429,7 +445,6 @@ public final class IOSPlaybackSystemIntegration: NSObject, PlaybackSystemIntegra
         }
 
         MPNowPlayingInfoCenter.default().nowPlayingInfo = info
-        MPNowPlayingInfoCenter.default().playbackState = model.isPlaying ? .playing : .paused
         updateRemoteCommandAvailability()
     }
 

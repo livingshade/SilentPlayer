@@ -11,6 +11,7 @@ public struct ImportSummary: Hashable, Sendable {
 
 public struct LibraryPackageSummary: Hashable, Sendable {
     public let tracks: Int
+    public let playlists: Int
     public let audioFiles: Int
     public let sidecarFiles: Int
 }
@@ -52,6 +53,9 @@ public struct PlaylistItem: Identifiable, Hashable, Sendable {
     public let trackCount: Int
     public let artworkURL: URL?
     public let artworkSource: String?
+    public let createdAtUnixSeconds: Int64
+    public let updatedAtUnixSeconds: Int64
+    public let lastUsedAtUnixSeconds: Int64
 }
 
 public struct PlaybackSnapshot: Hashable, Sendable {
@@ -545,6 +549,52 @@ public final class RustPlayerClient: @unchecked Sendable {
         }
     }
 
+    public func playNext(path: String) throws -> PlaybackSnapshot {
+        try sync {
+            try path.withCString { pathValue in
+                try decode(
+                    player_app_queue_play_next(app, pathValue),
+                    as: PlaybackSnapshotDTO.self
+                ).model
+            }
+        }
+    }
+
+    public func addToQueue(path: String) throws -> PlaybackSnapshot {
+        try sync {
+            try path.withCString { pathValue in
+                try decode(
+                    player_app_queue_add(app, pathValue),
+                    as: PlaybackSnapshotDTO.self
+                ).model
+            }
+        }
+    }
+
+    public func moveQueueItem(from: Int, to: Int) throws -> PlaybackSnapshot {
+        try sync {
+            try decode(
+                player_app_queue_move(app, max(0, from), max(0, to)),
+                as: PlaybackSnapshotDTO.self
+            ).model
+        }
+    }
+
+    public func removeQueueItem(at index: Int) throws -> PlaybackSnapshot {
+        try sync {
+            try decode(
+                player_app_queue_remove(app, max(0, index)),
+                as: PlaybackSnapshotDTO.self
+            ).model
+        }
+    }
+
+    public func clearQueue() throws -> PlaybackSnapshot {
+        try sync {
+            try decode(player_app_queue_clear(app), as: PlaybackSnapshotDTO.self).model
+        }
+    }
+
     public func trackDetails(path: String) throws -> TrackDetails {
         try sync {
             try path.withCString { pathValue in
@@ -667,6 +717,15 @@ public final class RustPlayerClient: @unchecked Sendable {
     public func playlists() throws -> [PlaylistItem] {
         try sync {
             try decode(player_app_playlists(app), as: [PlaylistDTO].self).map(\.model)
+        }
+    }
+
+    public func recentPlaylists(limit: Int = 6) throws -> [PlaylistItem] {
+        try sync {
+            try decode(
+                player_app_recent_playlists(app, max(1, limit)),
+                as: [PlaylistDTO].self
+            ).map(\.model)
         }
     }
 
@@ -894,12 +953,14 @@ private struct ImportSummaryDTO: Decodable {
 
 private struct LibraryPackageSummaryDTO: Decodable {
     let tracks: Int
+    let playlists: Int
     let audioFiles: Int
     let sidecarFiles: Int
 
     var model: LibraryPackageSummary {
         LibraryPackageSummary(
             tracks: tracks,
+            playlists: playlists,
             audioFiles: audioFiles,
             sidecarFiles: sidecarFiles
         )
@@ -976,6 +1037,9 @@ private struct PlaylistDTO: Decodable {
     let trackCount: Int
     let artworkPath: String?
     let artworkSource: String?
+    let createdAtUnixSeconds: Int64
+    let updatedAtUnixSeconds: Int64
+    let lastUsedAtUnixSeconds: Int64
 
     var model: PlaylistItem {
         PlaylistItem(
@@ -983,7 +1047,10 @@ private struct PlaylistDTO: Decodable {
             name: name,
             trackCount: trackCount,
             artworkURL: artworkPath.map { URL(fileURLWithPath: $0) },
-            artworkSource: artworkSource
+            artworkSource: artworkSource,
+            createdAtUnixSeconds: createdAtUnixSeconds,
+            updatedAtUnixSeconds: updatedAtUnixSeconds,
+            lastUsedAtUnixSeconds: lastUsedAtUnixSeconds
         )
     }
 }

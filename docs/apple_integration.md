@@ -34,13 +34,17 @@ Swift/Apple 层负责：
 - 耳机、CarPlay、AirPlay、系统音量。
 - iOS 文件授权和沙盒访问。
 
-Apple 平台细节保持原生，队列和播放规则保持跨平台一致。Swift 不拥有第二套播放状态机。
+Apple 平台细节保持原生，队列和播放规则保持跨平台一致。Swift 不拥有第二套播放状态机。播放队列（曲目顺序、当前项、进度、循环和随机模式）由 Rust/SQLite 持久化，macOS、iPhone 和 CLI 共用 Play Next、Add to Queue、移动、删除和清空语义；正常退出后会以暂停状态恢复。
+
+歌单同样由 SQLite 持久化，保存封面引用、手动曲序与最近使用时间。完整资料库 package 直接携带这些表，导入时由 Rust 统一改写音乐文件路径，因此歌单在 macOS、iPhone 与 CLI 间可以正常导入导出。Apple 界面以最近 6 个歌单作为快捷入口，不再把收藏作为主要导航。
 
 Normalize 增益由 Rodio 播放 backend 应用到渲染链路，不修改系统音量。`player_engine` 的命令只有在 backend 操作完成后才返回；Swift 随后读取已经确认的 snapshot，不使用固定延时猜测状态。
 
 当前 iOS 外壳已经完成系统播放集成：使用 `.playback` / `.longFormAudio` 配置并按需激活 `AVAudioSession`，通过 `MPNowPlayingInfoCenter` 发布锁屏标题、艺人、专辑、封面、时长、进度和播放状态，通过 `MPRemoteCommandCenter` 接收播放、暂停、上一首、下一首、拖动进度、循环和随机命令。来电等系统中断与耳机断开事件会进入 Rust `PlaybackLifecycle` 状态机，只有中断前正在播放且系统允许恢复时才会自动恢复。模拟器 app bundle 声明了 `UIBackgroundModes = audio`。
 
 锁屏播放信息按事件更新：换歌、元数据、播放状态和跳转位置变化时重新发布；正常播放期间由系统根据已发布的进度和速率推算时间，不随 Swift 的播放轮询重复提交整份 `MPNowPlayingInfoCenter` 字典。
+
+锁屏传输控制同时支持 `playCommand`、`pauseCommand` 和 `togglePlayPauseCommand`。这些命令的 `isEnabled` 只表示当前曲目是否允许交互，不用来表达正在播放还是暂停；实际状态由 `MPNowPlayingInfoPropertyPlaybackRate` 的 `1.0` 或 `0.0` 表达。iOS 不写仅适用于 macOS 的 `MPNowPlayingInfoCenter.playbackState`。
 
 播放进度刷新也按活跃状态控制：Rust 引擎只在正在播放时使用短超时检查曲目是否结束，暂停时阻塞等待命令，停止时关闭引擎并释放音频输出；未结束的周期检查不会发布完整快照。Apple 客户端仅在存在当前曲目且正在播放时以 1 秒间隔（带定时器容差）请求进度，任务使用 utility 优先级，并且只发布实际发生变化的模型字段。暂停、停止和音频中断期间不会保留进度轮询定时器。
 

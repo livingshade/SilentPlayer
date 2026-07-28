@@ -560,6 +560,15 @@ fn run_playlist(context: &CliContext, mut args: Vec<String>) -> CliResult<()> {
             let mut client = context.open_client()?;
             context.emit(&client.playlists()?)
         }
+        "recent" => {
+            let limit = if args.is_empty() {
+                6
+            } else {
+                parse_required_limit(args)?
+            };
+            let mut client = context.open_client()?;
+            context.emit(&client.recent_playlists(limit)?)
+        }
         "show" => {
             let name = one_value(args, "playlist show requires <name>")?;
             let mut client = context.open_client()?;
@@ -1061,6 +1070,7 @@ fn print_playlist_help() {
         "\
 Usage:
   silent --cli [options] playlist list
+  silent --cli [options] playlist recent [--limit <n>]
   silent --cli [options] playlist show|create|delete|clear <name>
   silent --cli [options] playlist rename <old-name> <new-name>
   silent --cli [options] playlist add|remove <name> <selector>

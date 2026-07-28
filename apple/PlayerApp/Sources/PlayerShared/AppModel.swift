@@ -150,10 +150,18 @@ public struct TrackViewChoice: Identifiable, Hashable, Sendable {
     public let total: Int
 }
 
+private struct LibraryPresentationCache {
+    var views: [TrackItem]
+    var activeViewIDByPrimaryID: [String: String]
+    var selectedViewID: String?
+}
+
 @MainActor
 public final class AppModel: ObservableObject {
     @Published public var tracks: [TrackItem] = []
     @Published public var playlists: [PlaylistItem] = []
+    @Published public var recentPlaylists: [PlaylistItem] = []
+    @Published public var playbackQueue: [TrackItem] = []
     @Published public var selectedTrack: TrackItem?
     @Published public var query: String = ""
     @Published public var status: String = "Ready"
@@ -213,6 +221,9 @@ public final class AppModel: ObservableObject {
     private var loadingDetailsTrackID: String?
     private var allTrackViews: [TrackItem] = []
     private var activeViewIDByPrimaryID: [String: String] = [:]
+    private var libraryPresentationCache: LibraryPresentationCache?
+    private var isPresentingCompleteLibrary = false
+    private var hasBootstrapped = false
 
     public init(
         client: RustPlayerClient? = nil,
@@ -343,8 +354,13 @@ public final class AppModel: ObservableObject {
             playbackError = startupError ?? "Unable to start the player service"
             return
         }
+        guard !hasBootstrapped else {
+            return
+        }
+        hasBootstrapped = true
         await reloadActiveScope()
         await refreshPlaylists()
+        await refreshPlaybackState()
     }
 
     public func exportLibrary(to packageURL: URL) async -> LibraryPackageSummary? {
@@ -366,7 +382,7 @@ public final class AppModel: ObservableObject {
             return
         }
         await runBusy("Backing up current library") { [self] in
-            let snapshot = try await invoke { try $0.stop() }
+            let snapshot = try await invoke { try $0.pause() }
             apply(snapshot: snapshot)
             playbackSystemIntegration?.playbackDidStop()
 
@@ -389,6 +405,7 @@ public final class AppModel: ObservableObject {
             resetLibraryPresentation()
             await reloadActiveScope(quiet: true)
             await refreshPlaylists()
+            await refreshPlaybackState()
             status = "Library imported"
             playbackDetail = "Imported \(imported.tracks) tracks. Backup: \(backupURL.path) (\(backupSummary.tracks) tracks)"
         }
@@ -486,8 +503,12 @@ public final class AppModel: ObservableObject {
         nowPlaying = nil
         allTrackViews = []
         activeViewIDByPrimaryID = [:]
+        libraryPresentationCache = nil
+        isPresentingCompleteLibrary = false
         tracks = []
         playlists = []
+        recentPlaylists = []
+        playbackQueue = []
         clearDetails()
     }
 
@@ -499,6 +520,9 @@ public final class AppModel: ObservableObject {
         playbackError = ""
         queueCount = 0
         queuePosition = nil
+        playbackQueue = []
+        repeatMode = .off
+        isShuffleEnabled = false
         stopPlaybackTimer()
         playbackSystemIntegration?.playbackDidStop()
     }
@@ -507,7 +531,7 @@ public final class AppModel: ObservableObject {
         _ summary: LibraryPackageSummary,
         location: URL
     ) -> String {
-        "\(summary.tracks) tracks, \(summary.audioFiles) audio files, \(summary.sidecarFiles) sidecars: \(location.path)"
+        "\(summary.tracks) tracks, \(summary.playlists) playlists, \(summary.audioFiles) audio files, \(summary.sidecarFiles) sidecars: \(location.path)"
     }
 
     public func importFolder(_ folder: URL) async {
@@ -522,6 +546,7 @@ public final class AppModel: ObservableObject {
                 }
             }
             let summary = try await invoke { try $0.importFolder(folder) }
+            invalidateLibraryPresentationCache()
             status = "Imported \(summary.imported), duplicates \(summary.duplicatesSkipped)"
             playbackDetail = "Copied \(summary.copied), artwork \(summary.artworkCached), warnings \(summary.metadataWarnings)"
             await reloadActiveScope(quiet: true)
@@ -560,6 +585,7 @@ public final class AppModel: ObservableObject {
             }
 
             let summary = try await invoke { try $0.importFiles(files) }
+            invalidateLibraryPresentationCache()
             writeImportDebugLog(
                 "importFiles summary imported=\(summary.imported) copied=\(summary.copied) duplicates=\(summary.duplicatesSkipped) warnings=\(summary.metadataWarnings)"
             )
@@ -597,6 +623,7 @@ public final class AppModel: ObservableObject {
         #else
         await runBusy("Auditing database") { [self] in
             let summary = try await invoke { try $0.auditDatabase() }
+            invalidateLibraryPresentationCache()
             status = "Audit finished"
             playbackDetail = "Scanned \(summary.tracksScanned), hashes \(summary.hashesUpdated), groups \(summary.duplicateGroups), merged \(summary.tracksMerged), failures \(summary.failures)"
             await reloadActiveScope(quiet: true)
@@ -605,13 +632,27 @@ public final class AppModel: ObservableObject {
         #endif
     }
 
+    public func showLibrary() async {
+        cacheCurrentLibraryPresentationIfNeeded()
+        libraryScope = .library
+        playlistSortMode = .defaultOrder
+        query = ""
+
+        if restoreLibraryPresentationFromCache() {
+            return
+        }
+        await reloadActiveScope()
+    }
+
     public func refreshLibrary(quiet: Bool = false) async {
         libraryScope = .library
         playlistSortMode = .defaultOrder
+        query = ""
         await reloadActiveScope(quiet: quiet)
     }
 
     public func showFavorites() async {
+        cacheCurrentLibraryPresentationIfNeeded()
         libraryScope = .favorites
         playlistSortMode = .defaultOrder
         query = ""
@@ -619,6 +660,7 @@ public final class AppModel: ObservableObject {
     }
 
     public func showHistory() async {
+        cacheCurrentLibraryPresentationIfNeeded()
         libraryScope = .history
         playlistSortMode = .defaultOrder
         query = ""
@@ -626,10 +668,12 @@ public final class AppModel: ObservableObject {
     }
 
     public func showPlaylist(_ playlist: PlaylistItem) async {
+        cacheCurrentLibraryPresentationIfNeeded()
         libraryScope = .playlist(playlist.name)
         playlistSortMode = .defaultOrder
         query = ""
         await reloadActiveScope()
+        await refreshPlaylists()
     }
 
     public func reloadActiveScope(quiet: Bool = false) async {
@@ -642,9 +686,10 @@ public final class AppModel: ObservableObject {
         forceDetails: Bool,
         preferredSelectedView: TrackItem? = nil
     ) async {
-        await runBusy(quiet ? nil : "Loading \(libraryScope.title)") { [self] in
+        let loadingScope = libraryScope
+        await runBusy(quiet ? nil : "Loading \(loadingScope.title)") { [self] in
             var loaded: [TrackItem]
-            switch libraryScope {
+            switch loadingScope {
             case .library:
                 loaded = try await loadLibraryPages()
             case .favorites:
@@ -653,6 +698,9 @@ public final class AppModel: ObservableObject {
                 loaded = try await invoke { try $0.history() }
             case .playlist(let name):
                 loaded = try await invoke { try $0.playlistTracks(name: name) }
+            }
+            guard libraryScope == loadingScope else {
+                return
             }
             if let preferredSelectedView,
                !loaded.contains(where: { $0.id == preferredSelectedView.id }),
@@ -663,14 +711,20 @@ public final class AppModel: ObservableObject {
                 loaded,
                 preferredSelectedViewID: preferredSelectedView?.id ?? preferredSelectedViewID
             )
+            if loadingScope == .library {
+                isPresentingCompleteLibrary = true
+                cacheCurrentLibraryPresentationIfNeeded()
+            } else {
+                isPresentingCompleteLibrary = false
+            }
             if let selectedTrack {
                 loadDetails(for: selectedTrack, force: forceDetails)
             } else if let nowPlaying {
                 loadDetails(for: nowPlaying, force: forceDetails)
             }
             status = loaded.isEmpty
-                ? "\(libraryScope.title) is empty"
-                : "\(libraryScope.title): \(tracks.count) tracks, \(loaded.count) views"
+                ? "\(loadingScope.title) is empty"
+                : "\(loadingScope.title): \(tracks.count) tracks, \(loaded.count) views"
         }
     }
 
@@ -693,6 +747,7 @@ public final class AppModel: ObservableObject {
         } else {
             clearDetails()
         }
+        cacheCurrentLibraryPresentationIfNeeded()
     }
 
     public func selectDetailView(id: String) {
@@ -706,19 +761,22 @@ public final class AppModel: ObservableObject {
         selectedTrack = view
         tracks = visibleTracks(from: allTrackViews)
         loadDetails(for: view, force: true)
+        cacheCurrentLibraryPresentationIfNeeded()
     }
 
     public func search() async {
         let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
         if trimmed.isEmpty {
-            await reloadActiveScope()
+            await showLibrary()
             return
         }
 
+        cacheCurrentLibraryPresentationIfNeeded()
         libraryScope = .library
         await runBusy("Searching") { [self] in
             let loaded = try await invoke { try $0.search(trimmed, limit: 200) }
             applyLoadedViews(loaded, preferredSelectedViewID: selectedTrack?.id)
+            isPresentingCompleteLibrary = false
             status = "Search returned \(tracks.count) tracks, \(loaded.count) views"
         }
     }
@@ -757,6 +815,7 @@ public final class AppModel: ObservableObject {
             playbackError = ""
             status = "Analyzing in background"
             try worker.start()
+            invalidateLibraryPresentationCache()
         } catch {
             analyzerWorker = nil
             isAnalyzing = false
@@ -773,6 +832,7 @@ public final class AppModel: ObservableObject {
         analyzeStatus = "Analyzing loudness"
         await runBusy("Analyzing loudness") { [self] in
             let summary = try await invoke { try $0.analyze() }
+            invalidateLibraryPresentationCache()
             analyzeStatus = "Analyzed \(summary.tracksAnalyzed), failed \(summary.trackFailures)"
             status = "Analysis finished"
             playbackDetail = "Albums \(summary.albumsAnalyzed), album tracks \(summary.albumTracksUpdated), skipped \(summary.albumSkipped)"
@@ -840,6 +900,7 @@ public final class AppModel: ObservableObject {
             playbackError = ""
             status = startStatus
             try worker.start()
+            invalidateLibraryPresentationCache()
         } catch {
             libraryWorker = nil
             isLibraryWorking = false
@@ -864,9 +925,7 @@ public final class AppModel: ObservableObject {
         playbackSystemIntegration = nil
 
         if let client {
-            Task.detached(priority: .background) {
-                _ = try? client.stop()
-            }
+            _ = try? client.pause()
         }
     }
 
@@ -879,6 +938,17 @@ public final class AppModel: ObservableObject {
     public func refreshPlaylists() async {
         do {
             playlists = try await invoke { try $0.playlists() }
+            recentPlaylists = try await invoke { try $0.recentPlaylists(limit: 6) }
+        } catch {
+            playbackError = error.localizedDescription
+        }
+    }
+
+    public func refreshPlaybackState() async {
+        do {
+            let snapshot = try await invoke { try $0.poll() }
+            apply(snapshot: snapshot)
+            await refreshQueue()
         } catch {
             playbackError = error.localizedDescription
         }
@@ -1158,6 +1228,7 @@ public final class AppModel: ObservableObject {
             }
             selectedTrack = snapshot.currentTrack
             apply(snapshot: snapshot, fallbackTrack: firstTrack)
+            await refreshQueue()
             publishPlaybackPositionDiscontinuity(
                 previousTrackID: previousTrackID,
                 previousPositionMS: previousPositionMS,
@@ -1201,6 +1272,8 @@ public final class AppModel: ObservableObject {
             }
             selectedTrack = snapshot.currentTrack
             apply(snapshot: snapshot, fallbackTrack: track)
+            await refreshQueue()
+            await refreshPlaylists()
             publishPlaybackPositionDiscontinuity(
                 previousTrackID: previousTrackID,
                 previousPositionMS: previousPositionMS,
@@ -1226,6 +1299,7 @@ public final class AppModel: ObservableObject {
             let snapshot = try await invoke { try $0.playQueue(paths: paths, startPath: track.path) }
             selectedTrack = track
             apply(snapshot: snapshot, fallbackTrack: track)
+            await refreshQueue()
             publishPlaybackPositionDiscontinuity(
                 previousTrackID: previousTrackID,
                 previousPositionMS: previousPositionMS,
@@ -1265,8 +1339,76 @@ public final class AppModel: ObservableObject {
         do {
             let snapshot = try await invoke { try $0.stop() }
             apply(snapshot: snapshot)
+            playbackQueue = []
             playbackSystemIntegration?.playbackDidStop()
             status = "Stopped"
+        } catch {
+            report(error)
+        }
+    }
+
+    public func playNext(_ track: TrackItem) async {
+        do {
+            let snapshot = try await invoke { try $0.playNext(path: track.path) }
+            apply(snapshot: snapshot)
+            await refreshQueue()
+            status = "\(track.title) will play next"
+        } catch {
+            report(error)
+        }
+    }
+
+    public func addToQueue(_ track: TrackItem) async {
+        do {
+            let previousCount = queueCount
+            let snapshot = try await invoke { try $0.addToQueue(path: track.path) }
+            apply(snapshot: snapshot)
+            await refreshQueue()
+            status = snapshot.queueLen == previousCount
+                ? "\(track.title) is already in the queue"
+                : "Added \(track.title) to queue"
+        } catch {
+            report(error)
+        }
+    }
+
+    public func moveQueueItem(from: Int, to: Int) async {
+        guard playbackQueue.indices.contains(from),
+              playbackQueue.indices.contains(to),
+              from != to else {
+            return
+        }
+        do {
+            let snapshot = try await invoke { try $0.moveQueueItem(from: from, to: to) }
+            apply(snapshot: snapshot)
+            await refreshQueue()
+        } catch {
+            report(error)
+        }
+    }
+
+    public func removeQueueItem(at index: Int) async {
+        guard playbackQueue.indices.contains(index) else {
+            return
+        }
+        let removedTitle = playbackQueue[index].title
+        do {
+            let snapshot = try await invoke { try $0.removeQueueItem(at: index) }
+            apply(snapshot: snapshot)
+            await refreshQueue()
+            status = "Removed \(removedTitle) from queue"
+        } catch {
+            report(error)
+        }
+    }
+
+    public func clearPlaybackQueue() async {
+        do {
+            let snapshot = try await invoke { try $0.clearQueue() }
+            apply(snapshot: snapshot)
+            playbackQueue = []
+            playbackSystemIntegration?.playbackDidStop()
+            status = "Queue cleared"
         } catch {
             report(error)
         }
@@ -1463,6 +1605,7 @@ public final class AppModel: ObservableObject {
                 }
             }
             let updated = try await invoke { try $0.setTrackArtwork(path: track.path, imageURL: imageURL) }
+            replaceTrackViewInLibraryCache(updated)
             status = "Saved track cover"
             await reloadActiveScope(
                 quiet: true,
@@ -1496,6 +1639,7 @@ public final class AppModel: ObservableObject {
                 }
             }
             let summary = try await invoke { try $0.setAlbumArtwork(path: track.path, imageURL: imageURL) }
+            invalidateLibraryPresentationCache()
             status = summary.tracksUpdated == 0
                 ? "No tracks matched this album"
                 : "Updated album cover for \(summary.tracksUpdated) tracks"
@@ -1579,6 +1723,7 @@ public final class AppModel: ObservableObject {
                 }
             }
             let updated = try await invoke { try $0.editTrackView(path: track.path, edit: edit) }
+            replaceTrackViewInLibraryCache(updated)
             status = "Saved view"
             isViewEditPresented = false
             resetViewEditDrafts()
@@ -1602,6 +1747,7 @@ public final class AppModel: ObservableObject {
             let materialized = try await invoke {
                 try $0.exportTrackView(path: track.path, destinationURL: destinationURL)
             }
+            replaceTrackViewInLibraryCache(materialized)
             status = "Exported \(materialized.title)"
             await reloadActiveScope(
                 quiet: true,
@@ -1609,6 +1755,19 @@ public final class AppModel: ObservableObject {
                 forceDetails: true,
                 preferredSelectedView: materialized
             )
+        }
+    }
+
+    private func refreshQueue() async {
+        do {
+            let queue = try await invoke { try $0.queueSnapshot() }
+            playbackQueue = queue.tracks
+            queueCount = queue.tracks.count
+            queuePosition = queue.currentIndex
+            repeatMode = queue.repeatMode
+            isShuffleEnabled = queue.shuffleEnabled
+        } catch {
+            playbackError = error.localizedDescription
         }
     }
 
@@ -1773,6 +1932,73 @@ public final class AppModel: ObservableObject {
     }
     #endif
 
+    private func cacheCurrentLibraryPresentationIfNeeded() {
+        guard libraryScope == .library, isPresentingCompleteLibrary else {
+            return
+        }
+        libraryPresentationCache = LibraryPresentationCache(
+            views: allTrackViews,
+            activeViewIDByPrimaryID: activeViewIDByPrimaryID,
+            selectedViewID: selectedTrack?.id
+        )
+    }
+
+    private func restoreLibraryPresentationFromCache() -> Bool {
+        guard let cache = libraryPresentationCache else {
+            return false
+        }
+
+        activeViewIDByPrimaryID = cache.activeViewIDByPrimaryID
+        isPresentingCompleteLibrary = true
+        let currentSelectionID = selectedTrack.flatMap { selected in
+            cache.views.contains(where: { $0.id == selected.id }) ? selected.id : nil
+        }
+        applyLoadedViews(
+            cache.views,
+            preferredSelectedViewID: currentSelectionID ?? cache.selectedViewID
+        )
+        cacheCurrentLibraryPresentationIfNeeded()
+
+        if let selectedTrack {
+            loadDetails(for: selectedTrack)
+        } else if let nowPlaying {
+            loadDetails(for: nowPlaying)
+        }
+        status = cache.views.isEmpty
+            ? "Library is empty"
+            : "Library: \(tracks.count) tracks, \(cache.views.count) views"
+        return true
+    }
+
+    private func invalidateLibraryPresentationCache() {
+        libraryPresentationCache = nil
+        isPresentingCompleteLibrary = false
+    }
+
+    private func replaceTrackViewInLibraryCache(_ updated: TrackItem) {
+        guard var cache = libraryPresentationCache else {
+            return
+        }
+        var previousID: String?
+        if let index = cache.views.firstIndex(where: {
+            $0.id == updated.id || $0.path == updated.path
+        }) {
+            previousID = cache.views[index].id
+            cache.views[index] = updated
+        } else {
+            cache.views.append(updated)
+        }
+        if let previousID, cache.selectedViewID == previousID {
+            cache.selectedViewID = updated.id
+        }
+        if let previousID,
+           let activeID = cache.activeViewIDByPrimaryID[updated.primaryViewID],
+           activeID == previousID {
+            cache.activeViewIDByPrimaryID[updated.primaryViewID] = updated.id
+        }
+        libraryPresentationCache = cache
+    }
+
     private func applyLoadedViews(_ loaded: [TrackItem], preferredSelectedViewID: String?) {
         allTrackViews = loaded
 
@@ -1903,6 +2129,8 @@ public final class AppModel: ObservableObject {
             nowPlaying = updated
         }
         tracks = visibleTracks(from: allTrackViews)
+        replaceTrackViewInLibraryCache(updated)
+        cacheCurrentLibraryPresentationIfNeeded()
     }
 
     private func viewChoices(for track: TrackItem) -> [TrackViewChoice] {
@@ -1947,6 +2175,9 @@ public final class AppModel: ObservableObject {
         if queueCount != snapshot.queueLen {
             queueCount = snapshot.queueLen
         }
+        if snapshot.queueLen == 0, !playbackQueue.isEmpty {
+            playbackQueue = []
+        }
         if queuePosition != snapshot.queuePosition {
             queuePosition = snapshot.queuePosition
         }
@@ -1962,6 +2193,7 @@ public final class AppModel: ObservableObject {
                         tracks = visible
                     }
                 }
+                cacheCurrentLibraryPresentationIfNeeded()
             }
             if previousTrackID != track.id {
                 let shouldFollowNowPlaying = selectedTrack == nil || selectedTrack?.id == previousTrackID
