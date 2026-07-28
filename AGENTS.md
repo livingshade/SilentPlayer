@@ -32,3 +32,11 @@ After every macOS app update:
 5. Install the newly built bundle at `/Applications/Silent.app`.
 6. Launch the installed copy and verify that it is the updated build.
 7. Before reporting completion, verify that system application search resolves Silent to the single installed path `/Applications/Silent.app`.
+
+## Git Status Reporting
+
+After every commit or push:
+
+1. Report the current local branch name.
+2. Report whether the committed or pushed changes have been merged into the repository's default branch.
+3. Use the repository's actual default branch name in the report. For this repository, the default branch is currently `master`; do not describe it as `main` unless the repository is renamed.

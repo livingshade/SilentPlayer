@@ -254,6 +254,61 @@ final class PhonePresentationStateTests: XCTestCase {
     }
 }
 
+final class MacPresentationStateTests: XCTestCase {
+    func testSnapshotRoundTripsThroughSceneStorageEncoding() throws {
+        let snapshot = MacPresentationSnapshot(
+            contentScope: .playlist(73),
+            selectedViewID: "view:studio"
+        )
+
+        let encoded = try XCTUnwrap(MacPresentationPersistence.encode(snapshot))
+
+        XCTAssertEqual(MacPresentationPersistence.decode(encoded), snapshot)
+    }
+
+    func testUnknownSnapshotVersionIsIgnored() throws {
+        let snapshot = MacPresentationSnapshot(
+            version: MacPresentationSnapshot.currentVersion + 1,
+            contentScope: .history,
+            selectedViewID: nil
+        )
+
+        let encoded = try XCTUnwrap(MacPresentationPersistence.encode(snapshot))
+
+        XCTAssertNil(MacPresentationPersistence.decode(encoded))
+    }
+
+    func testDeletedPlaylistFallsBackToLibrary() {
+        let snapshot = MacPresentationSnapshot(
+            contentScope: .playlist(73),
+            selectedViewID: "view:studio"
+        )
+
+        let validated = snapshot.validated(against: [])
+
+        XCTAssertEqual(validated.contentScope, .library)
+        XCTAssertEqual(validated.selectedViewID, "view:studio")
+    }
+
+    func testFallbackPersistenceUsesVersionedDefaultsEntry() throws {
+        let suiteName = "MacPresentationStateTests.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer {
+            defaults.removePersistentDomain(forName: suiteName)
+        }
+        let snapshot = MacPresentationSnapshot(
+            contentScope: .history,
+            selectedViewID: "view:current"
+        )
+
+        MacPresentationPersistence.save(snapshot, defaults: defaults)
+
+        XCTAssertEqual(MacPresentationPersistence.load(defaults: defaults), snapshot)
+        MacPresentationPersistence.clear(defaults: defaults)
+        XCTAssertNil(MacPresentationPersistence.load(defaults: defaults))
+    }
+}
+
 @MainActor
 final class AppModelStartupTests: XCTestCase {
     func testStartupFailureBecomesVisibleStateInsteadOfCrashing() async {

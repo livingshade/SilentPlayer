@@ -5,6 +5,9 @@ import SwiftUI
 
 public struct ContentView: View {
     @ObservedObject private var model: AppModel
+    @Environment(\.scenePhase) private var scenePhase
+    @SceneStorage("ContentView.sceneSession.v1") private var sceneSession = ""
+    @State private var isRestoringPresentation = true
     @State private var pendingSeekProgress: Double?
     @State private var pendingSingleClick: DispatchWorkItem?
     @State private var isViewChecksExpanded = false
@@ -37,12 +40,11 @@ public struct ContentView: View {
     }
 
     public var body: some View {
-        NavigationSplitView {
-            sidebar
-                .navigationSplitViewColumnWidth(min: 220, ideal: 270, max: 340)
-        } detail: {
-            GeometryReader { proxy in
-                detailPane(layout: DetailPaneLayout(containerSize: proxy.size))
+        Group {
+            if isRestoringPresentation {
+                restorationPlaceholder
+            } else {
+                playerContent
             }
         }
         .frame(minWidth: 960, idealWidth: 1180, minHeight: 620, idealHeight: 780)
@@ -85,8 +87,77 @@ public struct ContentView: View {
             Text("This permanently deletes the current database and managed music files. No internal backup will be created.")
         }
         .task {
-            await model.bootstrap()
+            await restorePresentation()
         }
+        .onChange(of: model.libraryScope) { _ in
+            persistPresentation()
+        }
+        .onChange(of: model.selectedTrack?.id) { _ in
+            persistPresentation()
+        }
+        .onChange(of: model.playlists) { _ in
+            persistPresentation()
+        }
+        .onChange(of: scenePhase) { phase in
+            if phase == .background {
+                persistPresentation()
+            }
+        }
+        .onDisappear {
+            persistPresentation()
+        }
+    }
+
+    private var playerContent: some View {
+        NavigationSplitView {
+            sidebar
+                .navigationSplitViewColumnWidth(min: 220, ideal: 270, max: 340)
+        } detail: {
+            GeometryReader { proxy in
+                detailPane(layout: DetailPaneLayout(containerSize: proxy.size))
+            }
+        }
+    }
+
+    @MainActor
+    private func restorePresentation() async {
+        let requestedSnapshot = MacPresentationPersistence.decode(sceneSession)
+            ?? MacPresentationPersistence.load()
+            ?? .initial
+        await model.bootstrap(
+            restoring: requestedSnapshot.contentScope,
+            preferredSelectedViewID: requestedSnapshot.selectedViewID
+        )
+        isRestoringPresentation = false
+        persistPresentation()
+    }
+
+    private func persistPresentation() {
+        guard !isRestoringPresentation else {
+            return
+        }
+        let snapshot = MacPresentationSnapshot(
+            contentScope: model.restorableLibraryScope,
+            selectedViewID: model.selectedTrack?.id
+        )
+        guard let encoded = MacPresentationPersistence.encode(snapshot) else {
+            return
+        }
+        sceneSession = encoded
+        MacPresentationPersistence.save(snapshot)
+    }
+
+    private var restorationPlaceholder: some View {
+        VStack(spacing: 14) {
+            ProgressView()
+                .controlSize(.large)
+            Text("Restoring Player")
+                .font(.callout.weight(.medium))
+                .foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Restoring player")
     }
 
     private func detailPane(layout: DetailPaneLayout) -> some View {
@@ -459,7 +530,10 @@ public struct ContentView: View {
     private var trackList: some View {
         List(selection: Binding(
             get: { model.selectedTrack?.id },
-            set: { id in model.selectTrack(id: id) }
+            set: { id in
+                model.selectTrack(id: id)
+                persistPresentation()
+            }
         )) {
             ForEach(model.tracks) { track in
                 trackRow(for: track)
@@ -684,7 +758,10 @@ public struct ContentView: View {
                     "View",
                     selection: Binding(
                         get: { model.detailTrack?.id ?? "" },
-                        set: { model.selectDetailView(id: $0) }
+                        set: {
+                            model.selectDetailView(id: $0)
+                            persistPresentation()
+                        }
                     )
                 ) {
                     ForEach(choices) { choice in
@@ -1055,6 +1132,7 @@ public struct ContentView: View {
         pendingSingleClick?.cancel()
         let work = DispatchWorkItem {
             model.selectTrack(id: track.id)
+            persistPresentation()
         }
         pendingSingleClick = work
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.18, execute: work)
@@ -1064,6 +1142,7 @@ public struct ContentView: View {
         pendingSingleClick?.cancel()
         pendingSingleClick = nil
         model.selectTrack(id: track.id)
+        persistPresentation()
     }
 
     private func playTrackFromRow(_ track: TrackItem) {
@@ -1162,7 +1241,10 @@ public struct ContentView: View {
         action: @escaping () async -> Void
     ) -> some View {
         Button {
-            Task { await action() }
+            Task {
+                await action()
+                persistPresentation()
+            }
         } label: {
             HStack {
                 Label(title, systemImage: icon)
@@ -1179,7 +1261,10 @@ public struct ContentView: View {
     private func playlistButton(_ playlist: PlaylistItem) -> some View {
         let selected = model.libraryScope == .playlist(playlist.name)
         return Button {
-            Task { await model.showPlaylist(playlist) }
+            Task {
+                await model.showPlaylist(playlist)
+                persistPresentation()
+            }
         } label: {
             HStack(spacing: 8) {
                 PlaylistArtworkThumbnail(artworkURL: playlist.artworkURL)

@@ -1,11 +1,5 @@
 import Foundation
 
-public enum RestorableLibraryScope: Equatable, Sendable {
-    case library
-    case history
-    case playlist(Int64)
-}
-
 public enum PhonePresentationTab: String, Codable, Hashable, Sendable {
     case library
     case playlists
