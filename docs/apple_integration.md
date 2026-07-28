@@ -38,6 +38,12 @@ Apple 平台细节保持原生，队列和播放规则保持跨平台一致。Sw
 
 歌单同样由 SQLite 持久化，保存封面引用、手动曲序与最近使用时间。完整资料库 package 直接携带这些表，导入时由 Rust 统一改写音乐文件路径，因此歌单在 macOS、iPhone 与 CLI 间可以正常导入导出。Apple 界面以最近 6 个歌单作为快捷入口，不再把收藏作为主要导航。
 
+## 产品面边界
+
+macOS 和 iPhone 是播放端，不是 Rust/SQLite 能力的图形化管理控制台。Apple UI 主要负责曲库浏览、搜索、最近歌单、播放中信息、当前队列和系统媒体集成。Music View 编辑、metadata/封面/歌词维护、歌单 CRUD 与批量排序、分析、审计、迁移和修复由 `silent` CLI 提供完整入口。
+
+Apple target 必须能读取并播放 CLI 产生的数据，但不需要提供对等的编辑入口。SwiftUI 信息架构按用户的聆听任务设计，不能根据 Rust 或 FFI 方法列表机械生成按钮；低频技术能力不进入主导航和常驻工具栏。
+
 Normalize 增益由 Rodio 播放 backend 应用到渲染链路，不修改系统音量。`player_engine` 的命令只有在 backend 操作完成后才返回；Swift 随后读取已经确认的 snapshot，不使用固定延时猜测状态。
 
 当前 iOS 外壳已经完成系统播放集成：使用 `.playback` / `.longFormAudio` 配置并按需激活 `AVAudioSession`，通过 `MPNowPlayingInfoCenter` 发布锁屏标题、艺人、专辑、封面、时长、进度和播放状态，通过 `MPRemoteCommandCenter` 接收播放、暂停、上一首、下一首、拖动进度、循环和随机命令。来电等系统中断与耳机断开事件会进入 Rust `PlaybackLifecycle` 状态机，只有中断前正在播放且系统允许恢复时才会自动恢复。模拟器 app bundle 声明了 `UIBackgroundModes = audio`。

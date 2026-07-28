@@ -2,7 +2,17 @@
 
 一个面向 macOS、iPhone 和通用 CLI 的本地音乐播放器。三个 target 共用 Rust 应用行为；当前已经支持曲库扫描、metadata 解析、SQLite 持久化、EBU R128 响度分析与缓存、播放状态服务，以及通过默认音频输出设备播放本地音频文件。
 
-目标是做一个接近主流播放器体验的本地播放器：曲库扫描、播放队列、专辑/歌曲视图、搜索、收藏、后台播放、锁屏控制，以及最重要的响度归一化，避免不同歌曲之间音量忽大忽小。
+目标是做一个接近主流播放器体验的本地播放器：曲库浏览、播放队列、专辑/歌曲视图、搜索、最近歌单、后台播放、锁屏控制，以及最重要的响度归一化，避免不同歌曲之间音量忽大忽小。
+
+## Target 职责边界
+
+Silent 的三个 target 共享数据和应用行为，但不追求功能入口一一对应：
+
+- macOS 和 iPhone 是面向日常聆听的播放器。它们的首要任务是让用户快速找到音乐、播放音乐、控制当前队列、查看最近歌单，并与锁屏、耳机和系统媒体控制自然配合。图形界面必须简洁、熟悉且用户友好。
+- `silent` CLI 是完整的曲库管理和高级操作界面。Music View 创建与编辑、metadata、封面、歌词、歌单 CRUD 与排序、批量导入导出、响度分析、审计、迁移和修复等复杂工作应优先在 CLI 中完整实现，并支持脚本化。
+- Rust application services 提供三个 target 共用的规则、持久化和数据兼容性。共享 Rust/FFI 能力不意味着 Apple UI 必须为每个 API 提供按钮。
+
+Apple 端可以读取并播放 CLI 创建的 Music View 和歌单，也可以提供与当前聆听任务直接相关的轻量操作，例如搜索、播放下一首、调整当前队列或打开最近歌单；它不应演变成数据库管理控制台。新增能力默认先保证 Rust 与 CLI 完整，只有在它属于高频播放流程、能明显改善聆听体验时才进入 macOS 或 iPhone 主界面。
 
 ## Music View 模型
 
@@ -28,7 +38,7 @@
 - `crates/player_analyzer`: 独立 loudness 分析 worker，后台分析并把结果持久化到 SQLite。
 - `crates/player_metadata_lofty`: metadata 解析后端，读取 title、artist、album、duration 和内嵌 artwork。
 - `crates/player_store_sqlite`: SQLite 曲库和缓存，保存 metadata、file fingerprint、loudness analysis、搜索索引字段、播放列表、收藏、播放历史和 artwork bytes。
-- `crates/player_cli`: `silent` 通用 CLI target，覆盖共享曲库、Music View、播放列表、历史和播放控制能力。
+- `crates/player_cli`: `silent` 通用 CLI target，是完整的曲库管理界面，覆盖 Music View、播放列表、导入导出、分析、审计、历史和播放控制能力。
 - `test-assets/audio`: 真实下载的 Ogg Vorbis 音频 fixtures，用于解码、响度分析和播放 smoke tests。
 - `docs/product_design.md`: 产品和界面设计。
 - `docs/loudness_normalization.md`: 响度归一化设计。

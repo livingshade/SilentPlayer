@@ -1,8 +1,13 @@
 # Silent CLI
 
-The generic CLI is Silent's third product target alongside macOS and iPhone. It uses the same
-Rust application behavior as the Apple targets; it is not a database-editing substitute for the
-app.
+The generic CLI is Silent's complete management target alongside the playback-focused macOS and
+iPhone apps. It uses the same Rust application behavior and public services as the Apple targets,
+but intentionally exposes the full library, Music View, playlist, analysis, audit, migration, and
+repair workflows that would make the graphical player interfaces too complex.
+
+Target parity means compatible data and shared behavior, not identical user interfaces. Music
+Views and playlists created by the CLI must remain readable and playable in the Apple apps. A Rust
+or FFI capability does not require a corresponding SwiftUI control.
 
 ## Entry model
 
@@ -140,17 +145,16 @@ Queue positions in the shell are 1-based. Leaving the shell preserves the queue,
 position, repeat mode, and shuffle mode; the next app or CLI session restores it paused. `stop`
 and `queue clear` explicitly clear the persisted queue.
 
-## Target parity
+## Target responsibilities
 
-| Shared capability | macOS | iPhone | CLI |
-| --- | --- | --- | --- |
-| Managed file/folder import | Yes | Yes | Yes |
-| Library package export/import/zero | Yes | Yes | Yes |
-| Search, loudness analysis, database audit | Yes | Yes | Yes |
-| Music View details/edit/rating/artwork/lyrics/export | Yes | Yes | Yes |
-| Persistent playlists, covers, recent playlists, history, local user data | Yes | Yes | Yes |
-| Persistent editable queue, seek, repeat, shuffle, lifecycle rules | Yes | Yes | Yes, in playback shell |
-| Lock screen, headset commands, Now Playing, background audio session | Yes | Yes | Not applicable |
+| Capability | macOS / iPhone | CLI |
+| --- | --- | --- |
+| Browse, search, history, recent playlists | Primary graphical listening workflow | Complete query and stable output |
+| Playback, persistent queue, seek, repeat, shuffle | Primary graphical listening workflow | Supported in `playback shell` |
+| Music View and metadata management | Read and play results; no complete editor required | Complete create/edit/artwork/lyrics/export workflow |
+| Persistent playlist management | Open and play recent playlists; lightweight playback actions only | Complete create/add/move/sort/artwork/rename/clear/delete workflow |
+| Import, package migration, zero, audit, analysis | Optional simplified entry points, never toolbar requirements | Complete authoritative workflow |
+| Lock screen, headset commands, Now Playing, background audio | Platform-native responsibility | Not applicable |
 
 The internal `player_analyzer` and `player_library_worker` executables remain app workers for
 progress reporting and cancellation. They are not public CLI entry points.
