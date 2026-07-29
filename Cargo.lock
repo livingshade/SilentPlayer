@@ -31,10 +31,52 @@ dependencies = [
 ]
 
 [[package]]
+name = "analysis_ebur128"
+version = "0.1.0"
+dependencies = [
+ "domain",
+ "ebur128-stream",
+ "errors",
+ "library_fs",
+ "store_sqlite",
+ "symphonia",
+]
+
+[[package]]
+name = "analyzer"
+version = "0.1.0"
+dependencies = [
+ "analysis_ebur128",
+ "domain",
+ "errors",
+ "library_fs",
+ "serde",
+ "serde_json",
+ "store_sqlite",
+]
+
+[[package]]
 name = "anyhow"
 version = "1.0.102"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7f202df86484c868dbad7eaa557ef785d5c66295e41b460ef922eca0723b842c"
+
+[[package]]
+name = "app_ffi"
+version = "0.1.0"
+dependencies = [
+ "analysis_ebur128",
+ "audio_rodio",
+ "domain",
+ "engine",
+ "errors",
+ "fingerprint",
+ "library_fs",
+ "metadata_lofty",
+ "serde",
+ "serde_json",
+ "store_sqlite",
+]
 
 [[package]]
 name = "arrayref"
@@ -47,6 +89,16 @@ name = "arrayvec"
 version = "0.7.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7c02d123df017efcdfbd739ef81735b36c5ba83ec3c59c80a9d7ecc718f92e50"
+
+[[package]]
+name = "audio_rodio"
+version = "0.1.0"
+dependencies = [
+ "domain",
+ "engine",
+ "errors",
+ "rodio",
+]
 
 [[package]]
 name = "autocfg"
@@ -247,6 +299,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "domain"
+version = "0.1.0"
+
+[[package]]
 name = "ebur128-stream"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -266,10 +322,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "engine"
+version = "0.1.0"
+dependencies = [
+ "domain",
+ "errors",
+]
+
+[[package]]
 name = "equivalent"
 version = "1.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "877a4ace8713b0bcf2a4e7eec82529c029f1d0619886d18145fea96c3ffe5c0f"
+
+[[package]]
+name = "errors"
+version = "0.1.0"
 
 [[package]]
 name = "extended"
@@ -294,6 +362,16 @@ name = "find-msvc-tools"
 version = "0.1.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5baebc0774151f905a1a2cc41989300b1e6fbb29aff0ceffa1064fdd3088d582"
+
+[[package]]
+name = "fingerprint"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "domain",
+ "errors",
+ "symphonia",
+]
 
 [[package]]
 name = "flate2"
@@ -501,6 +579,28 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b6d2cec3eae94f9f509c767b45932f1ada8350c4bdb85af2fcab4a3c14807981"
 
 [[package]]
+name = "library_fs"
+version = "0.1.0"
+dependencies = [
+ "domain",
+ "errors",
+]
+
+[[package]]
+name = "library_worker"
+version = "0.1.0"
+dependencies = [
+ "domain",
+ "errors",
+ "fingerprint",
+ "library_fs",
+ "metadata_lofty",
+ "serde",
+ "serde_json",
+ "store_sqlite",
+]
+
+[[package]]
 name = "libsqlite3-sys"
 version = "0.38.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -557,6 +657,15 @@ name = "memchr"
 version = "2.8.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "88904434abc2901f197fe8cc55f0445e7ded921dba5911dad2e2b39b48e663c4"
+
+[[package]]
+name = "metadata_lofty"
+version = "0.1.0"
+dependencies = [
+ "domain",
+ "errors",
+ "lofty",
+]
 
 [[package]]
 name = "miniz_oxide"
@@ -793,125 +902,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "19f132c84eca552bf34cab8ec81f1c1dcc229b811638f9d283dceabe58c5569e"
 
 [[package]]
-name = "player_analysis_ebur128"
-version = "0.1.0"
-dependencies = [
- "ebur128-stream",
- "player_core",
- "player_error",
- "player_library_fs",
- "player_store_sqlite",
- "symphonia",
-]
-
-[[package]]
-name = "player_analyzer"
-version = "0.1.0"
-dependencies = [
- "player_analysis_ebur128",
- "player_core",
- "player_error",
- "player_library_fs",
- "player_store_sqlite",
- "serde",
- "serde_json",
-]
-
-[[package]]
-name = "player_audio_rodio"
-version = "0.1.0"
-dependencies = [
- "player_core",
- "player_engine",
- "player_error",
- "rodio",
-]
-
-[[package]]
-name = "player_core"
-version = "0.1.0"
-
-[[package]]
-name = "player_engine"
-version = "0.1.0"
-dependencies = [
- "player_core",
- "player_error",
-]
-
-[[package]]
-name = "player_error"
-version = "0.1.0"
-
-[[package]]
-name = "player_ffi"
-version = "0.1.0"
-dependencies = [
- "player_analysis_ebur128",
- "player_audio_rodio",
- "player_core",
- "player_engine",
- "player_error",
- "player_fingerprint",
- "player_library_fs",
- "player_metadata_lofty",
- "player_store_sqlite",
- "serde",
- "serde_json",
-]
-
-[[package]]
-name = "player_fingerprint"
-version = "0.1.0"
-dependencies = [
- "blake3",
- "player_core",
- "player_error",
- "symphonia",
-]
-
-[[package]]
-name = "player_library_fs"
-version = "0.1.0"
-dependencies = [
- "player_core",
- "player_error",
-]
-
-[[package]]
-name = "player_library_worker"
-version = "0.1.0"
-dependencies = [
- "player_core",
- "player_error",
- "player_fingerprint",
- "player_library_fs",
- "player_metadata_lofty",
- "player_store_sqlite",
- "serde",
- "serde_json",
-]
-
-[[package]]
-name = "player_metadata_lofty"
-version = "0.1.0"
-dependencies = [
- "lofty",
- "player_core",
- "player_error",
-]
-
-[[package]]
-name = "player_store_sqlite"
-version = "0.1.0"
-dependencies = [
- "blake3",
- "player_core",
- "player_error",
- "rusqlite",
-]
-
-[[package]]
 name = "prettyplease"
 version = "0.2.37"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1102,10 +1092,10 @@ checksum = "f8fadd59c855ef2080decdef8ff161eb6661b86933c9d82e5ba29dc602a55aba"
 name = "silent_cli"
 version = "0.1.0"
 dependencies = [
- "player_analysis_ebur128",
- "player_error",
- "player_ffi",
- "player_library_fs",
+ "analysis_ebur128",
+ "app_ffi",
+ "errors",
+ "library_fs",
  "serde_json",
 ]
 
@@ -1137,6 +1127,16 @@ dependencies = [
  "js-sys",
  "rsqlite-vfs",
  "wasm-bindgen",
+]
+
+[[package]]
+name = "store_sqlite"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "domain",
+ "errors",
+ "rusqlite",
 ]
 
 [[package]]

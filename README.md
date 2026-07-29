@@ -23,22 +23,22 @@ Apple 端可以读取并播放 CLI 创建的 Music View 和歌单，也可以提
 ## 技术方向
 
 - Rust 负责共享核心：曲库索引、播放队列、响度元数据、normalize 增益策略、持久化模型。
-- Apple 端使用 SwiftUI 和系统媒体框架处理文件授权、音频会话、后台播放、锁屏控制、AirPlay 与耳机控制；音频渲染由 Rust `player_engine` + Rodio backend 负责。
+- Apple 端使用 SwiftUI 和系统媒体框架处理文件授权、音频会话、后台播放、锁屏控制、AirPlay 与耳机控制；音频渲染由 Rust `engine` + Rodio backend 负责。
 - Rust 和 Swift 之间建议用 UniFFI 或 C ABI 连接。这样业务规则保持一套，Apple 平台能力走原生路径。
 
 ## 当前仓库内容
 
-- `crates/player_core`: 无 I/O 依赖的 Rust 领域核心，包含队列、播放状态、生命周期和响度归一化规则。
-- `crates/player_error`: 基础设施层共享的错误类型；核心领域错误不依赖它。
-- `crates/player_library_fs`: 本地文件系统扫描和文件 fingerprint 适配器。
-- `crates/player_analysis_ebur128`: Rust 响度分析后端，使用 Symphonia 解码并用 EBU R128/BS.1770 分析 track loudness，并可从已缓存的 track loudness 生成 album loudness。
-- `crates/player_audio_rodio`: Rust CLI 播放后端，使用 rodio 打开默认音频输出设备并播放本地文件。
-- `crates/player_engine`: 线程化播放服务层；命令在 backend 完成后才返回，并发布状态、曲目、gain、进度与错误事件。
-- `crates/player_ffi`: macOS、iPhone 和 CLI 共用的 Rust 应用实现及 Apple C ABI 适配层，导入时会把音频复制到托管媒体库。
-- `crates/player_analyzer`: 独立 loudness 分析 worker，后台分析并把结果持久化到 SQLite。
-- `crates/player_metadata_lofty`: metadata 解析后端，读取 title、artist、album、duration 和内嵌 artwork。
-- `crates/player_store_sqlite`: SQLite 曲库和缓存，保存 metadata、file fingerprint、loudness analysis、搜索索引字段、播放列表、收藏、播放历史和 artwork bytes。
-- `crates/player_cli`: `silent` 通用 CLI target，是完整的曲库管理界面，覆盖 Music View、播放列表、导入导出、分析、审计、历史和播放控制能力。
+- `crates/domain`: 无 I/O 依赖的 Rust 领域核心，包含队列、播放状态、生命周期和响度归一化规则。
+- `crates/errors`: 基础设施层共享的错误类型；核心领域错误不依赖它。
+- `crates/library_fs`: 本地文件系统扫描和文件 fingerprint 适配器。
+- `crates/analysis_ebur128`: Rust 响度分析后端，使用 Symphonia 解码并用 EBU R128/BS.1770 分析 track loudness，并可从已缓存的 track loudness 生成 album loudness。
+- `crates/audio_rodio`: Rust CLI 播放后端，使用 rodio 打开默认音频输出设备并播放本地文件。
+- `crates/engine`: 线程化播放服务层；命令在 backend 完成后才返回，并发布状态、曲目、gain、进度与错误事件。
+- `crates/app_ffi`: macOS、iPhone 和 CLI 共用的 Rust 应用实现及 Apple C ABI 适配层，导入时会把音频复制到托管媒体库。
+- `crates/analyzer`: 独立 loudness 分析 worker，后台分析并把结果持久化到 SQLite。
+- `crates/metadata_lofty`: metadata 解析后端，读取 title、artist、album、duration 和内嵌 artwork。
+- `crates/store_sqlite`: SQLite 曲库和缓存，保存 metadata、file fingerprint、loudness analysis、搜索索引字段、播放列表、收藏、播放历史和 artwork bytes。
+- `crates/cli`: `silent` 通用 CLI target，是完整的曲库管理界面，覆盖 Music View、播放列表、导入导出、分析、审计、历史和播放控制能力。
 - `test-assets/audio`: 真实下载的 Ogg Vorbis 音频 fixtures，用于解码、响度分析和播放 smoke tests。
 - `docs/product_design.md`: 产品和界面设计。
 - `docs/loudness_normalization.md`: 响度归一化设计。
@@ -117,7 +117,7 @@ cargo clippy --all-targets -- -D warnings
 真实播放 smoke tests 需要 macOS 上有可用默认音频输出设备，因此默认标记为 ignored：
 
 ```bash
-cargo test -p player_audio_rodio --test playback_smoke -- --ignored --nocapture
+cargo test -p audio_rodio --test playback_smoke -- --ignored --nocapture
 cargo test -p silent_cli --test cli -- --ignored --nocapture
 ```
 

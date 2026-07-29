@@ -140,7 +140,7 @@ public final class LibraryWorker: @unchecked Sendable {
         }
 
         if let executableDir = Bundle.main.executableURL?.deletingLastPathComponent() {
-            let bundled = executableDir.appendingPathComponent("player_library_worker")
+            let bundled = executableDir.appendingPathComponent("library_worker")
             if FileManager.default.isExecutableFile(atPath: bundled.path) {
                 return bundled
             }
@@ -149,7 +149,7 @@ public final class LibraryWorker: @unchecked Sendable {
         let debugBuild = repoRoot
             .appendingPathComponent("target")
             .appendingPathComponent("debug")
-            .appendingPathComponent("player_library_worker")
+            .appendingPathComponent("library_worker")
         if FileManager.default.isExecutableFile(atPath: debugBuild.path) {
             return debugBuild
         }

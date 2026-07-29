@@ -1,0 +1,22 @@
+[package]
+name = "app_ffi"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[lib]
+crate-type = ["cdylib", "staticlib", "rlib"]
+
+[dependencies]
+analysis_ebur128 = { path = "../analysis_ebur128" }
+audio_rodio = { path = "../audio_rodio" }
+domain = { path = "../domain" }
+engine = { path = "../engine" }
+errors = { path = "../errors" }
+fingerprint = { path = "../fingerprint" }
+library_fs = { path = "../library_fs" }
+metadata_lofty = { path = "../metadata_lofty" }
+store_sqlite = { path = "../store_sqlite" }
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.145"

@@ -17,21 +17,21 @@ rustup target add aarch64-apple-ios aarch64-apple-ios-sim
 
 export IPHONEOS_DEPLOYMENT_TARGET="${IPHONEOS_DEPLOYMENT_TARGET:-16.0}"
 
-cargo build -p player_ffi --release --target aarch64-apple-ios
-cargo build -p player_ffi --release --target aarch64-apple-ios-sim
+cargo build -p app_ffi --release --target aarch64-apple-ios
+cargo build -p app_ffi --release --target aarch64-apple-ios-sim
 
 APP_ROOT="apple/PlayerApp"
 XCFRAMEWORK="$APP_ROOT/Vendor/PlayerFFI.xcframework"
 
 rm -rf "$XCFRAMEWORK"
 xcodebuild -create-xcframework \
-  -library target/aarch64-apple-ios/release/libplayer_ffi.a \
+  -library target/aarch64-apple-ios/release/libapp_ffi.a \
   -headers "$APP_ROOT/Sources/PlayerRustFFI/include" \
-  -library target/aarch64-apple-ios-sim/release/libplayer_ffi.a \
+  -library target/aarch64-apple-ios-sim/release/libapp_ffi.a \
   -headers "$APP_ROOT/Sources/PlayerRustFFI/include" \
   -output "$XCFRAMEWORK"
 
 echo "Built:"
-echo "  target/aarch64-apple-ios/release/libplayer_ffi.a"
-echo "  target/aarch64-apple-ios-sim/release/libplayer_ffi.a"
+echo "  target/aarch64-apple-ios/release/libapp_ffi.a"
+echo "  target/aarch64-apple-ios-sim/release/libapp_ffi.a"
 echo "  $XCFRAMEWORK"

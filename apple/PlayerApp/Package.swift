@@ -27,13 +27,13 @@ let playerFFIBinaryTargets: [Target] = hasPlayerFFIFramework
 let macAppRustLinkerSettings: [LinkerSetting] = [
     .unsafeFlags([
         "-L", rustDebugPath,
-        "-lplayer_ffi",
+        "-lapp_ffi",
         "-Xlinker", "-rpath",
         "-Xlinker", "@executable_path"
     ], .when(platforms: [.macOS], configuration: .debug)),
     .unsafeFlags([
         "-L", rustReleasePath,
-        "-lplayer_ffi",
+        "-lapp_ffi",
         "-Xlinker", "-rpath",
         "-Xlinker", "@executable_path"
     ], .when(platforms: [.macOS], configuration: .release))
@@ -41,13 +41,13 @@ let macAppRustLinkerSettings: [LinkerSetting] = [
 let macTestRustLinkerSettings: [LinkerSetting] = [
     .unsafeFlags([
         "-L", rustDebugPath,
-        "-lplayer_ffi",
+        "-lapp_ffi",
         "-Xlinker", "-rpath",
         "-Xlinker", rustDebugPath
     ], .when(platforms: [.macOS], configuration: .debug)),
     .unsafeFlags([
         "-L", rustReleasePath,
-        "-lplayer_ffi",
+        "-lapp_ffi",
         "-Xlinker", "-rpath",
         "-Xlinker", rustReleasePath
     ], .when(platforms: [.macOS], configuration: .release))

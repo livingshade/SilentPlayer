@@ -99,7 +99,7 @@ public final class AnalyzerWorker: @unchecked Sendable {
         }
 
         if let executableDir = Bundle.main.executableURL?.deletingLastPathComponent() {
-            let bundled = executableDir.appendingPathComponent("player_analyzer")
+            let bundled = executableDir.appendingPathComponent("analyzer")
             if FileManager.default.isExecutableFile(atPath: bundled.path) {
                 return bundled
             }
@@ -108,7 +108,7 @@ public final class AnalyzerWorker: @unchecked Sendable {
         let debugBuild = repoRoot
             .appendingPathComponent("target")
             .appendingPathComponent("debug")
-            .appendingPathComponent("player_analyzer")
+            .appendingPathComponent("analyzer")
         if FileManager.default.isExecutableFile(atPath: debugBuild.path) {
             return debugBuild
         }

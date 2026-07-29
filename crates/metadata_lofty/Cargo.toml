@@ -1,0 +1,11 @@
+[package]
+name = "metadata_lofty"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+lofty = "0.24.0"
+domain = { path = "../domain" }
+errors = { path = "../errors" }

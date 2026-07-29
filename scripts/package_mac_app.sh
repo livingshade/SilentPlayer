@@ -10,9 +10,9 @@ ZIP_PATH="${ZIP_PATH:-$DIST_DIR/Silent-macos.zip}"
 TARGET_DIR="${CARGO_TARGET_DIR:-$ROOT/target}"
 RELEASE_DIR="$TARGET_DIR/release"
 APP_ICON="$APP_DIR/Resources/Silent.icns"
-RUST_DYLIB="$RELEASE_DIR/libplayer_ffi.dylib"
-ANALYZER_EXECUTABLE="$RELEASE_DIR/player_analyzer"
-LIBRARY_WORKER_EXECUTABLE="$RELEASE_DIR/player_library_worker"
+RUST_DYLIB="$RELEASE_DIR/libapp_ffi.dylib"
+ANALYZER_EXECUTABLE="$RELEASE_DIR/analyzer"
+LIBRARY_WORKER_EXECUTABLE="$RELEASE_DIR/library_worker"
 SIGN_IDENTITY="${CODESIGN_IDENTITY:--}"
 STAGING_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/normalplayer-package.XXXXXX")"
 BUNDLE="$STAGING_ROOT/$BUNDLE_NAME"
@@ -28,8 +28,8 @@ if [[ -f "$HOME/.cargo/env" ]]; then
 fi
 
 cd "$ROOT"
-cargo build --release -p player_ffi -p player_analyzer -p player_library_worker
-install_name_tool -id "@rpath/libplayer_ffi.dylib" "$RUST_DYLIB"
+cargo build --release -p app_ffi -p analyzer -p library_worker
+install_name_tool -id "@rpath/libapp_ffi.dylib" "$RUST_DYLIB"
 
 cd "$APP_DIR"
 rm -f "$APP_DIR/.build/release/Silent"
@@ -43,8 +43,8 @@ if [[ -z "${EXECUTABLE:-}" || ! -x "$EXECUTABLE" ]]; then
     echo "Silent release executable not found" >&2
     exit 1
 fi
-if ! otool -L "$EXECUTABLE" | grep -q '@rpath/libplayer_ffi.dylib'; then
-    echo "Silent does not link player_ffi through @rpath" >&2
+if ! otool -L "$EXECUTABLE" | grep -q '@rpath/libapp_ffi.dylib'; then
+    echo "Silent does not link app_ffi through @rpath" >&2
     exit 1
 fi
 
@@ -53,9 +53,9 @@ rm -rf "$BUNDLE"
 mkdir -p "$BUNDLE/Contents/MacOS" "$BUNDLE/Contents/Resources"
 cp -X "$EXECUTABLE" "$BUNDLE/Contents/MacOS/Silent"
 cp -X "$APP_ICON" "$BUNDLE/Contents/Resources/Silent.icns"
-cp -X "$RUST_DYLIB" "$BUNDLE/Contents/MacOS/libplayer_ffi.dylib"
-cp -X "$ANALYZER_EXECUTABLE" "$BUNDLE/Contents/MacOS/player_analyzer"
-cp -X "$LIBRARY_WORKER_EXECUTABLE" "$BUNDLE/Contents/MacOS/player_library_worker"
+cp -X "$RUST_DYLIB" "$BUNDLE/Contents/MacOS/libapp_ffi.dylib"
+cp -X "$ANALYZER_EXECUTABLE" "$BUNDLE/Contents/MacOS/analyzer"
+cp -X "$LIBRARY_WORKER_EXECUTABLE" "$BUNDLE/Contents/MacOS/library_worker"
 
 cat > "$BUNDLE/Contents/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
@@ -101,9 +101,9 @@ BUNDLE_REAL="$(realpath "$BUNDLE")"
 for item in \
     "$BUNDLE_REAL" \
     "$BUNDLE_REAL/Contents/MacOS/Silent" \
-    "$BUNDLE_REAL/Contents/MacOS/libplayer_ffi.dylib" \
-    "$BUNDLE_REAL/Contents/MacOS/player_analyzer" \
-    "$BUNDLE_REAL/Contents/MacOS/player_library_worker"
+    "$BUNDLE_REAL/Contents/MacOS/libapp_ffi.dylib" \
+    "$BUNDLE_REAL/Contents/MacOS/analyzer" \
+    "$BUNDLE_REAL/Contents/MacOS/library_worker"
 do
     xattr -cr "$item" 2>/dev/null || true
     xattr -d com.apple.FinderInfo "$item" 2>/dev/null || true
@@ -111,16 +111,16 @@ do
     xattr -d com.apple.provenance "$item" 2>/dev/null || true
 done
 
-codesign --force --sign "$SIGN_IDENTITY" "$BUNDLE_REAL/Contents/MacOS/libplayer_ffi.dylib"
-codesign --force --sign "$SIGN_IDENTITY" "$BUNDLE_REAL/Contents/MacOS/player_analyzer"
-codesign --force --sign "$SIGN_IDENTITY" "$BUNDLE_REAL/Contents/MacOS/player_library_worker"
+codesign --force --sign "$SIGN_IDENTITY" "$BUNDLE_REAL/Contents/MacOS/libapp_ffi.dylib"
+codesign --force --sign "$SIGN_IDENTITY" "$BUNDLE_REAL/Contents/MacOS/analyzer"
+codesign --force --sign "$SIGN_IDENTITY" "$BUNDLE_REAL/Contents/MacOS/library_worker"
 codesign --force --sign "$SIGN_IDENTITY" "$BUNDLE_REAL/Contents/MacOS/Silent"
 
 for item in \
     "$BUNDLE_REAL/Contents/MacOS/Silent" \
-    "$BUNDLE_REAL/Contents/MacOS/libplayer_ffi.dylib" \
-    "$BUNDLE_REAL/Contents/MacOS/player_analyzer" \
-    "$BUNDLE_REAL/Contents/MacOS/player_library_worker"
+    "$BUNDLE_REAL/Contents/MacOS/libapp_ffi.dylib" \
+    "$BUNDLE_REAL/Contents/MacOS/analyzer" \
+    "$BUNDLE_REAL/Contents/MacOS/library_worker"
 do
     xattr -d com.apple.FinderInfo "$item" 2>/dev/null || true
     xattr -d "com.apple.fileprovider.fpfs#P" "$item" 2>/dev/null || true

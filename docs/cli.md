@@ -157,5 +157,5 @@ and `queue clear` explicitly clear the persisted queue.
 | Import, package migration, zero, audit, analysis | Optional simplified entry points, never toolbar requirements | Complete authoritative workflow |
 | Lock screen, headset commands, Now Playing, background audio | Platform-native responsibility | Not applicable |
 
-The internal `player_analyzer` and `player_library_worker` executables remain app workers for
+The internal `analyzer` and `library_worker` executables remain app workers for
 progress reporting and cancellation. They are not public CLI entry points.

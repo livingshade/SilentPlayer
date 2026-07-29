@@ -10,19 +10,19 @@ SwiftUI app
       -> AVAudioSession / MediaPlayer
       -> MediaPlayer remote commands
       -> Files / security scoped resources
-      -> Rust player_ffi C ABI
-          -> player_engine
+      -> Rust app_ffi C ABI
+          -> engine
               -> Rodio / CoreAudio
-          -> player_core
+          -> domain
 ```
 
 Rust workspace 负责：
 
-- `player_core`：队列、播放状态、生命周期和 normalize 领域规则。
-- `player_engine`：带命令完成确认的播放服务和 backend port。
-- `player_audio_rodio`：Apple 当前使用的本地音频渲染 backend。
-- `player_library_fs`：目录扫描与文件 fingerprint。
-- `player_store_sqlite`：搜索、播放列表、收藏、历史和 artwork cache。
+- `domain`：队列、播放状态、生命周期和 normalize 领域规则。
+- `engine`：带命令完成确认的播放服务和 backend port。
+- `audio_rodio`：Apple 当前使用的本地音频渲染 backend。
+- `library_fs`：目录扫描与文件 fingerprint。
+- `store_sqlite`：搜索、播放列表、收藏、历史和 artwork cache。
 - metadata、fingerprint 与响度分析适配器。
 
 Swift/Apple 层负责：
@@ -44,7 +44,7 @@ macOS 和 iPhone 是播放端，不是 Rust/SQLite 能力的图形化管理控�
 
 Apple target 必须能读取并播放 CLI 产生的数据，但不需要提供对等的编辑入口。SwiftUI 信息架构按用户的聆听任务设计，不能根据 Rust 或 FFI 方法列表机械生成按钮；低频技术能力不进入主导航和常驻工具栏。
 
-Normalize 增益由 Rodio 播放 backend 应用到渲染链路，不修改系统音量。`player_engine` 的命令只有在 backend 操作完成后才返回；Swift 随后读取已经确认的 snapshot，不使用固定延时猜测状态。
+Normalize 增益由 Rodio 播放 backend 应用到渲染链路，不修改系统音量。`engine` 的命令只有在 backend 操作完成后才返回；Swift 随后读取已经确认的 snapshot，不使用固定延时猜测状态。
 
 当前 iOS 外壳已经完成系统播放集成：使用 `.playback` / `.longFormAudio` 配置并按需激活 `AVAudioSession`，通过 `MPNowPlayingInfoCenter` 发布锁屏标题、艺人、专辑、封面、时长、进度和播放状态，通过 `MPRemoteCommandCenter` 接收播放、暂停、上一首、下一首、拖动进度、循环和随机命令。来电等系统中断与耳机断开事件会进入 Rust `PlaybackLifecycle` 状态机，只有中断前正在播放且系统允许恢复时才会自动恢复。模拟器 app bundle 声明了 `UIBackgroundModes = audio`。
 
@@ -109,9 +109,9 @@ apple/
 Rust 构建产物：
 
 ```text
-target/aarch64-apple-ios/release/libplayer_ffi.a
-target/aarch64-apple-ios-sim/release/libplayer_ffi.a
-target/release/libplayer_ffi.dylib
+target/aarch64-apple-ios/release/libapp_ffi.a
+target/aarch64-apple-ios-sim/release/libapp_ffi.a
+target/release/libapp_ffi.dylib
 ```
 
 最终由 Xcode build phase 调用 cargo 构建并链接。
