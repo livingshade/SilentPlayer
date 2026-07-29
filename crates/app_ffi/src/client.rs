@@ -1,40 +1,20 @@
 use std::error::Error;
-use std::ffi::{CStr, CString, NulError};
 use std::fmt;
 use std::path::{Path, PathBuf};
-use std::ptr::NonNull;
 
+use errors::{PlayerError, PlayerResult};
+use serde::Serialize;
 use serde_json::Value;
 
-use crate::{
-    player_app_add_to_playlist, player_app_analyze, player_app_audio_interruption_began,
-    player_app_audio_interruption_ended, player_app_audio_output_disconnected,
-    player_app_audit_database, player_app_clear_playlist, player_app_create,
-    player_app_create_playlist, player_app_delete_playlist, player_app_destroy,
-    player_app_edit_track_view, player_app_export_library, player_app_export_track_view,
-    player_app_favorites, player_app_history, player_app_import_files, player_app_import_folder,
-    player_app_import_library, player_app_library, player_app_library_page,
-    player_app_move_playlist_track, player_app_next, player_app_pause, player_app_play_library,
-    player_app_play_path, player_app_play_playlist, player_app_play_queue,
-    player_app_playlist_tracks, player_app_playlists, player_app_poll, player_app_previous,
-    player_app_queue, player_app_queue_add, player_app_queue_clear, player_app_queue_move,
-    player_app_queue_play_next, player_app_queue_remove, player_app_recent_playlists,
-    player_app_remove_from_playlist, player_app_rename_playlist, player_app_resume,
-    player_app_search, player_app_search_playlist, player_app_seek, player_app_set_album_artwork,
-    player_app_set_favorite, player_app_set_playlist_artwork, player_app_set_repeat_mode,
-    player_app_set_shuffle, player_app_set_track_artwork, player_app_set_track_lyrics,
-    player_app_set_track_metadata, player_app_set_track_notes, player_app_set_track_rating,
-    player_app_sort_playlist, player_app_stop, player_app_track_details, player_app_user_data,
-    player_app_zero_out_library, player_string_free, PlayerApp,
-};
+use crate::{PlayerApp, TrackViewEditRequest};
 
-/// Safe, typed-lifetime owner for the application service exposed by this crate.
+/// Safe Rust access to the application service shared by the CLI and Apple FFI.
 ///
-/// The Apple FFI and the generic CLI both use the same `PlayerApp` implementation. The
-/// client intentionally returns JSON values because those values are also the stable wire
-/// contract consumed by Swift.
+/// JSON values are retained at this public boundary because the CLI prints the same
+/// response shapes consumed by the Apple clients. No C ABI allocation or string
+/// conversion is involved.
 pub struct SilentAppClient {
-    app: NonNull<PlayerApp>,
+    app: Box<PlayerApp>,
 }
 
 #[derive(Debug)]
@@ -58,9 +38,9 @@ impl fmt::Display for SilentAppClientError {
 
 impl Error for SilentAppClientError {}
 
-impl From<NulError> for SilentAppClientError {
-    fn from(error: NulError) -> Self {
-        Self::new(format!("path or argument contains a NUL byte: {error}"))
+impl From<PlayerError> for SilentAppClientError {
+    fn from(error: PlayerError) -> Self {
+        Self::new(error.to_string())
     }
 }
 
@@ -69,98 +49,72 @@ impl SilentAppClient {
         db_path: impl AsRef<Path>,
         media_root: impl AsRef<Path>,
     ) -> Result<Self, SilentAppClientError> {
-        let db_path = c_path(db_path.as_ref())?;
-        let media_root = c_path(media_root.as_ref())?;
-        let app = unsafe { player_app_create(db_path.as_ptr(), media_root.as_ptr()) };
-        let app = NonNull::new(app)
-            .ok_or_else(|| SilentAppClientError::new("unable to create Silent application"))?;
-        Ok(Self { app })
-    }
-
-    pub fn export_library(&mut self, path: impl AsRef<Path>) -> ClientResult {
-        let path = c_path(path.as_ref())?;
-        self.call(|app| unsafe { player_app_export_library(app, path.as_ptr()) })
-    }
-
-    pub fn import_library(&mut self, path: impl AsRef<Path>) -> ClientResult {
-        let path = c_path(path.as_ref())?;
-        self.call(|app| unsafe { player_app_import_library(app, path.as_ptr()) })
-    }
-
-    pub fn zero_out_library(&mut self) -> ClientResult {
-        self.call(|app| unsafe { player_app_zero_out_library(app) })
-    }
-
-    pub fn import_folder(&mut self, path: impl AsRef<Path>) -> ClientResult {
-        let path = c_path(path.as_ref())?;
-        self.call(|app| unsafe { player_app_import_folder(app, path.as_ptr()) })
-    }
-
-    pub fn import_files(&mut self, paths: &[PathBuf]) -> ClientResult {
-        let paths = paths
-            .iter()
-            .map(|path| path_text(path))
-            .collect::<Result<Vec<_>, _>>()?;
-        let paths = CString::new(
-            serde_json::to_string(&paths)
-                .map_err(|error| SilentAppClientError::new(error.to_string()))?,
-        )?;
-        self.call(|app| unsafe { player_app_import_files(app, paths.as_ptr()) })
-    }
-
-    pub fn library(&mut self) -> ClientResult {
-        self.call(|app| unsafe { player_app_library(app) })
-    }
-
-    pub fn library_page(&mut self, offset: usize, limit: usize) -> ClientResult {
-        self.call(|app| unsafe { player_app_library_page(app, offset, limit) })
-    }
-
-    pub fn search(&mut self, query: &str, limit: usize) -> ClientResult {
-        let query = CString::new(query)?;
-        self.call(|app| unsafe { player_app_search(app, query.as_ptr(), limit) })
-    }
-
-    pub fn search_playlist(&mut self, name: &str, query: &str, limit: usize) -> ClientResult {
-        let name = CString::new(name)?;
-        let query = CString::new(query)?;
-        self.call(|app| unsafe {
-            player_app_search_playlist(app, name.as_ptr(), query.as_ptr(), limit)
+        Ok(Self {
+            app: Box::new(PlayerApp::new(
+                db_path.as_ref().to_path_buf(),
+                media_root.as_ref().to_path_buf(),
+            )),
         })
     }
 
+    pub fn export_library(&mut self, path: impl AsRef<Path>) -> ClientResult {
+        self.call(|app| app.service_export_library(path.as_ref()))
+    }
+
+    pub fn import_library(&mut self, path: impl AsRef<Path>) -> ClientResult {
+        self.call(|app| app.service_import_library(path.as_ref()))
+    }
+
+    pub fn zero_out_library(&mut self) -> ClientResult {
+        self.call(PlayerApp::service_zero_out_library)
+    }
+
+    pub fn import_folder(&mut self, path: impl AsRef<Path>) -> ClientResult {
+        self.call(|app| app.service_import_folder(path.as_ref()))
+    }
+
+    pub fn import_files(&mut self, paths: &[PathBuf]) -> ClientResult {
+        self.call(|app| app.service_import_files(paths))
+    }
+
+    pub fn library(&mut self) -> ClientResult {
+        self.call(PlayerApp::service_library)
+    }
+
+    pub fn library_page(&mut self, offset: usize, limit: usize) -> ClientResult {
+        self.call(|app| app.service_library_page(offset, limit))
+    }
+
+    pub fn search(&mut self, query: &str, limit: usize) -> ClientResult {
+        self.call(|app| app.service_search(query, limit))
+    }
+
+    pub fn search_playlist(&mut self, name: &str, query: &str, limit: usize) -> ClientResult {
+        self.call(|app| app.service_search_playlist(name, query, limit))
+    }
+
     pub fn analyze(&mut self) -> ClientResult {
-        self.call(|app| unsafe { player_app_analyze(app) })
+        self.call(PlayerApp::service_analyze)
     }
 
     pub fn audit_database(&mut self) -> ClientResult {
-        self.call(|app| unsafe { player_app_audit_database(app) })
+        self.call(PlayerApp::service_audit_database)
     }
 
     pub fn user_data(&mut self) -> ClientResult {
-        self.call(|app| unsafe { player_app_user_data(app) })
+        self.call(PlayerApp::service_user_data)
     }
 
     pub fn play_path(&mut self, path: impl AsRef<Path>) -> ClientResult {
-        let path = c_path(path.as_ref())?;
-        self.call(|app| unsafe { player_app_play_path(app, path.as_ptr()) })
+        self.call(|app| app.service_play_path(path.as_ref()))
     }
 
     pub fn play_library(&mut self) -> ClientResult {
-        self.call(|app| unsafe { player_app_play_library(app) })
+        self.call(PlayerApp::service_play_library)
     }
 
     pub fn play_queue(&mut self, paths: &[PathBuf], start_path: impl AsRef<Path>) -> ClientResult {
-        let paths = paths
-            .iter()
-            .map(|path| path_text(path))
-            .collect::<Result<Vec<_>, _>>()?;
-        let paths = CString::new(
-            serde_json::to_string(&paths)
-                .map_err(|error| SilentAppClientError::new(error.to_string()))?,
-        )?;
-        let start_path = c_path(start_path.as_ref())?;
-        self.call(|app| unsafe { player_app_play_queue(app, paths.as_ptr(), start_path.as_ptr()) })
+        self.call(|app| app.service_play_queue(paths, start_path.as_ref()))
     }
 
     pub fn play_playlist(
@@ -169,118 +123,99 @@ impl SilentAppClient {
         start_path: Option<&Path>,
         shuffle: bool,
     ) -> ClientResult {
-        let name = CString::new(name)?;
-        let start_path = start_path.map(c_path).transpose()?;
-        self.call(|app| unsafe {
-            player_app_play_playlist(
-                app,
-                name.as_ptr(),
-                start_path
-                    .as_ref()
-                    .map_or(std::ptr::null(), |path| path.as_ptr()),
-                shuffle,
-            )
-        })
+        self.call(|app| app.service_play_playlist(name, start_path, shuffle))
     }
 
     pub fn pause(&mut self) -> ClientResult {
-        self.call(|app| unsafe { player_app_pause(app) })
+        self.call(PlayerApp::service_pause)
     }
 
     pub fn resume(&mut self) -> ClientResult {
-        self.call(|app| unsafe { player_app_resume(app) })
+        self.call(PlayerApp::service_resume)
     }
 
     pub fn audio_interruption_began(&mut self) -> ClientResult {
-        self.call(|app| unsafe { player_app_audio_interruption_began(app) })
+        self.call(PlayerApp::service_audio_interruption_began)
     }
 
     pub fn audio_interruption_ended(&mut self, system_should_resume: bool) -> ClientResult {
-        self.call(|app| unsafe { player_app_audio_interruption_ended(app, system_should_resume) })
+        self.call(|app| app.service_audio_interruption_ended(system_should_resume))
     }
 
     pub fn audio_output_disconnected(&mut self) -> ClientResult {
-        self.call(|app| unsafe { player_app_audio_output_disconnected(app) })
+        self.call(PlayerApp::service_audio_output_disconnected)
     }
 
     pub fn stop(&mut self) -> ClientResult {
-        self.call(|app| unsafe { player_app_stop(app) })
+        self.call(PlayerApp::service_stop)
     }
 
     pub fn next_track(&mut self) -> ClientResult {
-        self.call(|app| unsafe { player_app_next(app) })
+        self.call(PlayerApp::service_next)
     }
 
     pub fn previous_track(&mut self) -> ClientResult {
-        self.call(|app| unsafe { player_app_previous(app) })
+        self.call(PlayerApp::service_previous)
     }
 
     pub fn seek(&mut self, position_ms: u64) -> ClientResult {
-        self.call(|app| unsafe { player_app_seek(app, position_ms) })
+        self.call(|app| app.service_seek(position_ms))
     }
 
     pub fn poll(&mut self) -> ClientResult {
-        self.call(|app| unsafe { player_app_poll(app) })
+        self.call(PlayerApp::service_poll)
     }
 
     pub fn set_repeat_mode(&mut self, mode: &str) -> ClientResult {
-        let mode = CString::new(mode)?;
-        self.call(|app| unsafe { player_app_set_repeat_mode(app, mode.as_ptr()) })
+        self.call(|app| app.service_set_repeat_mode(mode))
     }
 
     pub fn set_shuffle(&mut self, enabled: bool) -> ClientResult {
-        self.call(|app| unsafe { player_app_set_shuffle(app, enabled) })
+        self.call(|app| app.service_set_shuffle(enabled))
     }
 
     pub fn queue(&mut self) -> ClientResult {
-        self.call(|app| unsafe { player_app_queue(app) })
+        self.call(PlayerApp::service_queue)
     }
 
     pub fn queue_play_next(&mut self, path: impl AsRef<Path>) -> ClientResult {
-        let path = c_path(path.as_ref())?;
-        self.call(|app| unsafe { player_app_queue_play_next(app, path.as_ptr()) })
+        self.call(|app| app.service_queue_play_next(path.as_ref()))
     }
 
     pub fn queue_add(&mut self, path: impl AsRef<Path>) -> ClientResult {
-        let path = c_path(path.as_ref())?;
-        self.call(|app| unsafe { player_app_queue_add(app, path.as_ptr()) })
+        self.call(|app| app.service_queue_add(path.as_ref()))
     }
 
     pub fn queue_move(&mut self, from: usize, to: usize) -> ClientResult {
-        self.call(|app| unsafe { player_app_queue_move(app, from, to) })
+        self.call(|app| app.service_queue_move(from, to))
     }
 
     pub fn queue_remove(&mut self, index: usize) -> ClientResult {
-        self.call(|app| unsafe { player_app_queue_remove(app, index) })
+        self.call(|app| app.service_queue_remove(index))
     }
 
     pub fn queue_clear(&mut self) -> ClientResult {
-        self.call(|app| unsafe { player_app_queue_clear(app) })
+        self.call(PlayerApp::service_queue_clear)
     }
 
     pub fn track_details(&mut self, path: impl AsRef<Path>) -> ClientResult {
-        let path = c_path(path.as_ref())?;
-        self.call(|app| unsafe { player_app_track_details(app, path.as_ptr()) })
+        self.call(|app| app.service_track_details(path.as_ref()))
     }
 
     pub fn edit_track_view(&mut self, path: impl AsRef<Path>, edit: &Value) -> ClientResult {
-        let path = c_path(path.as_ref())?;
-        let edit = CString::new(
-            serde_json::to_string(edit)
-                .map_err(|error| SilentAppClientError::new(error.to_string()))?,
-        )?;
-        self.call(|app| unsafe { player_app_edit_track_view(app, path.as_ptr(), edit.as_ptr()) })
+        let request: TrackViewEditRequest =
+            serde_json::from_value(edit.clone()).map_err(|error| {
+                SilentAppClientError::new(format!("invalid track view edit request: {error}"))
+            })?;
+        self.call(|app| app.service_edit_track_view(path.as_ref(), request))
     }
 
     pub fn set_track_notes(&mut self, path: impl AsRef<Path>, notes: &str) -> ClientResult {
-        let path = c_path(path.as_ref())?;
-        let notes = CString::new(notes)?;
-        self.call(|app| unsafe { player_app_set_track_notes(app, path.as_ptr(), notes.as_ptr()) })
+        self.call(|app| app.service_set_track_notes(path.as_ref(), notes))
     }
 
     pub fn set_track_rating(&mut self, path: impl AsRef<Path>, rating: i32) -> ClientResult {
-        let path = c_path(path.as_ref())?;
-        self.call(|app| unsafe { player_app_set_track_rating(app, path.as_ptr(), rating) })
+        self.call(|app| app.service_set_track_rating(path.as_ref(), rating))
     }
 
     pub fn set_track_metadata(
@@ -290,19 +225,7 @@ impl SilentAppClient {
         artist: &str,
         album: &str,
     ) -> ClientResult {
-        let path = c_path(path.as_ref())?;
-        let title = CString::new(title)?;
-        let artist = CString::new(artist)?;
-        let album = CString::new(album)?;
-        self.call(|app| unsafe {
-            player_app_set_track_metadata(
-                app,
-                path.as_ptr(),
-                title.as_ptr(),
-                artist.as_ptr(),
-                album.as_ptr(),
-            )
-        })
+        self.call(|app| app.service_set_track_metadata(path.as_ref(), title, artist, album))
     }
 
     pub fn set_track_artwork(
@@ -310,11 +233,7 @@ impl SilentAppClient {
         path: impl AsRef<Path>,
         image_path: impl AsRef<Path>,
     ) -> ClientResult {
-        let path = c_path(path.as_ref())?;
-        let image_path = c_path(image_path.as_ref())?;
-        self.call(|app| unsafe {
-            player_app_set_track_artwork(app, path.as_ptr(), image_path.as_ptr())
-        })
+        self.call(|app| app.service_set_track_artwork(path.as_ref(), image_path.as_ref()))
     }
 
     pub fn set_album_artwork(
@@ -322,11 +241,7 @@ impl SilentAppClient {
         path: impl AsRef<Path>,
         image_path: impl AsRef<Path>,
     ) -> ClientResult {
-        let path = c_path(path.as_ref())?;
-        let image_path = c_path(image_path.as_ref())?;
-        self.call(|app| unsafe {
-            player_app_set_album_artwork(app, path.as_ptr(), image_path.as_ptr())
-        })
+        self.call(|app| app.service_set_album_artwork(path.as_ref(), image_path.as_ref()))
     }
 
     pub fn set_track_lyrics(
@@ -334,11 +249,7 @@ impl SilentAppClient {
         path: impl AsRef<Path>,
         lyrics_path: impl AsRef<Path>,
     ) -> ClientResult {
-        let path = c_path(path.as_ref())?;
-        let lyrics_path = c_path(lyrics_path.as_ref())?;
-        self.call(|app| unsafe {
-            player_app_set_track_lyrics(app, path.as_ptr(), lyrics_path.as_ptr())
-        })
+        self.call(|app| app.service_set_track_lyrics(path.as_ref(), lyrics_path.as_ref()))
     }
 
     pub fn export_track_view(
@@ -346,45 +257,35 @@ impl SilentAppClient {
         path: impl AsRef<Path>,
         destination: impl AsRef<Path>,
     ) -> ClientResult {
-        let path = c_path(path.as_ref())?;
-        let destination = c_path(destination.as_ref())?;
-        self.call(|app| unsafe {
-            player_app_export_track_view(app, path.as_ptr(), destination.as_ptr())
-        })
+        self.call(|app| app.service_export_track_view(path.as_ref(), destination.as_ref()))
     }
 
     pub fn set_favorite(&mut self, path: impl AsRef<Path>, enabled: bool) -> ClientResult {
-        let path = c_path(path.as_ref())?;
-        self.call(|app| unsafe { player_app_set_favorite(app, path.as_ptr(), enabled) })
+        self.call(|app| app.service_set_favorite(path.as_ref(), enabled))
     }
 
     pub fn favorites(&mut self) -> ClientResult {
-        self.call(|app| unsafe { player_app_favorites(app) })
+        self.call(PlayerApp::service_favorites)
     }
 
     pub fn history(&mut self, limit: usize) -> ClientResult {
-        self.call(|app| unsafe { player_app_history(app, limit) })
+        self.call(|app| app.service_history(limit))
     }
 
     pub fn playlists(&mut self) -> ClientResult {
-        self.call(|app| unsafe { player_app_playlists(app) })
+        self.call(PlayerApp::service_playlists)
     }
 
     pub fn recent_playlists(&mut self, limit: usize) -> ClientResult {
-        self.call(|app| unsafe { player_app_recent_playlists(app, limit) })
+        self.call(|app| app.service_recent_playlists(limit))
     }
 
     pub fn create_playlist(&mut self, name: &str) -> ClientResult {
-        let name = CString::new(name)?;
-        self.call(|app| unsafe { player_app_create_playlist(app, name.as_ptr()) })
+        self.call(|app| app.service_create_playlist(name))
     }
 
     pub fn rename_playlist(&mut self, old_name: &str, new_name: &str) -> ClientResult {
-        let old_name = CString::new(old_name)?;
-        let new_name = CString::new(new_name)?;
-        self.call(|app| unsafe {
-            player_app_rename_playlist(app, old_name.as_ptr(), new_name.as_ptr())
-        })
+        self.call(|app| app.service_rename_playlist(old_name, new_name))
     }
 
     pub fn set_playlist_artwork(
@@ -392,35 +293,23 @@ impl SilentAppClient {
         name: &str,
         image_path: impl AsRef<Path>,
     ) -> ClientResult {
-        let name = CString::new(name)?;
-        let image_path = c_path(image_path.as_ref())?;
-        self.call(|app| unsafe {
-            player_app_set_playlist_artwork(app, name.as_ptr(), image_path.as_ptr())
-        })
+        self.call(|app| app.service_set_playlist_artwork(name, image_path.as_ref()))
     }
 
     pub fn delete_playlist(&mut self, name: &str) -> ClientResult {
-        let name = CString::new(name)?;
-        self.call(|app| unsafe { player_app_delete_playlist(app, name.as_ptr()) })
+        self.call(|app| app.service_delete_playlist(name))
     }
 
     pub fn clear_playlist(&mut self, name: &str) -> ClientResult {
-        let name = CString::new(name)?;
-        self.call(|app| unsafe { player_app_clear_playlist(app, name.as_ptr()) })
+        self.call(|app| app.service_clear_playlist(name))
     }
 
     pub fn add_to_playlist(&mut self, name: &str, path: impl AsRef<Path>) -> ClientResult {
-        let name = CString::new(name)?;
-        let path = c_path(path.as_ref())?;
-        self.call(|app| unsafe { player_app_add_to_playlist(app, name.as_ptr(), path.as_ptr()) })
+        self.call(|app| app.service_add_to_playlist(name, path.as_ref()))
     }
 
     pub fn remove_from_playlist(&mut self, name: &str, path: impl AsRef<Path>) -> ClientResult {
-        let name = CString::new(name)?;
-        let path = c_path(path.as_ref())?;
-        self.call(|app| unsafe {
-            player_app_remove_from_playlist(app, name.as_ptr(), path.as_ptr())
-        })
+        self.call(|app| app.service_remove_from_playlist(name, path.as_ref()))
     }
 
     pub fn move_playlist_track(
@@ -429,121 +318,66 @@ impl SilentAppClient {
         path: impl AsRef<Path>,
         delta: i32,
     ) -> ClientResult {
-        let name = CString::new(name)?;
-        let path = c_path(path.as_ref())?;
-        self.call(|app| unsafe {
-            player_app_move_playlist_track(app, name.as_ptr(), path.as_ptr(), delta)
-        })
+        self.call(|app| app.service_move_playlist_track(name, path.as_ref(), delta))
     }
 
     pub fn sort_playlist(&mut self, name: &str, sort: &str) -> ClientResult {
-        let name = CString::new(name)?;
-        let sort = CString::new(sort)?;
-        self.call(|app| unsafe { player_app_sort_playlist(app, name.as_ptr(), sort.as_ptr()) })
+        self.call(|app| app.service_sort_playlist(name, sort))
     }
 
     pub fn playlist_tracks(&mut self, name: &str) -> ClientResult {
-        let name = CString::new(name)?;
-        self.call(|app| unsafe { player_app_playlist_tracks(app, name.as_ptr()) })
+        self.call(|app| app.service_playlist_tracks(name))
     }
 
-    fn call(
+    fn call<T: Serialize>(
         &mut self,
-        operation: impl FnOnce(*mut PlayerApp) -> *mut std::ffi::c_char,
+        operation: impl FnOnce(&mut PlayerApp) -> PlayerResult<T>,
     ) -> ClientResult {
-        let response = operation(self.app.as_ptr());
-        decode_response(response)
+        let data = operation(&mut self.app)?;
+        serde_json::to_value(data).map_err(|error| SilentAppClientError::new(error.to_string()))
     }
 }
 
 impl Drop for SilentAppClient {
     fn drop(&mut self) {
-        unsafe {
-            player_app_destroy(self.app.as_ptr());
-        }
+        self.app.close();
     }
 }
 
 type ClientResult = Result<Value, SilentAppClientError>;
 
-fn c_path(path: &Path) -> Result<CString, SilentAppClientError> {
-    CString::new(path_text(path)?).map_err(Into::into)
-}
-
-fn path_text(path: &Path) -> Result<&str, SilentAppClientError> {
-    path.to_str()
-        .ok_or_else(|| SilentAppClientError::new(format!("path is not valid UTF-8: {path:?}")))
-}
-
-fn decode_response(response: *mut std::ffi::c_char) -> Result<Value, SilentAppClientError> {
-    if response.is_null() {
-        return Err(SilentAppClientError::new(
-            "Silent application returned a null response",
-        ));
-    }
-    let json = unsafe {
-        let json = CStr::from_ptr(response).to_str().map(ToOwned::to_owned);
-        player_string_free(response);
-        json
-    }
-    .map_err(|error| {
-        SilentAppClientError::new(format!("app response is not valid UTF-8: {error}"))
-    })?;
-    let mut response: Value = serde_json::from_str(&json)
-        .map_err(|error| SilentAppClientError::new(format!("invalid app response: {error}")))?;
-    let ok = response.get("ok").and_then(Value::as_bool).ok_or_else(|| {
-        SilentAppClientError::new("Silent application response has no boolean `ok` field")
-    })?;
-    if !ok {
-        let error = response
-            .get("error")
-            .and_then(Value::as_str)
-            .ok_or_else(|| {
-                SilentAppClientError::new(
-                    "Silent application failure response has no string `error` field",
-                )
-            })?;
-        return Err(SilentAppClientError::new(error));
-    }
-    response
-        .get_mut("data")
-        .map(Value::take)
-        .ok_or_else(|| SilentAppClientError::new("Silent application returned no data"))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn decode(json: &str) -> Result<Value, SilentAppClientError> {
-        let response = CString::new(json).unwrap().into_raw();
-        decode_response(response)
+    #[test]
+    fn safe_client_returns_service_values_without_ffi_envelopes() {
+        let root = std::env::temp_dir().join(format!("silent-app-client-{}", std::process::id()));
+        let mut client = SilentAppClient::open(root.join("library.sqlite"), root.join("Music"))
+            .expect("client should open");
+
+        assert_eq!(
+            client.library().expect("library response"),
+            Value::Array(vec![])
+        );
+        drop(client);
+        std::fs::remove_dir_all(root).ok();
     }
 
+    #[cfg(unix)]
     #[test]
-    fn response_envelope_is_strict() {
-        assert_eq!(
-            decode(r#"{"ok":true,"data":{"value":1},"error":null}"#).unwrap()["value"],
-            1
-        );
-        assert!(decode(r#"{"data":null,"error":null}"#)
-            .unwrap_err()
-            .to_string()
-            .contains("boolean `ok`"));
-        assert!(decode(r#"{"ok":false,"data":null}"#)
-            .unwrap_err()
-            .to_string()
-            .contains("string `error`"));
-        assert!(decode(r#"{"ok":true,"error":null}"#)
-            .unwrap_err()
-            .to_string()
-            .contains("no data"));
+    fn safe_client_accepts_non_utf8_paths() {
+        use std::ffi::OsString;
+        use std::os::unix::ffi::OsStringExt;
 
-        let invalid_utf8 =
-            unsafe { CString::from_vec_with_nul_unchecked(vec![0xff, 0]).into_raw() };
-        assert!(decode_response(invalid_utf8)
-            .unwrap_err()
-            .to_string()
-            .contains("not valid UTF-8"));
+        let root =
+            std::env::temp_dir().join(format!("silent-app-client-non-utf8-{}", std::process::id()));
+        let db_path = root.join(OsString::from_vec(b"library-\xff.sqlite".to_vec()));
+        let media_root = root.join(OsString::from_vec(b"music-\xfe".to_vec()));
+        let client = SilentAppClient::open(db_path, media_root);
+
+        assert!(client.is_ok());
+        drop(client);
+        std::fs::remove_dir_all(root).ok();
     }
 }

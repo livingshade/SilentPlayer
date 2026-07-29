@@ -72,7 +72,7 @@ dependencies = [
  "errors",
  "fingerprint",
  "library_fs",
- "metadata_lofty",
+ "library_service",
  "serde",
  "serde_json",
  "store_sqlite",
@@ -301,6 +301,9 @@ dependencies = [
 [[package]]
 name = "domain"
 version = "0.1.0"
+dependencies = [
+ "blake3",
+]
 
 [[package]]
 name = "ebur128-stream"
@@ -587,7 +590,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "library_worker"
+name = "library_service"
 version = "0.1.0"
 dependencies = [
  "domain",
@@ -595,6 +598,18 @@ dependencies = [
  "fingerprint",
  "library_fs",
  "metadata_lofty",
+ "store_sqlite",
+]
+
+[[package]]
+name = "library_worker"
+version = "0.1.0"
+dependencies = [
+ "domain",
+ "errors",
+ "fingerprint",
+ "library_fs",
+ "library_service",
  "serde",
  "serde_json",
  "store_sqlite",

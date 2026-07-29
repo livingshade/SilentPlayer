@@ -3028,7 +3028,14 @@ fn row_to_track_at(row: &rusqlite::Row<'_>, offset: usize) -> rusqlite::Result<T
     track.audio_hash = row.get(offset + 20)?;
     track.view_id = TrackViewId::from_value(row.get::<_, String>(offset + 21)?);
     track.primary_view_id = TrackViewId::from_value(row.get::<_, String>(offset + 22)?);
-    track.view_kind = TrackViewKind::parse(&row.get::<_, String>(offset + 23)?);
+    let view_kind = row.get::<_, String>(offset + 23)?;
+    track.view_kind = TrackViewKind::parse(&view_kind).map_err(|error| {
+        rusqlite::Error::FromSqlConversionFailure(
+            offset + 23,
+            rusqlite::types::Type::Text,
+            Box::new(error),
+        )
+    })?;
     track.transform_spec = row.get(offset + 24)?;
     track.quality_profile = row.get(offset + 25)?;
     track.format_name = row.get(offset + 26)?;

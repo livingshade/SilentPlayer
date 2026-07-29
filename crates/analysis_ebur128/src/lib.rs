@@ -68,6 +68,33 @@ pub struct BatchAnalysisError {
     pub message: String,
 }
 
+#[derive(Clone, Debug, PartialEq)]
+pub enum BatchAnalysisProgress {
+    Started {
+        total: usize,
+    },
+    TrackFinished {
+        index: usize,
+        total: usize,
+        path: PathBuf,
+        title: String,
+        integrated_lufs: f32,
+        true_peak_dbtp: f32,
+        duration_ms: Option<u64>,
+        analyzed: usize,
+        failed: usize,
+    },
+    TrackFailed {
+        index: usize,
+        total: usize,
+        path: PathBuf,
+        title: String,
+        error: String,
+        analyzed: usize,
+        failed: usize,
+    },
+}
+
 struct BatchAnalysisWorkResult {
     track: Track,
     result: Result<BatchAnalysisWorkPayload, String>,
@@ -111,14 +138,27 @@ pub fn analyze_pending(
     store: &mut LibraryStore,
     options: BatchAnalysisOptions,
 ) -> PlayerResult<BatchAnalysisSummary> {
-    let pending = store.pending_analysis(options.analysis_version, options.limit)?;
-    let mut summary = BatchAnalysisSummary::default();
+    analyze_pending_with_progress(store, options, |_| Ok(()))
+}
 
-    let worker_count = worker_count(pending.len());
+pub fn analyze_pending_with_progress<F>(
+    store: &mut LibraryStore,
+    options: BatchAnalysisOptions,
+    mut progress: F,
+) -> PlayerResult<BatchAnalysisSummary>
+where
+    F: FnMut(BatchAnalysisProgress) -> PlayerResult<()>,
+{
+    let pending = store.pending_analysis(options.analysis_version, options.limit)?;
+    let total = pending.len();
+    let mut summary = BatchAnalysisSummary::default();
+    progress(BatchAnalysisProgress::Started { total })?;
+
+    let worker_count = worker_count(total);
     let chunks = distribute_tracks(pending, worker_count);
     let (tx, rx) = mpsc::channel();
 
-    thread::scope(|scope| {
+    thread::scope(|scope| -> PlayerResult<()> {
         for chunk in chunks {
             let tx = tx.clone();
             scope.spawn(move || {
@@ -133,33 +173,74 @@ pub fn analyze_pending(
         }
         drop(tx);
 
-        for result in rx {
+        for (offset, result) in rx.into_iter().enumerate() {
+            let index = offset + 1;
+            let path = result.track.path.clone();
+            let title = result.track.title.clone();
             match result.result {
-                Ok(analysis) => match store.save_loudness_with_duration(
-                    &result.track.path,
-                    analysis.fingerprint,
-                    analysis.duration_ms,
-                    analysis.loudness,
-                ) {
-                    Ok(()) => summary.analyzed += 1,
-                    Err(error) => {
-                        summary.failed += 1;
-                        summary.errors.push(BatchAnalysisError {
-                            path: result.track.path,
-                            message: error.to_string(),
-                        });
+                Ok(analysis) => {
+                    let integrated_lufs = analysis.loudness.integrated_lufs;
+                    let true_peak_dbtp = analysis.loudness.true_peak_dbtp;
+                    let duration_ms = analysis.duration_ms;
+                    match store.save_loudness_with_duration(
+                        &result.track.path,
+                        analysis.fingerprint,
+                        analysis.duration_ms,
+                        analysis.loudness,
+                    ) {
+                        Ok(()) => {
+                            summary.analyzed += 1;
+                            progress(BatchAnalysisProgress::TrackFinished {
+                                index,
+                                total,
+                                path,
+                                title,
+                                integrated_lufs,
+                                true_peak_dbtp,
+                                duration_ms,
+                                analyzed: summary.analyzed,
+                                failed: summary.failed,
+                            })?;
+                        }
+                        Err(error) => {
+                            summary.failed += 1;
+                            let message = error.to_string();
+                            summary.errors.push(BatchAnalysisError {
+                                path: path.clone(),
+                                message: message.clone(),
+                            });
+                            progress(BatchAnalysisProgress::TrackFailed {
+                                index,
+                                total,
+                                path,
+                                title,
+                                error: message,
+                                analyzed: summary.analyzed,
+                                failed: summary.failed,
+                            })?;
+                        }
                     }
-                },
+                }
                 Err(error) => {
                     summary.failed += 1;
                     summary.errors.push(BatchAnalysisError {
-                        path: result.track.path,
-                        message: error,
+                        path: path.clone(),
+                        message: error.clone(),
                     });
+                    progress(BatchAnalysisProgress::TrackFailed {
+                        index,
+                        total,
+                        path,
+                        title,
+                        error,
+                        analyzed: summary.analyzed,
+                        failed: summary.failed,
+                    })?;
                 }
             }
         }
-    });
+        Ok(())
+    })?;
 
     Ok(summary)
 }

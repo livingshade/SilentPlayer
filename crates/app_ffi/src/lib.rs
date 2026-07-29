@@ -24,8 +24,12 @@ use domain::{
 use engine::{PlaybackEvent, PlayerEngine};
 use errors::{PlayerError, PlayerResult};
 use fingerprint::{audio_hash, file_hash};
-use library_fs::{fingerprint_from_metadata, is_supported_audio_file, LibraryScanner, ScanOptions};
-use metadata_lofty::{enrich_track, read_track_artwork};
+use library_fs::fingerprint_from_metadata;
+use library_service::{
+    copy_into_media_library, copy_related_sidecars, import_files as import_files_service,
+    import_folder as import_folder_service, ALBUM_ARTWORK_STEMS, ARTWORK_EXTENSIONS,
+    LYRICS_EXTENSIONS,
+};
 use serde::{Deserialize, Serialize};
 use store_sqlite::{LibraryStore, PlaylistSort, PlaylistSummary};
 
@@ -91,6 +95,7 @@ struct ImportSummary {
     duplicates_skipped: usize,
     artwork_cached: usize,
     metadata_warnings: usize,
+    failures: usize,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -112,11 +117,6 @@ struct LibraryPackageSummary {
     playlists: usize,
     audio_files: usize,
     sidecar_files: usize,
-}
-
-struct PendingImportTrack {
-    source_root: PathBuf,
-    track: Track,
 }
 
 #[derive(Serialize)]
@@ -312,34 +312,46 @@ pub unsafe extern "C" fn player_app_create(
 }
 
 fn create_app(db_path: PathBuf, media_root: PathBuf) -> *mut PlayerApp {
-    let activity_store = UserActivityStore::for_db(&db_path);
-    let local_user = activity_store.load_or_create_profile().ok();
-    let mut app = PlayerApp {
-        db_path,
-        media_root,
-        activity_store,
-        local_user,
-        active_session: None,
-        pending_session_end_reason: None,
-        engine: None,
-        current_track: None,
-        queue_tracks: Vec::new(),
-        queue_current_index: None,
-        repeat_mode: RepeatMode::Off,
-        shuffle_enabled: false,
-        is_playing: false,
-        position_ms: 0,
-        last_persisted_queue_position_ms: 0,
-        last_persisted_queue_index: None,
-        gain_db: None,
-        loudness_status: None,
-        last_error: None,
-        playback_lifecycle: PlaybackLifecycle::default(),
-    };
-    if let Err(error) = app.restore_persisted_queue() {
-        app.last_error = Some(error.to_string());
+    Box::into_raw(Box::new(PlayerApp::new(db_path, media_root)))
+}
+
+impl PlayerApp {
+    pub(crate) fn new(db_path: PathBuf, media_root: PathBuf) -> Self {
+        let activity_store = UserActivityStore::for_db(&db_path);
+        let local_user = activity_store.load_or_create_profile().ok();
+        let mut app = PlayerApp {
+            db_path,
+            media_root,
+            activity_store,
+            local_user,
+            active_session: None,
+            pending_session_end_reason: None,
+            engine: None,
+            current_track: None,
+            queue_tracks: Vec::new(),
+            queue_current_index: None,
+            repeat_mode: RepeatMode::Off,
+            shuffle_enabled: false,
+            is_playing: false,
+            position_ms: 0,
+            last_persisted_queue_position_ms: 0,
+            last_persisted_queue_index: None,
+            gain_db: None,
+            loudness_status: None,
+            last_error: None,
+            playback_lifecycle: PlaybackLifecycle::default(),
+        };
+        if let Err(error) = app.restore_persisted_queue() {
+            app.last_error = Some(error.to_string());
+        }
+        app
     }
-    Box::into_raw(Box::new(app))
+
+    pub(crate) fn close(&mut self) {
+        self.poll_events();
+        self.persist_queue_state().ok();
+        self.finish_active_session("app_destroy").ok();
+    }
 }
 
 #[no_mangle]
@@ -348,9 +360,7 @@ pub unsafe extern "C" fn player_app_destroy(app: *mut PlayerApp) {
         return;
     }
     let mut app = Box::from_raw(app);
-    app.poll_events();
-    app.persist_queue_state().ok();
-    app.finish_active_session("app_destroy").ok();
+    app.close();
     drop(app);
 }
 
@@ -370,9 +380,7 @@ pub unsafe extern "C" fn player_app_export_library(
     ffi_result(|| {
         let app = app_mut(app)?;
         let package_path = PathBuf::from(c_string(package_path)?);
-        app.poll_events();
-        app.persist_queue_state()?;
-        app.export_library(&package_path)
+        app.service_export_library(&package_path)
     })
 }
 
@@ -384,7 +392,7 @@ pub unsafe extern "C" fn player_app_import_library(
     ffi_result(|| {
         let app = app_mut(app)?;
         let package_path = PathBuf::from(c_string(package_path)?);
-        app.import_library(&package_path)
+        app.service_import_library(&package_path)
     })
 }
 
@@ -392,7 +400,7 @@ pub unsafe extern "C" fn player_app_import_library(
 pub unsafe extern "C" fn player_app_zero_out_library(app: *mut PlayerApp) -> *mut c_char {
     ffi_result(|| {
         let app = app_mut(app)?;
-        app.zero_out_library()
+        app.service_zero_out_library()
     })
 }
 
@@ -404,17 +412,7 @@ pub unsafe extern "C" fn player_app_import_folder(
     ffi_result(|| {
         let app = app_mut(app)?;
         let folder = PathBuf::from(c_string(folder)?);
-        let scanner = LibraryScanner::new(ScanOptions::default());
-        let pending_tracks = scanner
-            .scan(&folder)?
-            .into_iter()
-            .map(|track| PendingImportTrack {
-                source_root: folder.clone(),
-                track,
-            })
-            .collect();
-
-        import_pending_tracks(app, pending_tracks, 0)
+        app.service_import_folder(&folder)
     })
 }
 
@@ -427,193 +425,103 @@ pub unsafe extern "C" fn player_app_import_files(
         let app = app_mut(app)?;
         let paths: Vec<String> = serde_json::from_str(&c_string(paths_json)?)
             .map_err(|error| PlayerError::metadata(format!("invalid import file list: {error}")))?;
-        if paths.is_empty() {
-            return Err(PlayerError::metadata("no import files selected"));
-        }
-
-        let mut pending_tracks = Vec::with_capacity(paths.len());
-        let mut metadata_warnings = 0_usize;
-        for path in paths {
-            let path = PathBuf::from(path);
-            if !is_supported_audio_file(&path) {
-                metadata_warnings += 1;
-                continue;
-            }
-            let metadata =
-                fs::metadata(&path).map_err(|source| PlayerError::io(path.clone(), source))?;
-            if !metadata.is_file() {
-                metadata_warnings += 1;
-                continue;
-            }
-            let mut track = Track::from_path(path.clone());
-            track.fingerprint = Some(fingerprint_from_metadata(&metadata));
-            let source_root = path
-                .parent()
-                .map(Path::to_path_buf)
-                .unwrap_or_else(|| PathBuf::from("Imported"));
-            pending_tracks.push(PendingImportTrack { source_root, track });
-        }
-
-        import_pending_tracks(app, pending_tracks, metadata_warnings)
+        let paths = paths.into_iter().map(PathBuf::from).collect::<Vec<_>>();
+        app.service_import_files(&paths)
     })
 }
 
-fn import_pending_tracks(
-    app: &mut PlayerApp,
-    pending_tracks: Vec<PendingImportTrack>,
-    initial_metadata_warnings: usize,
-) -> PlayerResult<ImportSummary> {
-    let media_root = app.media_root.clone();
-    fs::create_dir_all(&media_root)
-        .map_err(|source| PlayerError::io(media_root.clone(), source))?;
-
-    let mut store = app.store()?;
-    let mut tracks = Vec::with_capacity(pending_tracks.len());
-    let mut copied = 0_usize;
-    let mut duplicates_skipped = 0_usize;
-    let mut metadata_warnings = initial_metadata_warnings;
-    let mut seen_file_hashes = HashSet::new();
-    let mut seen_audio_hashes = HashSet::new();
-    for pending in pending_tracks {
-        let source_track = pending.track;
-        let source_file_hash = file_hash(&source_track.path)?;
-        if seen_file_hashes.contains(&source_file_hash)
-            || store.track_by_file_hash(&source_file_hash)?.is_some()
-        {
-            duplicates_skipped += 1;
-            continue;
-        }
-
-        let source_audio_hash = match audio_hash(&source_track.path) {
-            Ok(fingerprint) => fingerprint.hash,
-            Err(_) => {
-                metadata_warnings += 1;
-                continue;
-            }
-        };
-        if seen_audio_hashes.contains(&source_audio_hash)
-            || store.track_by_audio_hash(&source_audio_hash)?.is_some()
-        {
-            duplicates_skipped += 1;
-            continue;
-        }
-
-        let destination =
-            managed_import_path(&pending.source_root, &source_track.path, &media_root);
-        if copy_into_media_library(&source_track.path, &destination)? {
-            copied += 1;
-        }
-        copy_related_sidecars(&source_track.path, &destination)?;
-        let mut track = Track::from_path(destination.clone());
-        track.fingerprint = fs::metadata(&destination)
-            .ok()
-            .map(|metadata| fingerprint_from_metadata(&metadata));
-        track.file_hash = Some(source_file_hash.clone());
-        track.set_primary_audio_hash(source_audio_hash.clone());
-        tracks.push(track);
-        seen_file_hashes.insert(source_file_hash);
-        seen_audio_hashes.insert(source_audio_hash);
+fn import_summary_dto(summary: library_service::ImportSummary) -> ImportSummary {
+    ImportSummary {
+        imported: summary.imported,
+        copied: summary.copied,
+        duplicates_skipped: summary.duplicates_skipped,
+        artwork_cached: summary.artwork_cached,
+        metadata_warnings: summary.metadata_warnings,
+        failures: summary.failures,
     }
-
-    let mut artwork_cache = Vec::new();
-
-    for track in &mut tracks {
-        if enrich_track(track).is_err() {
-            metadata_warnings += 1;
-        }
-        match read_track_artwork(&track.path) {
-            Ok(images) if !images.is_empty() => {
-                artwork_cache.push((track.path.clone(), images));
-            }
-            Ok(_) => {}
-            Err(_) => metadata_warnings += 1,
-        }
-    }
-
-    store.upsert_tracks(&tracks)?;
-    let mut artwork_cached = 0_usize;
-    for (path, images) in artwork_cache {
-        artwork_cached += store.save_artwork(path, &images)?;
-    }
-
-    Ok(ImportSummary {
-        imported: tracks.len(),
-        copied,
-        duplicates_skipped,
-        artwork_cached,
-        metadata_warnings,
-    })
 }
 
-#[no_mangle]
-pub unsafe extern "C" fn player_app_library(app: *mut PlayerApp) -> *mut c_char {
-    ffi_result(|| {
-        let app = app_mut(app)?;
-        let store = app.store()?;
+impl PlayerApp {
+    pub(crate) fn service_export_library(
+        &mut self,
+        package_path: &Path,
+    ) -> PlayerResult<impl Serialize> {
+        self.poll_events();
+        self.persist_queue_state()?;
+        self.export_library(package_path)
+    }
+
+    pub(crate) fn service_import_library(
+        &mut self,
+        package_path: &Path,
+    ) -> PlayerResult<impl Serialize> {
+        self.import_library(package_path)
+    }
+
+    pub(crate) fn service_zero_out_library(&mut self) -> PlayerResult<impl Serialize> {
+        self.zero_out_library()
+    }
+
+    pub(crate) fn service_import_folder(&mut self, folder: &Path) -> PlayerResult<impl Serialize> {
+        let summary = import_folder_service(&self.db_path, &self.media_root, folder, |_| Ok(()))?;
+        Ok(import_summary_dto(summary))
+    }
+
+    pub(crate) fn service_import_files(
+        &mut self,
+        paths: &[PathBuf],
+    ) -> PlayerResult<impl Serialize> {
+        let summary = import_files_service(&self.db_path, &self.media_root, paths, |_| Ok(()))?;
+        Ok(import_summary_dto(summary))
+    }
+
+    pub(crate) fn service_library(&mut self) -> PlayerResult<impl Serialize> {
+        let store = self.store()?;
         let tracks = store.tracks()?;
-        track_dtos_with_artwork(&tracks, &store, &app.db_path)
-    })
-}
+        track_dtos_with_artwork(&tracks, &store, &self.db_path)
+    }
 
-#[no_mangle]
-pub unsafe extern "C" fn player_app_library_page(
-    app: *mut PlayerApp,
-    offset: usize,
-    limit: usize,
-) -> *mut c_char {
-    ffi_result(|| {
-        let app = app_mut(app)?;
-        let store = app.store()?;
+    pub(crate) fn service_library_page(
+        &mut self,
+        offset: usize,
+        limit: usize,
+    ) -> PlayerResult<impl Serialize> {
+        let store = self.store()?;
         let (total, tracks) = store.tracks_page(offset, limit)?;
         Ok(LibraryPageDto {
             total,
             offset,
-            tracks: track_dtos_with_artwork(&tracks, &store, &app.db_path)?,
+            tracks: track_dtos_with_artwork(&tracks, &store, &self.db_path)?,
         })
-    })
-}
+    }
 
-#[no_mangle]
-pub unsafe extern "C" fn player_app_search(
-    app: *mut PlayerApp,
-    query: *const c_char,
-    limit: usize,
-) -> *mut c_char {
-    ffi_result(|| {
-        let app = app_mut(app)?;
-        let query = c_string(query)?;
-        let store = app.store()?;
-        let tracks = store.search_tracks(&query, limit.max(1))?;
-        track_dtos_with_artwork(&tracks, &store, &app.db_path)
-    })
-}
+    pub(crate) fn service_search(
+        &mut self,
+        query: &str,
+        limit: usize,
+    ) -> PlayerResult<impl Serialize> {
+        let store = self.store()?;
+        let tracks = store.search_tracks(query, limit.max(1))?;
+        track_dtos_with_artwork(&tracks, &store, &self.db_path)
+    }
 
-#[no_mangle]
-pub unsafe extern "C" fn player_app_search_playlist(
-    app: *mut PlayerApp,
-    name: *const c_char,
-    query: *const c_char,
-    limit: usize,
-) -> *mut c_char {
-    ffi_result(|| {
-        let app = app_mut(app)?;
-        let name = c_string(name)?;
-        let query = c_string(query)?;
-        let store = app.store()?;
+    pub(crate) fn service_search_playlist(
+        &mut self,
+        name: &str,
+        query: &str,
+        limit: usize,
+    ) -> PlayerResult<impl Serialize> {
+        let store = self.store()?;
         let tracks = store
-            .search_playlist_tracks(&name, &query, limit.max(1))?
+            .search_playlist_tracks(name, query, limit.max(1))?
             .into_iter()
             .map(|entry| entry.track)
             .collect::<Vec<_>>();
-        track_dtos_with_artwork(&tracks, &store, &app.db_path)
-    })
-}
+        track_dtos_with_artwork(&tracks, &store, &self.db_path)
+    }
 
-#[no_mangle]
-pub unsafe extern "C" fn player_app_analyze(app: *mut PlayerApp) -> *mut c_char {
-    ffi_result(|| {
-        let app = app_mut(app)?;
-        let mut store = app.store()?;
+    pub(crate) fn service_analyze(&mut self) -> PlayerResult<impl Serialize> {
+        let mut store = self.store()?;
         let track_summary = analyze_pending(&mut store, BatchAnalysisOptions::default())?;
         let album_summary = analyze_album_loudness(&mut store, AlbumAnalysisOptions::default())?;
         Ok(AnalysisSummary {
@@ -623,76 +531,48 @@ pub unsafe extern "C" fn player_app_analyze(app: *mut PlayerApp) -> *mut c_char 
             album_tracks_updated: album_summary.tracks_updated,
             album_skipped: album_summary.skipped,
         })
-    })
-}
+    }
 
-#[no_mangle]
-pub unsafe extern "C" fn player_app_audit_database(app: *mut PlayerApp) -> *mut c_char {
-    ffi_result(|| {
-        let app = app_mut(app)?;
-        app.audit_database()
-    })
-}
+    pub(crate) fn service_audit_database(&mut self) -> PlayerResult<impl Serialize> {
+        self.audit_database()
+    }
 
-#[no_mangle]
-pub unsafe extern "C" fn player_app_user_data(app: *mut PlayerApp) -> *mut c_char {
-    ffi_result(|| {
-        let app = app_mut(app)?;
-        let profile = app.local_user()?.clone();
+    pub(crate) fn service_user_data(&mut self) -> PlayerResult<impl Serialize> {
+        let profile = self.local_user()?.clone();
         Ok(UserDataDto {
             user_id: profile.user_id.clone(),
             display_name: profile.display_name.clone(),
             sync_enabled: profile.sync_enabled,
-            profile_path: path_to_string_lossy(&app.activity_store.profile_path),
-            history_path: path_to_string_lossy(&app.activity_store.history_path),
+            profile_path: path_to_string_lossy(&self.activity_store.profile_path),
+            history_path: path_to_string_lossy(&self.activity_store.history_path),
             created_at_unix_seconds: profile.created_at_unix_seconds,
         })
-    })
-}
+    }
 
-#[no_mangle]
-pub unsafe extern "C" fn player_app_play_library(app: *mut PlayerApp) -> *mut c_char {
-    ffi_result(|| {
-        let app = app_mut(app)?;
-        let (tracks, start_index) = library_playback_plan(&app.store()?, &app.db_path, None)?;
-        app.play_queue_tracks(tracks, start_index)
-    })
-}
+    pub(crate) fn service_play_library(&mut self) -> PlayerResult<impl Serialize> {
+        let (tracks, start_index) = library_playback_plan(&self.store()?, &self.db_path, None)?;
+        self.play_queue_tracks(tracks, start_index)
+    }
 
-#[no_mangle]
-pub unsafe extern "C" fn player_app_play_path(
-    app: *mut PlayerApp,
-    path: *const c_char,
-) -> *mut c_char {
-    ffi_result(|| {
-        let app = app_mut(app)?;
-        let path = PathBuf::from(c_string(path)?);
+    pub(crate) fn service_play_path(&mut self, path: &Path) -> PlayerResult<impl Serialize> {
         let (tracks, start_index) =
-            library_playback_plan(&app.store()?, &app.db_path, Some(&path))?;
-        app.play_queue_tracks(tracks, start_index)
-    })
-}
+            library_playback_plan(&self.store()?, &self.db_path, Some(path))?;
+        self.play_queue_tracks(tracks, start_index)
+    }
 
-#[no_mangle]
-pub unsafe extern "C" fn player_app_play_queue(
-    app: *mut PlayerApp,
-    paths_json: *const c_char,
-    start_path: *const c_char,
-) -> *mut c_char {
-    ffi_result(|| {
-        let app = app_mut(app)?;
-        let paths: Vec<String> = serde_json::from_str(&c_string(paths_json)?)
-            .map_err(|error| PlayerError::metadata(format!("invalid queue path list: {error}")))?;
+    pub(crate) fn service_play_queue(
+        &mut self,
+        paths: &[PathBuf],
+        start_path: &Path,
+    ) -> PlayerResult<impl Serialize> {
         if paths.is_empty() {
             return Err(PlayerError::invalid_input("queue is empty"));
         }
-        let start_path = PathBuf::from(c_string(start_path)?);
-        let store = app.store()?;
+        let store = self.store()?;
         let mut tracks = Vec::with_capacity(paths.len());
         let mut queued_primary_views = HashSet::with_capacity(paths.len());
         for path in paths {
-            let path = PathBuf::from(path);
-            let track = store.track_by_path(&path)?.ok_or_else(|| {
+            let track = store.track_by_path(path)?.ok_or_else(|| {
                 PlayerError::store(format!("track is not in library: {}", path.display()))
             })?;
             let primary_view_id = track.primary_view_id.value().to_owned();
@@ -712,7 +592,618 @@ pub unsafe extern "C" fn player_app_play_queue(
                     start_path.display()
                 ))
             })?;
-        app.play_queue_tracks(tracks, start_index)
+        self.play_queue_tracks(tracks, start_index)
+    }
+
+    pub(crate) fn service_play_playlist(
+        &mut self,
+        name: &str,
+        start_path: Option<&Path>,
+        shuffle: bool,
+    ) -> PlayerResult<impl Serialize> {
+        let mut store = self.store()?;
+        let tracks = store
+            .playlist_tracks(name)?
+            .into_iter()
+            .map(|entry| entry.track)
+            .collect::<Vec<_>>();
+        if tracks.is_empty() {
+            return Err(PlayerError::invalid_input(format!(
+                "playlist is empty: {name}"
+            )));
+        }
+        let start_index = match start_path {
+            None => 0,
+            Some(start_path) => tracks
+                .iter()
+                .position(|track| track.path == start_path)
+                .ok_or_else(|| {
+                    PlayerError::invalid_input(format!(
+                        "playlist start track is not in {name}: {}",
+                        start_path.display()
+                    ))
+                })?,
+        };
+        store.touch_playlist(name)?;
+        self.shuffle_enabled = shuffle;
+        self.play_queue_tracks(tracks, start_index)
+    }
+
+    pub(crate) fn service_pause(&mut self) -> PlayerResult<impl Serialize> {
+        self.playback_lifecycle.user_stopped_playback();
+        if let Some(engine) = &self.engine {
+            engine.pause()?;
+            self.poll_events();
+        } else {
+            self.is_playing = false;
+        }
+        self.persist_queue_state()?;
+        Ok(self.snapshot())
+    }
+
+    pub(crate) fn service_resume(&mut self) -> PlayerResult<impl Serialize> {
+        self.ensure_playback_can_start()?;
+        self.ensure_engine_queue_loaded()?.play()?;
+        self.poll_events();
+        self.persist_queue_state()?;
+        Ok(self.snapshot())
+    }
+
+    pub(crate) fn service_audio_interruption_began(&mut self) -> PlayerResult<impl Serialize> {
+        self.poll_events();
+        let action = self.playback_lifecycle.begin_interruption(self.is_playing);
+        self.apply_playback_lifecycle_action(action)?;
+        Ok(self.snapshot())
+    }
+
+    pub(crate) fn service_audio_interruption_ended(
+        &mut self,
+        system_should_resume: bool,
+    ) -> PlayerResult<impl Serialize> {
+        self.poll_events();
+        let action = self
+            .playback_lifecycle
+            .end_interruption(system_should_resume, self.current_track.is_some());
+        self.apply_playback_lifecycle_action(action)?;
+        Ok(self.snapshot())
+    }
+
+    pub(crate) fn service_audio_output_disconnected(&mut self) -> PlayerResult<impl Serialize> {
+        self.poll_events();
+        let action = self.playback_lifecycle.output_disconnected(self.is_playing);
+        self.apply_playback_lifecycle_action(action)?;
+        Ok(self.snapshot())
+    }
+
+    pub(crate) fn service_stop(&mut self) -> PlayerResult<impl Serialize> {
+        self.playback_lifecycle.user_stopped_playback();
+        if self.current_track.is_some() {
+            if let Some(engine) = self.engine.as_ref() {
+                engine.pause()?;
+            }
+            if self.engine.is_some() {
+                self.poll_events();
+                self.finish_active_session("stopped").ok();
+            }
+        }
+        if let Some(engine) = self.engine.take() {
+            engine.shutdown()?;
+        }
+        self.is_playing = false;
+        self.position_ms = 0;
+        self.current_track = None;
+        self.queue_tracks.clear();
+        self.queue_current_index = None;
+        self.last_error = None;
+        self.persist_queue_state()?;
+        Ok(self.snapshot())
+    }
+
+    pub(crate) fn service_next(&mut self) -> PlayerResult<impl Serialize> {
+        self.pending_session_end_reason = Some("next".to_owned());
+        self.ensure_engine_queue_loaded()?.next()?;
+        self.poll_events();
+        self.persist_queue_state()?;
+        Ok(self.snapshot())
+    }
+
+    pub(crate) fn service_previous(&mut self) -> PlayerResult<impl Serialize> {
+        self.pending_session_end_reason = Some("previous".to_owned());
+        self.ensure_engine_queue_loaded()?.previous()?;
+        self.poll_events();
+        self.persist_queue_state()?;
+        Ok(self.snapshot())
+    }
+
+    pub(crate) fn service_seek(&mut self, position_ms: u64) -> PlayerResult<impl Serialize> {
+        self.observe_active_position(self.position_ms);
+        self.ensure_engine_queue_loaded()?.seek_to(position_ms)?;
+        self.position_ms = position_ms;
+        if let Some(session) = &mut self.active_session {
+            session.seek_count = session.seek_count.saturating_add(1);
+            session.last_position_ms = position_ms;
+        }
+        self.poll_events();
+        self.persist_queue_state()?;
+        Ok(self.snapshot())
+    }
+
+    pub(crate) fn service_poll(&mut self) -> PlayerResult<impl Serialize> {
+        if self.is_playing {
+            if let Some(engine) = self.engine.as_ref() {
+                engine.refresh()?;
+            }
+        }
+        self.poll_events();
+        self.persist_queue_if_progressed()?;
+        Ok(self.snapshot())
+    }
+
+    pub(crate) fn service_set_repeat_mode(
+        &mut self,
+        repeat_mode: &str,
+    ) -> PlayerResult<impl Serialize> {
+        let repeat_mode = parse_repeat_mode(repeat_mode)?;
+        self.repeat_mode = repeat_mode;
+        if let Some(engine) = self.engine.as_ref() {
+            engine.set_repeat_mode(repeat_mode)?;
+            self.poll_events();
+        }
+        self.persist_queue_state()?;
+        Ok(self.snapshot())
+    }
+
+    pub(crate) fn service_set_shuffle(&mut self, enabled: bool) -> PlayerResult<impl Serialize> {
+        self.shuffle_enabled = enabled;
+        if let Some(engine) = self.engine.as_ref() {
+            engine.set_shuffle(enabled)?;
+            self.poll_events();
+        }
+        self.persist_queue_state()?;
+        Ok(self.snapshot())
+    }
+
+    pub(crate) fn service_queue(&mut self) -> PlayerResult<impl Serialize> {
+        self.poll_events();
+        Ok(PlaybackQueueDto {
+            tracks: self.queue_tracks.clone(),
+            current_index: self.queue_current_index,
+            repeat_mode: repeat_mode_name(self.repeat_mode).to_owned(),
+            shuffle_enabled: self.shuffle_enabled,
+        })
+    }
+
+    pub(crate) fn service_queue_play_next(&mut self, path: &Path) -> PlayerResult<impl Serialize> {
+        self.add_path_to_queue(path, true)
+    }
+
+    pub(crate) fn service_queue_add(&mut self, path: &Path) -> PlayerResult<impl Serialize> {
+        self.add_path_to_queue(path, false)
+    }
+
+    pub(crate) fn service_queue_move(
+        &mut self,
+        from: usize,
+        to: usize,
+    ) -> PlayerResult<impl Serialize> {
+        self.move_queue_item(from, to)
+    }
+
+    pub(crate) fn service_queue_remove(&mut self, index: usize) -> PlayerResult<impl Serialize> {
+        self.remove_queue_item(index)
+    }
+
+    pub(crate) fn service_queue_clear(&mut self) -> PlayerResult<impl Serialize> {
+        self.clear_queue()
+    }
+
+    pub(crate) fn service_track_details(&mut self, path: &Path) -> PlayerResult<impl Serialize> {
+        self.track_details(path)
+    }
+
+    pub(crate) fn service_edit_track_view(
+        &mut self,
+        path: &Path,
+        request: TrackViewEditRequest,
+    ) -> PlayerResult<impl Serialize> {
+        if request.title.trim().is_empty() {
+            return Err(PlayerError::metadata("track title cannot be empty"));
+        }
+
+        let artwork_image = request
+            .artwork_path
+            .as_deref()
+            .map(|path| read_artwork_image(Path::new(path)))
+            .transpose()?;
+        let lyrics_path = request.lyrics_path.as_ref().map(PathBuf::from);
+        if let Some(lyrics_path) = &lyrics_path {
+            if !lyrics_path.is_file() {
+                return Err(PlayerError::metadata(format!(
+                    "lyrics file not found: {}",
+                    lyrics_path.display()
+                )));
+            }
+        }
+
+        let derived = self.create_derived_view_for_edit(path, "view_edit")?;
+        {
+            let mut store = self.store()?;
+            store.set_track_display_metadata(
+                &derived.path,
+                &request.title,
+                request.artist.as_deref(),
+                request.album.as_deref(),
+            )?;
+            store.set_track_view_name(&derived.path, request.view_name.as_deref())?;
+            if let Some(notes) = request.notes.as_deref() {
+                store.set_track_notes(&derived.path, notes)?;
+            }
+            if let Some(artwork_image) = artwork_image.as_ref() {
+                store.set_track_artwork_reference(&derived.path, artwork_image)?;
+            }
+        }
+        if let Some(lyrics_path) = lyrics_path {
+            copy_track_lyrics_file(&derived.path, &lyrics_path)?;
+        }
+
+        let derived = self
+            .store()?
+            .track_by_path(&derived.path)?
+            .ok_or_else(|| PlayerError::store("derived view edit disappeared"))?;
+        self.track_to_dto_with_artwork(&derived)
+    }
+
+    pub(crate) fn service_set_track_notes(
+        &mut self,
+        path: &Path,
+        notes: &str,
+    ) -> PlayerResult<impl Serialize> {
+        let derived = self.create_derived_view_for_edit(path, "notes")?;
+        self.store()?.set_track_notes(&derived.path, notes)?;
+        let derived = self
+            .store()?
+            .track_by_path(&derived.path)?
+            .ok_or_else(|| PlayerError::store("derived notes view disappeared"))?;
+        self.track_to_dto_with_artwork(&derived)
+    }
+
+    pub(crate) fn service_set_track_rating(
+        &mut self,
+        path: &Path,
+        rating: i32,
+    ) -> PlayerResult<impl Serialize> {
+        let rating = match rating {
+            0 => None,
+            1..=10 => Some(rating as u8),
+            _ => {
+                return Err(PlayerError::store(
+                    "rating must be 0 to clear or between 1 and 10",
+                ));
+            }
+        };
+        let updated = {
+            let mut store = self.store()?;
+            store.set_track_rating(path, rating)?;
+            store
+                .track_by_path(path)?
+                .ok_or_else(|| PlayerError::store(format!("track not found: {}", path.display())))?
+        };
+        let dto = self.track_to_dto_with_artwork(&updated)?;
+        self.replace_cached_track(dto.clone());
+        Ok(dto)
+    }
+
+    pub(crate) fn service_set_track_metadata(
+        &mut self,
+        path: &Path,
+        title: &str,
+        artist: &str,
+        album: &str,
+    ) -> PlayerResult<impl Serialize> {
+        let derived = self.create_derived_view_for_edit(path, "metadata")?;
+        self.store()?.set_track_display_metadata(
+            &derived.path,
+            title,
+            Some(artist),
+            Some(album),
+        )?;
+        let derived = self
+            .store()?
+            .track_by_path(&derived.path)?
+            .ok_or_else(|| PlayerError::store("derived metadata view disappeared"))?;
+        self.track_to_dto_with_artwork(&derived)
+    }
+
+    pub(crate) fn service_set_track_artwork(
+        &mut self,
+        path: &Path,
+        image_path: &Path,
+    ) -> PlayerResult<impl Serialize> {
+        let image = read_artwork_image(image_path)?;
+        let derived = self.create_derived_view_for_edit(path, "artwork")?;
+        self.store()?
+            .set_track_artwork_reference(&derived.path, &image)?;
+        let derived = self
+            .store()?
+            .track_by_path(&derived.path)?
+            .ok_or_else(|| PlayerError::store("derived artwork view disappeared"))?;
+        self.track_to_dto_with_artwork(&derived)
+    }
+
+    pub(crate) fn service_set_album_artwork(
+        &mut self,
+        path: &Path,
+        image_path: &Path,
+    ) -> PlayerResult<impl Serialize> {
+        let image = read_artwork_image(image_path)?;
+        let tracks_updated = self
+            .store()?
+            .set_album_artwork_reference_for_track(path, &image)?;
+        Ok(AlbumArtworkSummary { tracks_updated })
+    }
+
+    pub(crate) fn service_set_track_lyrics(
+        &mut self,
+        path: &Path,
+        lyrics_path: &Path,
+    ) -> PlayerResult<impl Serialize> {
+        let derived = self.create_derived_view_for_edit(path, "lyrics")?;
+        copy_track_lyrics_file(&derived.path, lyrics_path)?;
+        let derived = self
+            .store()?
+            .track_by_path(&derived.path)?
+            .ok_or_else(|| PlayerError::store("derived lyrics view disappeared"))?;
+        self.track_to_dto_with_artwork(&derived)
+    }
+
+    pub(crate) fn service_export_track_view(
+        &mut self,
+        path: &Path,
+        destination: &Path,
+    ) -> PlayerResult<impl Serialize> {
+        let track = self.materialize_track_view(path, destination)?;
+        self.track_to_dto_with_artwork(&track)
+    }
+
+    pub(crate) fn service_set_favorite(
+        &mut self,
+        path: &Path,
+        enabled: bool,
+    ) -> PlayerResult<impl Serialize> {
+        self.store()?
+            .set_favorite(path.to_string_lossy().into_owned(), enabled)?;
+        Ok(Empty {})
+    }
+
+    pub(crate) fn service_favorites(&mut self) -> PlayerResult<impl Serialize> {
+        let store = self.store()?;
+        let tracks = store.favorite_tracks()?;
+        track_dtos_with_artwork(&tracks, &store, &self.db_path)
+    }
+
+    pub(crate) fn service_history(&mut self, limit: usize) -> PlayerResult<impl Serialize> {
+        let store = self.store()?;
+        let tracks = store
+            .play_history(limit.max(1))?
+            .into_iter()
+            .map(|entry| entry.track)
+            .collect::<Vec<_>>();
+        track_dtos_with_artwork(&tracks, &store, &self.db_path)
+    }
+
+    pub(crate) fn service_playlists(&mut self) -> PlayerResult<impl Serialize> {
+        let store = self.store()?;
+        store
+            .playlists()?
+            .into_iter()
+            .map(|playlist| self.playlist_to_dto(&store, playlist))
+            .collect::<PlayerResult<Vec<_>>>()
+    }
+
+    pub(crate) fn service_recent_playlists(
+        &mut self,
+        limit: usize,
+    ) -> PlayerResult<impl Serialize> {
+        let store = self.store()?;
+        store
+            .recent_playlists(limit.max(1))?
+            .into_iter()
+            .map(|playlist| self.playlist_to_dto(&store, playlist))
+            .collect::<PlayerResult<Vec<_>>>()
+    }
+
+    pub(crate) fn service_create_playlist(&mut self, name: &str) -> PlayerResult<impl Serialize> {
+        self.store()?.create_playlist(name)?;
+        Ok(Empty {})
+    }
+
+    pub(crate) fn service_rename_playlist(
+        &mut self,
+        old_name: &str,
+        new_name: &str,
+    ) -> PlayerResult<impl Serialize> {
+        self.store()?.rename_playlist(old_name, new_name)?;
+        Ok(Empty {})
+    }
+
+    pub(crate) fn service_set_playlist_artwork(
+        &mut self,
+        name: &str,
+        image_path: &Path,
+    ) -> PlayerResult<impl Serialize> {
+        let image = read_artwork_image(image_path)?;
+        self.store()?.save_playlist_artwork(name, &image)?;
+        Ok(Empty {})
+    }
+
+    pub(crate) fn service_delete_playlist(&mut self, name: &str) -> PlayerResult<impl Serialize> {
+        self.store()?.delete_playlist(name)?;
+        Ok(Empty {})
+    }
+
+    pub(crate) fn service_clear_playlist(&mut self, name: &str) -> PlayerResult<impl Serialize> {
+        self.store()?.clear_playlist(name)?;
+        Ok(Empty {})
+    }
+
+    pub(crate) fn service_add_to_playlist(
+        &mut self,
+        name: &str,
+        path: &Path,
+    ) -> PlayerResult<impl Serialize> {
+        self.store()?
+            .add_playlist_track(name, path.to_string_lossy().into_owned())?;
+        Ok(Empty {})
+    }
+
+    pub(crate) fn service_remove_from_playlist(
+        &mut self,
+        name: &str,
+        path: &Path,
+    ) -> PlayerResult<impl Serialize> {
+        self.store()?
+            .remove_playlist_track(name, path.to_string_lossy().into_owned())?;
+        Ok(Empty {})
+    }
+
+    pub(crate) fn service_move_playlist_track(
+        &mut self,
+        name: &str,
+        path: &Path,
+        delta: i32,
+    ) -> PlayerResult<impl Serialize> {
+        self.store()?
+            .move_playlist_track(name, path.to_string_lossy().into_owned(), delta)?;
+        Ok(Empty {})
+    }
+
+    pub(crate) fn service_sort_playlist(
+        &mut self,
+        name: &str,
+        sort: &str,
+    ) -> PlayerResult<impl Serialize> {
+        self.store()?
+            .sort_playlist(name, PlaylistSort::parse(sort)?)?;
+        Ok(Empty {})
+    }
+
+    pub(crate) fn service_playlist_tracks(&mut self, name: &str) -> PlayerResult<impl Serialize> {
+        let mut store = self.store()?;
+        let tracks = store
+            .playlist_tracks(name)?
+            .into_iter()
+            .map(|entry| entry.track)
+            .collect::<Vec<_>>();
+        store.touch_playlist(name)?;
+        track_dtos_with_artwork(&tracks, &store, &self.db_path)
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn player_app_library(app: *mut PlayerApp) -> *mut c_char {
+    ffi_result(|| {
+        let app = app_mut(app)?;
+        app.service_library()
+    })
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn player_app_library_page(
+    app: *mut PlayerApp,
+    offset: usize,
+    limit: usize,
+) -> *mut c_char {
+    ffi_result(|| {
+        let app = app_mut(app)?;
+        app.service_library_page(offset, limit)
+    })
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn player_app_search(
+    app: *mut PlayerApp,
+    query: *const c_char,
+    limit: usize,
+) -> *mut c_char {
+    ffi_result(|| {
+        let app = app_mut(app)?;
+        let query = c_string(query)?;
+        app.service_search(&query, limit)
+    })
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn player_app_search_playlist(
+    app: *mut PlayerApp,
+    name: *const c_char,
+    query: *const c_char,
+    limit: usize,
+) -> *mut c_char {
+    ffi_result(|| {
+        let app = app_mut(app)?;
+        let name = c_string(name)?;
+        let query = c_string(query)?;
+        app.service_search_playlist(&name, &query, limit)
+    })
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn player_app_analyze(app: *mut PlayerApp) -> *mut c_char {
+    ffi_result(|| {
+        let app = app_mut(app)?;
+        app.service_analyze()
+    })
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn player_app_audit_database(app: *mut PlayerApp) -> *mut c_char {
+    ffi_result(|| {
+        let app = app_mut(app)?;
+        app.service_audit_database()
+    })
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn player_app_user_data(app: *mut PlayerApp) -> *mut c_char {
+    ffi_result(|| {
+        let app = app_mut(app)?;
+        app.service_user_data()
+    })
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn player_app_play_library(app: *mut PlayerApp) -> *mut c_char {
+    ffi_result(|| {
+        let app = app_mut(app)?;
+        app.service_play_library()
+    })
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn player_app_play_path(
+    app: *mut PlayerApp,
+    path: *const c_char,
+) -> *mut c_char {
+    ffi_result(|| {
+        let app = app_mut(app)?;
+        let path = PathBuf::from(c_string(path)?);
+        app.service_play_path(&path)
+    })
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn player_app_play_queue(
+    app: *mut PlayerApp,
+    paths_json: *const c_char,
+    start_path: *const c_char,
+) -> *mut c_char {
+    ffi_result(|| {
+        let app = app_mut(app)?;
+        let paths: Vec<String> = serde_json::from_str(&c_string(paths_json)?)
+            .map_err(|error| PlayerError::metadata(format!("invalid queue path list: {error}")))?;
+        let start_path = PathBuf::from(c_string(start_path)?);
+        let paths = paths.into_iter().map(PathBuf::from).collect::<Vec<_>>();
+        app.service_play_queue(&paths, &start_path)
     })
 }
 
@@ -726,34 +1217,12 @@ pub unsafe extern "C" fn player_app_play_playlist(
     ffi_result(|| {
         let app = app_mut(app)?;
         let name = c_string(name)?;
-        let mut store = app.store()?;
-        let tracks = store
-            .playlist_tracks(&name)?
-            .into_iter()
-            .map(|entry| entry.track)
-            .collect::<Vec<_>>();
-        if tracks.is_empty() {
-            return Err(PlayerError::invalid_input(format!(
-                "playlist is empty: {name}"
-            )));
-        }
-        let start_index = if start_path.is_null() {
-            0
+        let start_path = if start_path.is_null() {
+            None
         } else {
-            let start_path = PathBuf::from(c_string(start_path)?);
-            tracks
-                .iter()
-                .position(|track| track.path == start_path)
-                .ok_or_else(|| {
-                    PlayerError::invalid_input(format!(
-                        "playlist start track is not in {name}: {}",
-                        start_path.display()
-                    ))
-                })?
+            Some(PathBuf::from(c_string(start_path)?))
         };
-        store.touch_playlist(&name)?;
-        app.shuffle_enabled = shuffle;
-        app.play_queue_tracks(tracks, start_index)
+        app.service_play_playlist(&name, start_path.as_deref(), shuffle)
     })
 }
 
@@ -845,15 +1314,7 @@ fn active_library_views(
 pub unsafe extern "C" fn player_app_pause(app: *mut PlayerApp) -> *mut c_char {
     ffi_result(|| {
         let app = app_mut(app)?;
-        app.playback_lifecycle.user_stopped_playback();
-        if let Some(engine) = &app.engine {
-            engine.pause()?;
-            app.poll_events();
-        } else {
-            app.is_playing = false;
-        }
-        app.persist_queue_state()?;
-        Ok(app.snapshot())
+        app.service_pause()
     })
 }
 
@@ -861,11 +1322,7 @@ pub unsafe extern "C" fn player_app_pause(app: *mut PlayerApp) -> *mut c_char {
 pub unsafe extern "C" fn player_app_resume(app: *mut PlayerApp) -> *mut c_char {
     ffi_result(|| {
         let app = app_mut(app)?;
-        app.ensure_playback_can_start()?;
-        app.ensure_engine_queue_loaded()?.play()?;
-        app.poll_events();
-        app.persist_queue_state()?;
-        Ok(app.snapshot())
+        app.service_resume()
     })
 }
 
@@ -873,10 +1330,7 @@ pub unsafe extern "C" fn player_app_resume(app: *mut PlayerApp) -> *mut c_char {
 pub unsafe extern "C" fn player_app_audio_interruption_began(app: *mut PlayerApp) -> *mut c_char {
     ffi_result(|| {
         let app = app_mut(app)?;
-        app.poll_events();
-        let action = app.playback_lifecycle.begin_interruption(app.is_playing);
-        app.apply_playback_lifecycle_action(action)?;
-        Ok(app.snapshot())
+        app.service_audio_interruption_began()
     })
 }
 
@@ -887,12 +1341,7 @@ pub unsafe extern "C" fn player_app_audio_interruption_ended(
 ) -> *mut c_char {
     ffi_result(|| {
         let app = app_mut(app)?;
-        app.poll_events();
-        let action = app
-            .playback_lifecycle
-            .end_interruption(system_should_resume, app.current_track.is_some());
-        app.apply_playback_lifecycle_action(action)?;
-        Ok(app.snapshot())
+        app.service_audio_interruption_ended(system_should_resume)
     })
 }
 
@@ -900,10 +1349,7 @@ pub unsafe extern "C" fn player_app_audio_interruption_ended(
 pub unsafe extern "C" fn player_app_audio_output_disconnected(app: *mut PlayerApp) -> *mut c_char {
     ffi_result(|| {
         let app = app_mut(app)?;
-        app.poll_events();
-        let action = app.playback_lifecycle.output_disconnected(app.is_playing);
-        app.apply_playback_lifecycle_action(action)?;
-        Ok(app.snapshot())
+        app.service_audio_output_disconnected()
     })
 }
 
@@ -911,27 +1357,7 @@ pub unsafe extern "C" fn player_app_audio_output_disconnected(app: *mut PlayerAp
 pub unsafe extern "C" fn player_app_stop(app: *mut PlayerApp) -> *mut c_char {
     ffi_result(|| {
         let app = app_mut(app)?;
-        app.playback_lifecycle.user_stopped_playback();
-        if app.current_track.is_some() {
-            if let Some(engine) = app.engine.as_ref() {
-                engine.pause()?;
-            }
-            if app.engine.is_some() {
-                app.poll_events();
-                app.finish_active_session("stopped").ok();
-            }
-        }
-        if let Some(engine) = app.engine.take() {
-            engine.shutdown()?;
-        }
-        app.is_playing = false;
-        app.position_ms = 0;
-        app.current_track = None;
-        app.queue_tracks.clear();
-        app.queue_current_index = None;
-        app.last_error = None;
-        app.persist_queue_state()?;
-        Ok(app.snapshot())
+        app.service_stop()
     })
 }
 
@@ -939,11 +1365,7 @@ pub unsafe extern "C" fn player_app_stop(app: *mut PlayerApp) -> *mut c_char {
 pub unsafe extern "C" fn player_app_next(app: *mut PlayerApp) -> *mut c_char {
     ffi_result(|| {
         let app = app_mut(app)?;
-        app.pending_session_end_reason = Some("next".to_owned());
-        app.ensure_engine_queue_loaded()?.next()?;
-        app.poll_events();
-        app.persist_queue_state()?;
-        Ok(app.snapshot())
+        app.service_next()
     })
 }
 
@@ -951,11 +1373,7 @@ pub unsafe extern "C" fn player_app_next(app: *mut PlayerApp) -> *mut c_char {
 pub unsafe extern "C" fn player_app_previous(app: *mut PlayerApp) -> *mut c_char {
     ffi_result(|| {
         let app = app_mut(app)?;
-        app.pending_session_end_reason = Some("previous".to_owned());
-        app.ensure_engine_queue_loaded()?.previous()?;
-        app.poll_events();
-        app.persist_queue_state()?;
-        Ok(app.snapshot())
+        app.service_previous()
     })
 }
 
@@ -963,16 +1381,7 @@ pub unsafe extern "C" fn player_app_previous(app: *mut PlayerApp) -> *mut c_char
 pub unsafe extern "C" fn player_app_seek(app: *mut PlayerApp, position_ms: u64) -> *mut c_char {
     ffi_result(|| {
         let app = app_mut(app)?;
-        app.observe_active_position(app.position_ms);
-        app.ensure_engine_queue_loaded()?.seek_to(position_ms)?;
-        app.position_ms = position_ms;
-        if let Some(session) = &mut app.active_session {
-            session.seek_count = session.seek_count.saturating_add(1);
-            session.last_position_ms = position_ms;
-        }
-        app.poll_events();
-        app.persist_queue_state()?;
-        Ok(app.snapshot())
+        app.service_seek(position_ms)
     })
 }
 
@@ -980,14 +1389,7 @@ pub unsafe extern "C" fn player_app_seek(app: *mut PlayerApp, position_ms: u64) 
 pub unsafe extern "C" fn player_app_poll(app: *mut PlayerApp) -> *mut c_char {
     ffi_result(|| {
         let app = app_mut(app)?;
-        if app.is_playing {
-            if let Some(engine) = app.engine.as_ref() {
-                engine.refresh()?;
-            }
-        }
-        app.poll_events();
-        app.persist_queue_if_progressed()?;
-        Ok(app.snapshot())
+        app.service_poll()
     })
 }
 
@@ -998,14 +1400,8 @@ pub unsafe extern "C" fn player_app_set_repeat_mode(
 ) -> *mut c_char {
     ffi_result(|| {
         let app = app_mut(app)?;
-        let repeat_mode = parse_repeat_mode(&c_string(repeat_mode)?)?;
-        app.repeat_mode = repeat_mode;
-        if let Some(engine) = app.engine.as_ref() {
-            engine.set_repeat_mode(repeat_mode)?;
-            app.poll_events();
-        }
-        app.persist_queue_state()?;
-        Ok(app.snapshot())
+        let repeat_mode = c_string(repeat_mode)?;
+        app.service_set_repeat_mode(&repeat_mode)
     })
 }
 
@@ -1013,13 +1409,7 @@ pub unsafe extern "C" fn player_app_set_repeat_mode(
 pub unsafe extern "C" fn player_app_set_shuffle(app: *mut PlayerApp, enabled: bool) -> *mut c_char {
     ffi_result(|| {
         let app = app_mut(app)?;
-        app.shuffle_enabled = enabled;
-        if let Some(engine) = app.engine.as_ref() {
-            engine.set_shuffle(enabled)?;
-            app.poll_events();
-        }
-        app.persist_queue_state()?;
-        Ok(app.snapshot())
+        app.service_set_shuffle(enabled)
     })
 }
 
@@ -1027,13 +1417,7 @@ pub unsafe extern "C" fn player_app_set_shuffle(app: *mut PlayerApp, enabled: bo
 pub unsafe extern "C" fn player_app_queue(app: *mut PlayerApp) -> *mut c_char {
     ffi_result(|| {
         let app = app_mut(app)?;
-        app.poll_events();
-        Ok(PlaybackQueueDto {
-            tracks: app.queue_tracks.clone(),
-            current_index: app.queue_current_index,
-            repeat_mode: repeat_mode_name(app.repeat_mode).to_owned(),
-            shuffle_enabled: app.shuffle_enabled,
-        })
+        app.service_queue()
     })
 }
 
@@ -1045,7 +1429,7 @@ pub unsafe extern "C" fn player_app_queue_play_next(
     ffi_result(|| {
         let app = app_mut(app)?;
         let path = PathBuf::from(c_string(path)?);
-        app.add_path_to_queue(&path, true)
+        app.service_queue_play_next(&path)
     })
 }
 
@@ -1057,7 +1441,7 @@ pub unsafe extern "C" fn player_app_queue_add(
     ffi_result(|| {
         let app = app_mut(app)?;
         let path = PathBuf::from(c_string(path)?);
-        app.add_path_to_queue(&path, false)
+        app.service_queue_add(&path)
     })
 }
 
@@ -1069,7 +1453,7 @@ pub unsafe extern "C" fn player_app_queue_move(
 ) -> *mut c_char {
     ffi_result(|| {
         let app = app_mut(app)?;
-        app.move_queue_item(from, to)
+        app.service_queue_move(from, to)
     })
 }
 
@@ -1077,7 +1461,7 @@ pub unsafe extern "C" fn player_app_queue_move(
 pub unsafe extern "C" fn player_app_queue_remove(app: *mut PlayerApp, index: usize) -> *mut c_char {
     ffi_result(|| {
         let app = app_mut(app)?;
-        app.remove_queue_item(index)
+        app.service_queue_remove(index)
     })
 }
 
@@ -1085,7 +1469,7 @@ pub unsafe extern "C" fn player_app_queue_remove(app: *mut PlayerApp, index: usi
 pub unsafe extern "C" fn player_app_queue_clear(app: *mut PlayerApp) -> *mut c_char {
     ffi_result(|| {
         let app = app_mut(app)?;
-        app.clear_queue()
+        app.service_queue_clear()
     })
 }
 
@@ -1097,7 +1481,7 @@ pub unsafe extern "C" fn player_app_track_details(
     ffi_result(|| {
         let app = app_mut(app)?;
         let path = PathBuf::from(c_string(path)?);
-        app.track_details(&path)
+        app.service_track_details(&path)
     })
 }
 
@@ -1114,51 +1498,7 @@ pub unsafe extern "C" fn player_app_edit_track_view(
             serde_json::from_str(&c_string(edit_json)?).map_err(|error| {
                 PlayerError::metadata(format!("invalid track view edit request: {error}"))
             })?;
-        if request.title.trim().is_empty() {
-            return Err(PlayerError::metadata("track title cannot be empty"));
-        }
-
-        let artwork_image = request
-            .artwork_path
-            .as_deref()
-            .map(|path| read_artwork_image(Path::new(path)))
-            .transpose()?;
-        let lyrics_path = request.lyrics_path.as_ref().map(PathBuf::from);
-        if let Some(lyrics_path) = &lyrics_path {
-            if !lyrics_path.is_file() {
-                return Err(PlayerError::metadata(format!(
-                    "lyrics file not found: {}",
-                    lyrics_path.display()
-                )));
-            }
-        }
-
-        let derived = app.create_derived_view_for_edit(&path, "view_edit")?;
-        {
-            let mut store = app.store()?;
-            store.set_track_display_metadata(
-                &derived.path,
-                &request.title,
-                request.artist.as_deref(),
-                request.album.as_deref(),
-            )?;
-            store.set_track_view_name(&derived.path, request.view_name.as_deref())?;
-            if let Some(notes) = request.notes.as_deref() {
-                store.set_track_notes(&derived.path, notes)?;
-            }
-            if let Some(artwork_image) = artwork_image.as_ref() {
-                store.set_track_artwork_reference(&derived.path, artwork_image)?;
-            }
-        }
-        if let Some(lyrics_path) = lyrics_path {
-            copy_track_lyrics_file(&derived.path, &lyrics_path)?;
-        }
-
-        let derived = app
-            .store()?
-            .track_by_path(&derived.path)?
-            .ok_or_else(|| PlayerError::store("derived view edit disappeared"))?;
-        app.track_to_dto_with_artwork(&derived)
+        app.service_edit_track_view(&path, request)
     })
 }
 
@@ -1172,13 +1512,7 @@ pub unsafe extern "C" fn player_app_set_track_notes(
         let app = app_mut(app)?;
         let path = PathBuf::from(c_string(path)?);
         let notes = c_string(notes)?;
-        let derived = app.create_derived_view_for_edit(&path, "notes")?;
-        app.store()?.set_track_notes(&derived.path, &notes)?;
-        let derived = app
-            .store()?
-            .track_by_path(&derived.path)?
-            .ok_or_else(|| PlayerError::store("derived notes view disappeared"))?;
-        app.track_to_dto_with_artwork(&derived)
+        app.service_set_track_notes(&path, &notes)
     })
 }
 
@@ -1191,25 +1525,7 @@ pub unsafe extern "C" fn player_app_set_track_rating(
     ffi_result(|| {
         let app = app_mut(app)?;
         let path = PathBuf::from(c_string(path)?);
-        let rating = match rating {
-            0 => None,
-            1..=10 => Some(rating as u8),
-            _ => {
-                return Err(PlayerError::store(
-                    "rating must be 0 to clear or between 1 and 10",
-                ));
-            }
-        };
-        let updated = {
-            let mut store = app.store()?;
-            store.set_track_rating(&path, rating)?;
-            store
-                .track_by_path(&path)?
-                .ok_or_else(|| PlayerError::store(format!("track not found: {}", path.display())))?
-        };
-        let dto = app.track_to_dto_with_artwork(&updated)?;
-        app.replace_cached_track(dto.clone());
-        Ok(dto)
+        app.service_set_track_rating(&path, rating)
     })
 }
 
@@ -1227,18 +1543,7 @@ pub unsafe extern "C" fn player_app_set_track_metadata(
         let title = c_string(title)?;
         let artist = c_string(artist)?;
         let album = c_string(album)?;
-        let derived = app.create_derived_view_for_edit(&path, "metadata")?;
-        app.store()?.set_track_display_metadata(
-            &derived.path,
-            &title,
-            Some(&artist),
-            Some(&album),
-        )?;
-        let derived = app
-            .store()?
-            .track_by_path(&derived.path)?
-            .ok_or_else(|| PlayerError::store("derived metadata view disappeared"))?;
-        app.track_to_dto_with_artwork(&derived)
+        app.service_set_track_metadata(&path, &title, &artist, &album)
     })
 }
 
@@ -1252,15 +1557,7 @@ pub unsafe extern "C" fn player_app_set_track_artwork(
         let app = app_mut(app)?;
         let path = PathBuf::from(c_string(path)?);
         let image_path = PathBuf::from(c_string(image_path)?);
-        let image = read_artwork_image(&image_path)?;
-        let derived = app.create_derived_view_for_edit(&path, "artwork")?;
-        app.store()?
-            .set_track_artwork_reference(&derived.path, &image)?;
-        let derived = app
-            .store()?
-            .track_by_path(&derived.path)?
-            .ok_or_else(|| PlayerError::store("derived artwork view disappeared"))?;
-        app.track_to_dto_with_artwork(&derived)
+        app.service_set_track_artwork(&path, &image_path)
     })
 }
 
@@ -1274,11 +1571,7 @@ pub unsafe extern "C" fn player_app_set_album_artwork(
         let app = app_mut(app)?;
         let path = PathBuf::from(c_string(path)?);
         let image_path = PathBuf::from(c_string(image_path)?);
-        let image = read_artwork_image(&image_path)?;
-        let tracks_updated = app
-            .store()?
-            .set_album_artwork_reference_for_track(&path, &image)?;
-        Ok(AlbumArtworkSummary { tracks_updated })
+        app.service_set_album_artwork(&path, &image_path)
     })
 }
 
@@ -1292,13 +1585,7 @@ pub unsafe extern "C" fn player_app_set_track_lyrics(
         let app = app_mut(app)?;
         let path = PathBuf::from(c_string(path)?);
         let lyrics_path = PathBuf::from(c_string(lyrics_path)?);
-        let derived = app.create_derived_view_for_edit(&path, "lyrics")?;
-        copy_track_lyrics_file(&derived.path, &lyrics_path)?;
-        let derived = app
-            .store()?
-            .track_by_path(&derived.path)?
-            .ok_or_else(|| PlayerError::store("derived lyrics view disappeared"))?;
-        app.track_to_dto_with_artwork(&derived)
+        app.service_set_track_lyrics(&path, &lyrics_path)
     })
 }
 
@@ -1312,8 +1599,7 @@ pub unsafe extern "C" fn player_app_export_track_view(
         let app = app_mut(app)?;
         let path = PathBuf::from(c_string(path)?);
         let destination = PathBuf::from(c_string(destination)?);
-        let track = app.materialize_track_view(&path, &destination)?;
-        app.track_to_dto_with_artwork(&track)
+        app.service_export_track_view(&path, &destination)
     })
 }
 
@@ -1325,9 +1611,8 @@ pub unsafe extern "C" fn player_app_set_favorite(
 ) -> *mut c_char {
     ffi_result(|| {
         let app = app_mut(app)?;
-        let path = c_string(path)?;
-        app.store()?.set_favorite(path, enabled)?;
-        Ok(Empty {})
+        let path = PathBuf::from(c_string(path)?);
+        app.service_set_favorite(&path, enabled)
     })
 }
 
@@ -1335,9 +1620,7 @@ pub unsafe extern "C" fn player_app_set_favorite(
 pub unsafe extern "C" fn player_app_favorites(app: *mut PlayerApp) -> *mut c_char {
     ffi_result(|| {
         let app = app_mut(app)?;
-        let store = app.store()?;
-        let tracks = store.favorite_tracks()?;
-        track_dtos_with_artwork(&tracks, &store, &app.db_path)
+        app.service_favorites()
     })
 }
 
@@ -1345,13 +1628,7 @@ pub unsafe extern "C" fn player_app_favorites(app: *mut PlayerApp) -> *mut c_cha
 pub unsafe extern "C" fn player_app_history(app: *mut PlayerApp, limit: usize) -> *mut c_char {
     ffi_result(|| {
         let app = app_mut(app)?;
-        let store = app.store()?;
-        let tracks = store
-            .play_history(limit.max(1))?
-            .into_iter()
-            .map(|entry| entry.track)
-            .collect::<Vec<_>>();
-        track_dtos_with_artwork(&tracks, &store, &app.db_path)
+        app.service_history(limit)
     })
 }
 
@@ -1359,12 +1636,7 @@ pub unsafe extern "C" fn player_app_history(app: *mut PlayerApp, limit: usize) -
 pub unsafe extern "C" fn player_app_playlists(app: *mut PlayerApp) -> *mut c_char {
     ffi_result(|| {
         let app = app_mut(app)?;
-        let store = app.store()?;
-        store
-            .playlists()?
-            .into_iter()
-            .map(|playlist| app.playlist_to_dto(&store, playlist))
-            .collect::<PlayerResult<Vec<_>>>()
+        app.service_playlists()
     })
 }
 
@@ -1375,12 +1647,7 @@ pub unsafe extern "C" fn player_app_recent_playlists(
 ) -> *mut c_char {
     ffi_result(|| {
         let app = app_mut(app)?;
-        let store = app.store()?;
-        store
-            .recent_playlists(limit.max(1))?
-            .into_iter()
-            .map(|playlist| app.playlist_to_dto(&store, playlist))
-            .collect::<PlayerResult<Vec<_>>>()
+        app.service_recent_playlists(limit)
     })
 }
 
@@ -1392,8 +1659,7 @@ pub unsafe extern "C" fn player_app_create_playlist(
     ffi_result(|| {
         let app = app_mut(app)?;
         let name = c_string(name)?;
-        app.store()?.create_playlist(&name)?;
-        Ok(Empty {})
+        app.service_create_playlist(&name)
     })
 }
 
@@ -1407,8 +1673,7 @@ pub unsafe extern "C" fn player_app_rename_playlist(
         let app = app_mut(app)?;
         let old_name = c_string(old_name)?;
         let new_name = c_string(new_name)?;
-        app.store()?.rename_playlist(&old_name, &new_name)?;
-        Ok(Empty {})
+        app.service_rename_playlist(&old_name, &new_name)
     })
 }
 
@@ -1422,9 +1687,7 @@ pub unsafe extern "C" fn player_app_set_playlist_artwork(
         let app = app_mut(app)?;
         let name = c_string(name)?;
         let image_path = PathBuf::from(c_string(image_path)?);
-        let image = read_artwork_image(&image_path)?;
-        app.store()?.save_playlist_artwork(&name, &image)?;
-        Ok(Empty {})
+        app.service_set_playlist_artwork(&name, &image_path)
     })
 }
 
@@ -1436,8 +1699,7 @@ pub unsafe extern "C" fn player_app_delete_playlist(
     ffi_result(|| {
         let app = app_mut(app)?;
         let name = c_string(name)?;
-        app.store()?.delete_playlist(&name)?;
-        Ok(Empty {})
+        app.service_delete_playlist(&name)
     })
 }
 
@@ -1449,8 +1711,7 @@ pub unsafe extern "C" fn player_app_clear_playlist(
     ffi_result(|| {
         let app = app_mut(app)?;
         let name = c_string(name)?;
-        app.store()?.clear_playlist(&name)?;
-        Ok(Empty {})
+        app.service_clear_playlist(&name)
     })
 }
 
@@ -1463,9 +1724,8 @@ pub unsafe extern "C" fn player_app_add_to_playlist(
     ffi_result(|| {
         let app = app_mut(app)?;
         let name = c_string(name)?;
-        let path = c_string(path)?;
-        app.store()?.add_playlist_track(&name, path)?;
-        Ok(Empty {})
+        let path = PathBuf::from(c_string(path)?);
+        app.service_add_to_playlist(&name, &path)
     })
 }
 
@@ -1478,9 +1738,8 @@ pub unsafe extern "C" fn player_app_remove_from_playlist(
     ffi_result(|| {
         let app = app_mut(app)?;
         let name = c_string(name)?;
-        let path = c_string(path)?;
-        app.store()?.remove_playlist_track(&name, path)?;
-        Ok(Empty {})
+        let path = PathBuf::from(c_string(path)?);
+        app.service_remove_from_playlist(&name, &path)
     })
 }
 
@@ -1494,9 +1753,8 @@ pub unsafe extern "C" fn player_app_move_playlist_track(
     ffi_result(|| {
         let app = app_mut(app)?;
         let name = c_string(name)?;
-        let path = c_string(path)?;
-        app.store()?.move_playlist_track(&name, path, delta)?;
-        Ok(Empty {})
+        let path = PathBuf::from(c_string(path)?);
+        app.service_move_playlist_track(&name, &path, delta)
     })
 }
 
@@ -1509,9 +1767,8 @@ pub unsafe extern "C" fn player_app_sort_playlist(
     ffi_result(|| {
         let app = app_mut(app)?;
         let name = c_string(name)?;
-        let sort = PlaylistSort::parse(&c_string(sort)?)?;
-        app.store()?.sort_playlist(&name, sort)?;
-        Ok(Empty {})
+        let sort = c_string(sort)?;
+        app.service_sort_playlist(&name, &sort)
     })
 }
 
@@ -1523,14 +1780,7 @@ pub unsafe extern "C" fn player_app_playlist_tracks(
     ffi_result(|| {
         let app = app_mut(app)?;
         let name = c_string(name)?;
-        let mut store = app.store()?;
-        let tracks = store
-            .playlist_tracks(&name)?
-            .into_iter()
-            .map(|entry| entry.track)
-            .collect::<Vec<_>>();
-        store.touch_playlist(&name)?;
-        track_dtos_with_artwork(&tracks, &store, &app.db_path)
+        app.service_playlist_tracks(&name)
     })
 }
 
@@ -2677,24 +2927,6 @@ fn library_package_audio_path(index: usize, source_path: &Path) -> PathBuf {
         .join(file_name)
 }
 
-fn managed_import_path(source_root: &Path, source_path: &Path, media_root: &Path) -> PathBuf {
-    let mut relative = PathBuf::new();
-    relative.push(
-        source_root
-            .file_name()
-            .filter(|name| !name.is_empty())
-            .unwrap_or_else(|| std::ffi::OsStr::new("Imported")),
-    );
-
-    if let Ok(stripped) = source_path.strip_prefix(source_root) {
-        push_normal_components(&mut relative, stripped);
-    } else if let Some(file_name) = source_path.file_name() {
-        relative.push(file_name);
-    }
-
-    media_root.join(relative)
-}
-
 fn derived_view_id(
     primary_view_id: &str,
     transform_kind: &str,
@@ -2759,94 +2991,6 @@ fn derived_view_audio_path(
         .join("Views")
         .join(cache_key_for_view_id(primary_view_id))
         .join(format!("{}.{}", cache_key_for_view_id(view_id), extension))
-}
-
-fn push_normal_components(target: &mut PathBuf, path: &Path) {
-    for component in path.components() {
-        if let Component::Normal(value) = component {
-            target.push(value);
-        }
-    }
-}
-
-fn copy_into_media_library(source: &Path, destination: &Path) -> PlayerResult<bool> {
-    let source_canonical = source.canonicalize().ok();
-    let destination_canonical = destination.canonicalize().ok();
-    if source_canonical.is_some() && source_canonical == destination_canonical {
-        return Ok(false);
-    }
-
-    if let Some(parent) = destination.parent() {
-        fs::create_dir_all(parent).map_err(|source| PlayerError::io(parent, source))?;
-    }
-    fs::copy(source, destination).map_err(|source| PlayerError::io(destination, source))?;
-    Ok(true)
-}
-
-fn copy_related_sidecars(source_audio: &Path, destination_audio: &Path) -> PlayerResult<usize> {
-    let mut copied = 0_usize;
-    for (source, destination) in sidecar_copy_candidates(source_audio, destination_audio) {
-        if source.exists() && copy_optional_file(&source, &destination)? {
-            copied += 1;
-        }
-    }
-    Ok(copied)
-}
-
-fn sidecar_copy_candidates(
-    source_audio: &Path,
-    destination_audio: &Path,
-) -> Vec<(PathBuf, PathBuf)> {
-    let mut candidates = Vec::new();
-    let Some(source_dir) = source_audio.parent() else {
-        return candidates;
-    };
-    let Some(destination_dir) = destination_audio.parent() else {
-        return candidates;
-    };
-
-    if let (Some(source_stem), Some(destination_stem)) = (
-        source_audio.file_stem().and_then(|value| value.to_str()),
-        destination_audio
-            .file_stem()
-            .and_then(|value| value.to_str()),
-    ) {
-        for extension in LYRICS_EXTENSIONS {
-            candidates.push((
-                source_dir.join(format!("{source_stem}.{extension}")),
-                destination_dir.join(format!("{destination_stem}.{extension}")),
-            ));
-        }
-        for extension in ARTWORK_EXTENSIONS {
-            candidates.push((
-                source_dir.join(format!("{source_stem}.{extension}")),
-                destination_dir.join(format!("{destination_stem}.{extension}")),
-            ));
-        }
-    }
-
-    for stem in ALBUM_ARTWORK_STEMS {
-        for extension in ARTWORK_EXTENSIONS {
-            let file_name = format!("{stem}.{extension}");
-            candidates.push((source_dir.join(&file_name), destination_dir.join(file_name)));
-        }
-    }
-
-    candidates
-}
-
-fn copy_optional_file(source: &Path, destination: &Path) -> PlayerResult<bool> {
-    let source_canonical = source.canonicalize().ok();
-    let destination_canonical = destination.canonicalize().ok();
-    if source_canonical.is_some() && source_canonical == destination_canonical {
-        return Ok(false);
-    }
-
-    if let Some(parent) = destination.parent() {
-        fs::create_dir_all(parent).map_err(|source| PlayerError::io(parent, source))?;
-    }
-    fs::copy(source, destination).map_err(|source| PlayerError::io(destination, source))?;
-    Ok(true)
 }
 
 fn cached_artwork_path(
@@ -3288,10 +3432,6 @@ fn cache_key_for_view_id(view_id: &str) -> String {
         })
         .collect()
 }
-
-const LYRICS_EXTENSIONS: &[&str] = &["lrc", "txt", "lyrics"];
-const ARTWORK_EXTENSIONS: &[&str] = &["jpg", "jpeg", "png", "webp", "gif"];
-const ALBUM_ARTWORK_STEMS: &[&str] = &["cover", "folder", "front", "album"];
 
 #[cfg(test)]
 mod tests {

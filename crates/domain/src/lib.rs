@@ -10,7 +10,7 @@ pub use loudness::{
 };
 pub use model::{
     ArtworkImage, FileFingerprint, LoudnessInfo, Track, TrackId, TrackMetadata, TrackViewId,
-    TrackViewKind,
+    TrackViewKind, TrackViewKindParseError,
 };
 pub use playback::{PlaybackCommand, PlaybackState, PlayerSession, RepeatMode};
 pub use playback_error::{PlaybackError, PlaybackResult};

@@ -1,5 +1,4 @@
-use std::collections::hash_map::DefaultHasher;
-use std::hash::{Hash, Hasher};
+use std::fmt;
 use std::path::{Path, PathBuf};
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -11,9 +10,12 @@ impl TrackId {
     }
 
     pub fn from_path(path: &Path) -> Self {
-        let mut hasher = DefaultHasher::new();
-        path.hash(&mut hasher);
-        Self(hasher.finish())
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(b"silent-track-path-v1\0");
+        update_path_hash(&mut hasher, path);
+        let mut value = [0_u8; 8];
+        value.copy_from_slice(&hasher.finalize().as_bytes()[..8]);
+        Self(u64::from_le_bytes(value))
     }
 
     pub fn value(self) -> u64 {
@@ -48,6 +50,19 @@ pub enum TrackViewKind {
     Derived,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TrackViewKindParseError {
+    value: String,
+}
+
+impl fmt::Display for TrackViewKindParseError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(formatter, "unknown track view kind `{}`", self.value)
+    }
+}
+
+impl std::error::Error for TrackViewKindParseError {}
+
 impl TrackViewKind {
     pub fn as_str(self) -> &'static str {
         match self {
@@ -56,12 +71,36 @@ impl TrackViewKind {
         }
     }
 
-    pub fn parse(value: &str) -> Self {
+    pub fn parse(value: &str) -> Result<Self, TrackViewKindParseError> {
         match value.trim().to_ascii_lowercase().as_str() {
-            "derived" => Self::Derived,
-            _ => Self::Primary,
+            "primary" => Ok(Self::Primary),
+            "derived" => Ok(Self::Derived),
+            _ => Err(TrackViewKindParseError {
+                value: value.to_owned(),
+            }),
         }
     }
+}
+
+#[cfg(unix)]
+fn update_path_hash(hasher: &mut blake3::Hasher, path: &Path) {
+    use std::os::unix::ffi::OsStrExt;
+
+    hasher.update(path.as_os_str().as_bytes());
+}
+
+#[cfg(windows)]
+fn update_path_hash(hasher: &mut blake3::Hasher, path: &Path) {
+    use std::os::windows::ffi::OsStrExt;
+
+    for value in path.as_os_str().encode_wide() {
+        hasher.update(&value.to_le_bytes());
+    }
+}
+
+#[cfg(not(any(unix, windows)))]
+fn update_path_hash(hasher: &mut blake3::Hasher, path: &Path) {
+    hasher.update(path.to_string_lossy().as_bytes());
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -238,8 +277,23 @@ mod tests {
         let right = TrackId::from_path(Path::new("/music/song.mp3"));
         let other = TrackId::from_path(Path::new("/music/other.mp3"));
 
+        #[cfg(unix)]
+        assert_eq!(left.value(), 11_741_507_439_157_559_975);
         assert_eq!(left, right);
         assert_ne!(left, other);
+    }
+
+    #[test]
+    fn track_view_kind_parser_rejects_unknown_values() {
+        assert_eq!(
+            TrackViewKind::parse("primary").unwrap(),
+            TrackViewKind::Primary
+        );
+        assert_eq!(
+            TrackViewKind::parse("derived").unwrap(),
+            TrackViewKind::Derived
+        );
+        assert!(TrackViewKind::parse("future-kind").is_err());
     }
 
     #[test]

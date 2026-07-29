@@ -1,17 +1,17 @@
-use std::collections::{BTreeMap, HashSet};
+use std::collections::BTreeMap;
 use std::env;
 use std::fs;
 use std::io::{self, Write};
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 use std::process;
-use std::sync::{mpsc, Arc, Mutex};
+use std::sync::mpsc;
 use std::thread;
 
 use domain::{FileFingerprint, Track};
 use errors::{PlayerError, PlayerResult};
 use fingerprint::{audio_hash, file_hash};
-use library_fs::{fingerprint_from_metadata, LibraryScanner, ScanOptions};
-use metadata_lofty::{enrich_track, read_track_artwork};
+use library_fs::fingerprint_from_metadata;
+use library_service::{import_folder as import_folder_service, ImportProgress};
 use serde::Serialize;
 use store_sqlite::LibraryStore;
 
@@ -37,171 +37,67 @@ fn run() -> PlayerResult<()> {
 }
 
 fn import_folder(db_path: &Path, media_root: &Path, folder: &Path) -> PlayerResult<()> {
-    let scanner = LibraryScanner::new(ScanOptions::default());
-    let source_tracks = scanner.scan(folder)?;
-    let total = source_tracks.len();
-    let mut store = LibraryStore::open(db_path)?;
-    fs::create_dir_all(media_root).map_err(|source| PlayerError::io(media_root, source))?;
-    let existing_tracks = store.tracks()?;
-
-    let mut summary = ImportSummary::default();
-    let seen_file_hashes = Arc::new(Mutex::new(
-        existing_tracks
-            .iter()
-            .filter_map(|track| track.file_hash.clone())
-            .collect::<HashSet<_>>(),
-    ));
-    let seen_audio_hashes = Arc::new(Mutex::new(
-        existing_tracks
-            .iter()
-            .filter_map(|track| track.audio_hash.clone())
-            .collect::<HashSet<_>>(),
-    ));
-    let mut pending_tracks = Vec::new();
-    let mut pending_artwork = Vec::new();
-
-    emit(&LibraryEvent::Started {
-        operation: "import".to_owned(),
-        total,
+    let summary = import_folder_service(db_path, media_root, folder, |progress| match progress {
+        ImportProgress::Started { total } => emit(&LibraryEvent::Started {
+            operation: "import".to_owned(),
+            total,
+        }),
+        ImportProgress::TrackFinished {
+            index,
+            total,
+            path,
+            title,
+            summary,
+        } => emit(&LibraryEvent::TrackFinished {
+            operation: "import".to_owned(),
+            index,
+            total,
+            path,
+            title,
+            imported: summary.imported,
+            copied: summary.copied,
+            duplicates_skipped: summary.duplicates_skipped,
+            artwork_cached: summary.artwork_cached,
+            metadata_warnings: summary.metadata_warnings,
+            failures: summary.failures,
+        }),
+        ImportProgress::TrackSkipped {
+            index,
+            total,
+            path,
+            title,
+            reason,
+            summary,
+        } => emit(&LibraryEvent::TrackSkipped {
+            operation: "import".to_owned(),
+            index,
+            total,
+            path,
+            title,
+            reason: reason.to_owned(),
+            duplicates_skipped: summary.duplicates_skipped,
+            failures: summary.failures,
+        }),
+        ImportProgress::TrackFailed {
+            index,
+            total,
+            path,
+            title,
+            error,
+            summary,
+        } => emit(&LibraryEvent::TrackFailed {
+            operation: "import".to_owned(),
+            index,
+            total,
+            path: Some(path),
+            title: Some(title),
+            error,
+            failures: summary.failures,
+        }),
     })?;
-
-    let jobs = source_tracks
-        .into_iter()
-        .enumerate()
-        .map(|(source_index, track)| IndexedTrack {
-            source_index,
-            track,
-        })
-        .collect::<Vec<_>>();
-    let worker_count = worker_count(total);
-    let chunks = distribute_jobs(jobs, worker_count);
-    let (tx, rx) = mpsc::channel();
-
-    thread::scope(|scope| -> PlayerResult<()> {
-        for chunk in chunks {
-            let tx = tx.clone();
-            let source_root = folder.to_path_buf();
-            let media_root = media_root.to_path_buf();
-            let seen_file_hashes = Arc::clone(&seen_file_hashes);
-            let seen_audio_hashes = Arc::clone(&seen_audio_hashes);
-            scope.spawn(move || {
-                for job in chunk {
-                    let path = job.track.path.clone();
-                    let title = job.track.title.clone();
-                    let decision = import_one(
-                        &source_root,
-                        &media_root,
-                        job.track,
-                        &seen_file_hashes,
-                        &seen_audio_hashes,
-                    )
-                    .map_err(|error| error.to_string());
-                    if tx
-                        .send(ImportWorkResult {
-                            path,
-                            title,
-                            decision,
-                        })
-                        .is_err()
-                    {
-                        break;
-                    }
-                }
-            });
-        }
-        drop(tx);
-
-        for completed in 1..=total {
-            let result = rx
-                .recv()
-                .map_err(|error| PlayerError::engine(error.to_string()))?;
-            match result.decision {
-                Ok(ImportDecision::Imported {
-                    track,
-                    artwork,
-                    copied,
-                    metadata_warnings,
-                }) => {
-                    summary.imported += 1;
-                    if copied {
-                        summary.copied += 1;
-                    }
-                    summary.metadata_warnings += metadata_warnings;
-                    let path = track.path.clone();
-                    let title = track.title.clone();
-                    if !artwork.is_empty() {
-                        pending_artwork.push((path.clone(), artwork));
-                    }
-                    pending_tracks.push(*track);
-                    emit(&LibraryEvent::TrackFinished {
-                        operation: "import".to_owned(),
-                        index: completed,
-                        total,
-                        path,
-                        title,
-                        imported: summary.imported,
-                        copied: summary.copied,
-                        duplicates_skipped: summary.duplicates_skipped,
-                        artwork_cached: summary.artwork_cached,
-                        metadata_warnings: summary.metadata_warnings,
-                        failures: summary.failures,
-                    })?;
-                }
-                Ok(ImportDecision::SkippedDuplicate { path, title }) => {
-                    summary.duplicates_skipped += 1;
-                    emit(&LibraryEvent::TrackSkipped {
-                        operation: "import".to_owned(),
-                        index: completed,
-                        total,
-                        path,
-                        title,
-                        reason: "duplicate".to_owned(),
-                        duplicates_skipped: summary.duplicates_skipped,
-                        failures: summary.failures,
-                    })?;
-                }
-                Ok(ImportDecision::SkippedUnidentified {
-                    path,
-                    title,
-                    metadata_warnings,
-                }) => {
-                    summary.metadata_warnings += metadata_warnings;
-                    emit(&LibraryEvent::TrackSkipped {
-                        operation: "import".to_owned(),
-                        index: completed,
-                        total,
-                        path,
-                        title,
-                        reason: "missing_audio_hash".to_owned(),
-                        duplicates_skipped: summary.duplicates_skipped,
-                        failures: summary.failures,
-                    })?;
-                }
-                Err(error) => {
-                    summary.failures += 1;
-                    emit(&LibraryEvent::TrackFailed {
-                        operation: "import".to_owned(),
-                        index: completed,
-                        total,
-                        path: Some(result.path),
-                        title: Some(result.title),
-                        error,
-                        failures: summary.failures,
-                    })?;
-                }
-            }
-        }
-        Ok(())
-    })?;
-
-    store.upsert_tracks(&pending_tracks)?;
-    for (path, artwork) in pending_artwork {
-        summary.artwork_cached += store.save_artwork(path, &artwork)?;
-    }
-
     emit(&LibraryEvent::Finished {
         operation: "import".to_owned(),
-        total,
+        total: summary.total,
         imported: summary.imported,
         copied: summary.copied,
         duplicates_skipped: summary.duplicates_skipped,
@@ -212,69 +108,6 @@ fn import_folder(db_path: &Path, media_root: &Path, folder: &Path) -> PlayerResu
         duplicate_groups: None,
         tracks_merged: None,
         failures: summary.failures,
-    })
-}
-
-fn import_one(
-    source_root: &Path,
-    media_root: &Path,
-    source_track: Track,
-    seen_file_hashes: &Arc<Mutex<HashSet<String>>>,
-    seen_audio_hashes: &Arc<Mutex<HashSet<String>>>,
-) -> PlayerResult<ImportDecision> {
-    let source_file_hash = file_hash(&source_track.path)?;
-    if !insert_unique_hash(seen_file_hashes, &source_file_hash)? {
-        return Ok(ImportDecision::SkippedDuplicate {
-            path: source_track.path,
-            title: source_track.title,
-        });
-    }
-
-    let source_audio_hash = match audio_hash(&source_track.path) {
-        Ok(fingerprint) => fingerprint.hash,
-        Err(_) => {
-            return Ok(ImportDecision::SkippedUnidentified {
-                path: source_track.path,
-                title: source_track.title,
-                metadata_warnings: 1,
-            });
-        }
-    };
-    if !insert_unique_hash(seen_audio_hashes, &source_audio_hash)? {
-        return Ok(ImportDecision::SkippedDuplicate {
-            path: source_track.path,
-            title: source_track.title,
-        });
-    }
-
-    let destination = managed_import_path(source_root, &source_track.path, media_root);
-    let copied = copy_into_media_library(&source_track.path, &destination)?;
-    copy_related_sidecars(&source_track.path, &destination)?;
-
-    let mut track = Track::from_path(destination.clone());
-    track.fingerprint = fs::metadata(&destination)
-        .ok()
-        .map(|metadata| fingerprint_from_metadata(&metadata));
-    track.file_hash = Some(source_file_hash.clone());
-    track.set_primary_audio_hash(source_audio_hash.clone());
-
-    let mut metadata_warnings = 0_usize;
-    if enrich_track(&mut track).is_err() {
-        metadata_warnings += 1;
-    }
-    let artwork = match read_track_artwork(&track.path) {
-        Ok(images) => images,
-        Err(_) => {
-            metadata_warnings += 1;
-            Vec::new()
-        }
-    };
-
-    Ok(ImportDecision::Imported {
-        track: Box::new(track),
-        artwork,
-        copied,
-        metadata_warnings,
     })
 }
 
@@ -462,112 +295,6 @@ fn emit(event: &LibraryEvent) -> PlayerResult<()> {
         .map_err(|error| PlayerError::engine(error.to_string()))
 }
 
-fn managed_import_path(source_root: &Path, source_path: &Path, media_root: &Path) -> PathBuf {
-    let mut relative = PathBuf::new();
-    relative.push(
-        source_root
-            .file_name()
-            .filter(|name| !name.is_empty())
-            .unwrap_or_else(|| std::ffi::OsStr::new("Imported")),
-    );
-
-    if let Ok(stripped) = source_path.strip_prefix(source_root) {
-        push_normal_components(&mut relative, stripped);
-    } else if let Some(file_name) = source_path.file_name() {
-        relative.push(file_name);
-    }
-
-    media_root.join(relative)
-}
-
-fn push_normal_components(target: &mut PathBuf, path: &Path) {
-    for component in path.components() {
-        if let Component::Normal(value) = component {
-            target.push(value);
-        }
-    }
-}
-
-fn copy_into_media_library(source: &Path, destination: &Path) -> PlayerResult<bool> {
-    let source_canonical = source.canonicalize().ok();
-    let destination_canonical = destination.canonicalize().ok();
-    if source_canonical.is_some() && source_canonical == destination_canonical {
-        return Ok(false);
-    }
-
-    if let Some(parent) = destination.parent() {
-        fs::create_dir_all(parent).map_err(|source| PlayerError::io(parent, source))?;
-    }
-    fs::copy(source, destination).map_err(|source| PlayerError::io(destination, source))?;
-    Ok(true)
-}
-
-fn copy_related_sidecars(source_audio: &Path, destination_audio: &Path) -> PlayerResult<usize> {
-    let mut copied = 0_usize;
-    for (source, destination) in sidecar_copy_candidates(source_audio, destination_audio) {
-        if source.exists() && copy_optional_file(&source, &destination)? {
-            copied += 1;
-        }
-    }
-    Ok(copied)
-}
-
-fn sidecar_copy_candidates(
-    source_audio: &Path,
-    destination_audio: &Path,
-) -> Vec<(PathBuf, PathBuf)> {
-    let mut candidates = Vec::new();
-    let Some(source_dir) = source_audio.parent() else {
-        return candidates;
-    };
-    let Some(destination_dir) = destination_audio.parent() else {
-        return candidates;
-    };
-
-    if let (Some(source_stem), Some(destination_stem)) = (
-        source_audio.file_stem().and_then(|value| value.to_str()),
-        destination_audio
-            .file_stem()
-            .and_then(|value| value.to_str()),
-    ) {
-        for extension in LYRICS_EXTENSIONS {
-            candidates.push((
-                source_dir.join(format!("{source_stem}.{extension}")),
-                destination_dir.join(format!("{destination_stem}.{extension}")),
-            ));
-        }
-        for extension in ARTWORK_EXTENSIONS {
-            candidates.push((
-                source_dir.join(format!("{source_stem}.{extension}")),
-                destination_dir.join(format!("{destination_stem}.{extension}")),
-            ));
-        }
-    }
-
-    for stem in ALBUM_ARTWORK_STEMS {
-        for extension in ARTWORK_EXTENSIONS {
-            let file_name = format!("{stem}.{extension}");
-            candidates.push((source_dir.join(&file_name), destination_dir.join(file_name)));
-        }
-    }
-
-    candidates
-}
-
-fn copy_optional_file(source: &Path, destination: &Path) -> PlayerResult<bool> {
-    let source_canonical = source.canonicalize().ok();
-    let destination_canonical = destination.canonicalize().ok();
-    if source_canonical.is_some() && source_canonical == destination_canonical {
-        return Ok(false);
-    }
-
-    if let Some(parent) = destination.parent() {
-        fs::create_dir_all(parent).map_err(|source| PlayerError::io(parent, source))?;
-    }
-    fs::copy(source, destination).map_err(|source| PlayerError::io(destination, source))?;
-    Ok(true)
-}
-
 fn worker_count(total: usize) -> usize {
     if total == 0 {
         return 0;
@@ -590,13 +317,6 @@ fn distribute_jobs(jobs: Vec<IndexedTrack>, worker_count: usize) -> Vec<Vec<Inde
         .into_iter()
         .filter(|chunk| !chunk.is_empty())
         .collect()
-}
-
-fn insert_unique_hash(hashes: &Arc<Mutex<HashSet<String>>>, hash: &str) -> PlayerResult<bool> {
-    let mut hashes = hashes
-        .lock()
-        .map_err(|_| PlayerError::engine("import hash set lock poisoned"))?;
-    Ok(hashes.insert(hash.to_owned()))
 }
 
 #[derive(Debug)]
@@ -691,16 +411,6 @@ fn print_usage() {
 }
 
 #[derive(Default)]
-struct ImportSummary {
-    imported: usize,
-    copied: usize,
-    duplicates_skipped: usize,
-    artwork_cached: usize,
-    metadata_warnings: usize,
-    failures: usize,
-}
-
-#[derive(Default)]
 struct AuditSummary {
     tracks_scanned: usize,
     hashes_updated: usize,
@@ -714,36 +424,12 @@ struct IndexedTrack {
     track: Track,
 }
 
-struct ImportWorkResult {
-    path: PathBuf,
-    title: String,
-    decision: Result<ImportDecision, String>,
-}
-
 struct AuditWorkResult {
     source_index: usize,
     file_hash: Option<String>,
     audio_hash: Option<String>,
     fingerprint: Option<FileFingerprint>,
     failures: usize,
-}
-
-enum ImportDecision {
-    Imported {
-        track: Box<Track>,
-        artwork: Vec<domain::ArtworkImage>,
-        copied: bool,
-        metadata_warnings: usize,
-    },
-    SkippedDuplicate {
-        path: PathBuf,
-        title: String,
-    },
-    SkippedUnidentified {
-        path: PathBuf,
-        title: String,
-        metadata_warnings: usize,
-    },
 }
 
 #[derive(Serialize)]
@@ -831,7 +517,3 @@ where
         None => serializer.serialize_none(),
     }
 }
-
-const LYRICS_EXTENSIONS: &[&str] = &["lrc", "txt", "lyrics"];
-const ARTWORK_EXTENSIONS: &[&str] = &["jpg", "jpeg", "png", "webp", "gif"];
-const ALBUM_ARTWORK_STEMS: &[&str] = &["cover", "folder", "front", "album"];

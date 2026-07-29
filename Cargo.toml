@@ -7,6 +7,7 @@ members = [
     "crates/analyzer",
     "crates/fingerprint",
     "crates/library_fs",
+    "crates/library_service",
     "crates/library_worker",
     "crates/metadata_lofty",
     "crates/store_sqlite",
