@@ -182,12 +182,8 @@ public struct PhoneContentView: View {
 
     private var libraryTab: some View {
         NavigationStack {
-            trackList(scopeTitle: model.libraryScope.title)
+            libraryTrackList
                 .navigationTitle("Library")
-                .searchable(text: $model.query, prompt: "Title, artist, album")
-                .onSubmit(of: .search) {
-                    Task { await model.search() }
-                }
                 .toolbar {
                     ToolbarItem(placement: .topBarLeading) {
                         Menu {
@@ -224,42 +220,36 @@ public struct PhoneContentView: View {
         }
     }
 
-    private var searchTab: some View {
-        NavigationStack {
-            trackList(scopeTitle: "Search")
-                .navigationTitle("Search")
-                .searchable(text: $model.query, prompt: "Search music")
+    @ViewBuilder
+    private var libraryTrackList: some View {
+        if model.libraryScope == .library {
+            trackList(scopeTitle: model.libraryScope.title)
+                .searchable(text: librarySearchBinding, prompt: "Search songs")
                 .onSubmit(of: .search) {
                     Task { await model.search() }
                 }
-                .toolbar {
-                    ToolbarItem(placement: .topBarTrailing) {
-                        Button {
-                            model.query = ""
-                            Task { await model.reloadActiveScope() }
-                        } label: {
-                            Label("Clear", systemImage: "xmark.circle")
-                        }
-                    }
-                }
-                .safeAreaInset(edge: .bottom) {
-                    miniPlayerBar
-                }
+        } else {
+            trackList(scopeTitle: model.libraryScope.title)
         }
+    }
+
+    private var librarySearchBinding: Binding<String> {
+        Binding(
+            get: { model.query },
+            set: { newValue in
+                let clearedSearch = !model.query.isEmpty && newValue.isEmpty
+                model.query = newValue
+                if clearedSearch {
+                    Task { await model.reloadActiveScope() }
+                }
+            }
+        )
     }
 
     private var playlistsTab: some View {
         NavigationStack(path: $playlistPath) {
             List {
-                if !model.recentPlaylists.isEmpty {
-                    Section("Recent") {
-                        ForEach(model.recentPlaylists) { playlist in
-                            phonePlaylistLink(playlist)
-                        }
-                    }
-                }
-
-                Section(model.recentPlaylists.isEmpty ? "Playlists" : "All Playlists") {
+                Section("Playlists") {
                     ForEach(model.playlists) { playlist in
                         phonePlaylistLink(playlist)
                     }
@@ -328,7 +318,7 @@ public struct PhoneContentView: View {
                     Text(playlist.name.phoneCompacted)
                         .font(.body.weight(.medium))
                         .fixedSize(horizontal: false, vertical: true)
-                    Text("\(playlist.trackCount) tracks")
+                    Text("\(playlist.trackCount) songs")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -464,7 +454,9 @@ public struct PhoneContentView: View {
                     Button {
                         isQueuePresented = true
                     } label: {
-                        Label("Queue", systemImage: "music.note.list")
+                        Label(model.queueStatusText, systemImage: "music.note.list")
+                            .labelStyle(.titleAndIcon)
+                            .font(.subheadline.weight(.semibold))
                     }
                 }
             }
@@ -1354,7 +1346,7 @@ private enum PhoneFileImportPurpose {
         case .playlistCover, .playlistSettingsArtwork:
             return "Choose playlist artwork"
         case .editArtwork:
-            return "Choose view artwork"
+            return "Choose song artwork"
         case .editLyrics:
             return "Choose lyrics file"
         }
@@ -1397,18 +1389,7 @@ private struct PhoneTrackDetailView: View {
                 LabeledContent("Queue", value: model.nowPlaying?.id == currentTrack.id ? model.queueStatusText : "Not queued")
             }
 
-            Section("View") {
-                if viewChoices.count > 1 {
-                    Picker("Active View", selection: viewBinding) {
-                        ForEach(viewChoices) { choice in
-                            Text(viewChoiceTitle(choice))
-                                .tag(choice.id)
-                        }
-                    }
-                } else {
-                    LabeledContent("Active View", value: viewTitle(for: currentTrack, index: 0))
-                }
-
+            Section("Song") {
                 Picker("Rating", selection: ratingBinding) {
                     Text("Unrated").tag(0)
                     ForEach(1...10, id: \.self) { value in
@@ -1416,8 +1397,17 @@ private struct PhoneTrackDetailView: View {
                     }
                 }
 
+                if viewChoices.count > 1 {
+                    Picker("Version", selection: viewBinding) {
+                        ForEach(viewChoices) { choice in
+                            Text(viewChoiceTitle(choice))
+                                .tag(choice.id)
+                        }
+                    }
+                }
+
                 if let currentDetails {
-                    LabeledContent("Kind", value: currentDetails.isPrimaryView ? "Primary" : "Derived")
+                    LabeledContent("File", value: currentDetails.isPrimaryView ? "Original" : "Edited")
                     LabeledContent("Format", value: optionalValue(currentDetails.formatName ?? currentTrack.formatName))
                     LabeledContent("Quality", value: optionalValue(currentDetails.qualityProfile ?? currentTrack.qualityProfile))
                 }
@@ -1489,7 +1479,7 @@ private struct PhoneTrackDetailView: View {
                     model.selectTrack(id: currentTrack.id)
                     model.presentViewEdit()
                 } label: {
-                    Label("Edit Current View", systemImage: "pencil")
+                    Label("Edit Song", systemImage: "pencil")
                 }
 
                 Button {
@@ -1508,7 +1498,7 @@ private struct PhoneTrackDetailView: View {
                 Button {
                     exportView(currentTrack)
                 } label: {
-                    Label("Export Current View", systemImage: "square.and.arrow.up")
+                    Label("Export Song", systemImage: "square.and.arrow.up")
                 }
             }
         }
@@ -1592,7 +1582,7 @@ private struct PhoneTrackDetailView: View {
     }
 
     private func viewTitle(for track: TrackItem, index: Int) -> String {
-        var title = track.viewName ?? (track.isPrimaryView ? "Primary View" : "View \(index + 1)")
+        var title = track.viewName ?? (track.isPrimaryView ? "Original" : "Version \(index + 1)")
         var details: [String] = []
         if let format = track.formatName?.trimmingCharacters(in: .whitespacesAndNewlines),
            !format.isEmpty {
@@ -1716,7 +1706,7 @@ private struct PhonePlaylistDetailView: View {
                             .font(.title3.weight(.semibold))
                             .multilineTextAlignment(.center)
                             .fixedSize(horizontal: false, vertical: true)
-                        Text("\(playlist.trackCount) tracks")
+                        Text("\(playlist.trackCount) songs")
                             .font(.subheadline)
                             .foregroundStyle(.secondary)
                     }
@@ -1749,7 +1739,7 @@ private struct PhonePlaylistDetailView: View {
                 .padding(.vertical, 8)
             }
 
-            Section("Tracks") {
+            Section("Songs") {
                 ForEach(model.tracks) { track in
                     Button {
                         model.selectTrack(id: track.id)
@@ -1811,13 +1801,24 @@ private struct PhonePlaylistDetailView: View {
                 }
 
                 if model.tracks.isEmpty, !model.isBusy {
-                    Text("This playlist is empty.")
+                    Text(
+                        model.query.isEmpty
+                            ? "This playlist is empty."
+                            : "No songs match “\(model.query)”."
+                    )
                         .foregroundStyle(.secondary)
                 }
             }
         }
         .navigationTitle(playlist.name.phoneCompacted)
         .navigationBarTitleDisplayMode(.inline)
+        .searchable(
+            text: playlistSearchBinding,
+            prompt: "Search songs in \(playlist.name.phoneCompacted)"
+        )
+        .onSubmit(of: .search) {
+            Task { await model.search() }
+        }
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
                 Button {
@@ -1832,6 +1833,19 @@ private struct PhonePlaylistDetailView: View {
                 await model.showPlaylist(playlist)
             }
         }
+    }
+
+    private var playlistSearchBinding: Binding<String> {
+        Binding(
+            get: { model.query },
+            set: { newValue in
+                let clearedSearch = !model.query.isEmpty && newValue.isEmpty
+                model.query = newValue
+                if clearedSearch, model.activePlaylistName == playlist.name {
+                    Task { await model.reloadActiveScope() }
+                }
+            }
+        )
     }
 }
 
@@ -1857,9 +1871,14 @@ private struct PhoneTrackActionPanel: View {
                 Spacer()
 
                 if viewChoices.count > 1 {
-                    Picker("View", selection: viewBinding) {
+                    Picker("Version", selection: viewBinding) {
                         ForEach(viewChoices) { choice in
-                            Text(choice.track.viewName ?? (choice.track.isPrimaryView ? "Primary" : "View \(choice.index + 1)"))
+                            Text(
+                                choice.track.viewName
+                                    ?? (choice.track.isPrimaryView
+                                        ? "Original"
+                                        : "Version \(choice.index + 1)")
+                            )
                                 .tag(choice.id)
                         }
                     }
@@ -1893,7 +1912,7 @@ private struct PhoneTrackActionPanel: View {
                         model.selectTrack(id: track.id)
                         model.presentViewEdit()
                     } label: {
-                        Label("Edit View", systemImage: "pencil")
+                        Label("Edit Song", systemImage: "pencil")
                     }
 
                     Button {
@@ -1999,8 +2018,8 @@ private struct PhoneTrackEditSheet: View {
     var body: some View {
         NavigationStack {
             Form {
-                Section("View") {
-                    TextField("Name", text: $model.viewEditNameDraft)
+                Section("Version") {
+                    TextField("Version Name (Optional)", text: $model.viewEditNameDraft)
                 }
 
                 Section("Music") {
@@ -2030,7 +2049,7 @@ private struct PhoneTrackEditSheet: View {
                         .frame(minHeight: 140)
                 }
             }
-            .navigationTitle("Edit View")
+            .navigationTitle("Edit Song")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
@@ -2118,7 +2137,7 @@ private struct PhonePlaylistPickerSheet: View {
                                 VStack(alignment: .leading, spacing: 2) {
                                     Text(playlist.name)
                                         .foregroundStyle(.primary)
-                                    Text("\(playlist.trackCount) tracks")
+                                    Text("\(playlist.trackCount) songs")
                                         .font(.caption)
                                         .foregroundStyle(.secondary)
                                 }
