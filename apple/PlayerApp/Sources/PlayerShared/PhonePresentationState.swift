@@ -44,22 +44,17 @@ public struct PhonePresentationScope: Codable, Equatable, Sendable {
 }
 
 public struct PhonePresentationSnapshot: Codable, Equatable, Sendable {
-    public static let currentVersion = 1
-
-    public let version: Int
     public let selectedTab: PhonePresentationTab
     public let contentScope: PhonePresentationScope
     public let playlistDetailID: Int64?
     public let selectedViewID: String?
 
     public init(
-        version: Int = currentVersion,
         selectedTab: PhonePresentationTab,
         contentScope: PhonePresentationScope,
         playlistDetailID: Int64?,
         selectedViewID: String?
     ) {
-        self.version = version
         self.selectedTab = selectedTab
         self.contentScope = contentScope
         self.playlistDetailID = playlistDetailID
@@ -108,8 +103,6 @@ public struct PhonePresentationSnapshot: Codable, Equatable, Sendable {
 }
 
 public enum PhonePresentationPersistence {
-    public static let fallbackKey = "PhoneContentView.lastSession.v1"
-
     public static func encode(_ snapshot: PhonePresentationSnapshot) -> String? {
         guard let data = try? JSONEncoder().encode(snapshot) else {
             return nil
@@ -120,29 +113,10 @@ public enum PhonePresentationPersistence {
     public static func decode(_ encoded: String?) -> PhonePresentationSnapshot? {
         guard let encoded,
               let data = Data(base64Encoded: encoded),
-              let snapshot = try? JSONDecoder().decode(PhonePresentationSnapshot.self, from: data),
-              snapshot.version == PhonePresentationSnapshot.currentVersion
+              let snapshot = try? JSONDecoder().decode(PhonePresentationSnapshot.self, from: data)
         else {
             return nil
         }
         return snapshot
-    }
-
-    public static func load(defaults: UserDefaults = .standard) -> PhonePresentationSnapshot? {
-        decode(defaults.string(forKey: fallbackKey))
-    }
-
-    public static func save(
-        _ snapshot: PhonePresentationSnapshot,
-        defaults: UserDefaults = .standard
-    ) {
-        guard let encoded = encode(snapshot) else {
-            return
-        }
-        defaults.set(encoded, forKey: fallbackKey)
-    }
-
-    public static func clear(defaults: UserDefaults = .standard) {
-        defaults.removeObject(forKey: fallbackKey)
     }
 }

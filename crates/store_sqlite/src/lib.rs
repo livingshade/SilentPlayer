@@ -149,14 +149,14 @@ impl LibraryStore {
     pub fn open(path: impl AsRef<Path>) -> PlayerResult<Self> {
         let conn = Connection::open(path).map_err(to_store_error)?;
         let store = Self { conn };
-        store.migrate()?;
+        store.initialize_schema()?;
         Ok(store)
     }
 
     pub fn in_memory() -> PlayerResult<Self> {
         let conn = Connection::open_in_memory().map_err(to_store_error)?;
         let store = Self { conn };
-        store.migrate()?;
+        store.initialize_schema()?;
         Ok(store)
     }
 
@@ -1393,11 +1393,10 @@ impl LibraryStore {
         tx.execute(
             r#"
             INSERT INTO track_artwork_refs
-                (track_path, asset_id, source_path, updated_at_unix_seconds)
-            VALUES (?1, ?2, ?2, ?3)
+                (track_path, asset_id, updated_at_unix_seconds)
+            VALUES (?1, ?2, ?3)
             ON CONFLICT(track_path) DO UPDATE SET
                 asset_id = excluded.asset_id,
-                source_path = excluded.source_path,
                 updated_at_unix_seconds = excluded.updated_at_unix_seconds
             "#,
             params![path.as_str(), asset_id.as_str(), now],
@@ -1450,12 +1449,11 @@ impl LibraryStore {
                 .prepare(
                     r#"
                     INSERT INTO album_artwork_refs
-                        (track_path, album_key, asset_id, source_path, updated_at_unix_seconds)
-                    VALUES (?1, ?2, ?3, ?3, ?4)
+                        (track_path, album_key, asset_id, updated_at_unix_seconds)
+                    VALUES (?1, ?2, ?3, ?4)
                     ON CONFLICT(track_path) DO UPDATE SET
                         album_key = excluded.album_key,
                         asset_id = excluded.asset_id,
-                        source_path = excluded.source_path,
                         updated_at_unix_seconds = excluded.updated_at_unix_seconds
                     "#,
                 )
@@ -1539,14 +1537,12 @@ impl LibraryStore {
         tx.execute(
             r#"
             INSERT INTO track_artwork_refs
-                (track_path, asset_id, source_path, updated_at_unix_seconds)
-            SELECT ?2, asset_id, source_path, ?3
+                (track_path, asset_id, updated_at_unix_seconds)
+            SELECT ?2, asset_id, ?3
             FROM track_artwork_refs
             WHERE track_path = ?1
-              AND asset_id IS NOT NULL
             ON CONFLICT(track_path) DO UPDATE SET
                 asset_id = excluded.asset_id,
-                source_path = excluded.source_path,
                 updated_at_unix_seconds = excluded.updated_at_unix_seconds
             "#,
             params![source_path.as_str(), destination_path.as_str(), now],
@@ -1555,15 +1551,13 @@ impl LibraryStore {
         tx.execute(
             r#"
             INSERT INTO album_artwork_refs
-                (track_path, album_key, asset_id, source_path, updated_at_unix_seconds)
-            SELECT ?2, album_key, asset_id, source_path, ?3
+                (track_path, album_key, asset_id, updated_at_unix_seconds)
+            SELECT ?2, album_key, asset_id, ?3
             FROM album_artwork_refs
             WHERE track_path = ?1
-              AND asset_id IS NOT NULL
             ON CONFLICT(track_path) DO UPDATE SET
                 album_key = excluded.album_key,
                 asset_id = excluded.asset_id,
-                source_path = excluded.source_path,
                 updated_at_unix_seconds = excluded.updated_at_unix_seconds
             "#,
             params![source_path.as_str(), destination_path.as_str(), now],
@@ -1701,11 +1695,10 @@ impl LibraryStore {
         tx.execute(
             r#"
             INSERT INTO track_artwork_refs
-                (track_path, asset_id, source_path, updated_at_unix_seconds)
-            SELECT ?2, asset_id, source_path, ?3
+                (track_path, asset_id, updated_at_unix_seconds)
+            SELECT ?2, asset_id, ?3
             FROM track_artwork_refs
             WHERE track_path = ?1
-              AND asset_id IS NOT NULL
             "#,
             params![source_path.as_str(), derived_path.as_str(), now],
         )
@@ -1714,11 +1707,10 @@ impl LibraryStore {
         tx.execute(
             r#"
             INSERT INTO album_artwork_refs
-                (track_path, album_key, asset_id, source_path, updated_at_unix_seconds)
-            SELECT ?2, album_key, asset_id, source_path, ?3
+                (track_path, album_key, asset_id, updated_at_unix_seconds)
+            SELECT ?2, album_key, asset_id, ?3
             FROM album_artwork_refs
             WHERE track_path = ?1
-              AND asset_id IS NOT NULL
             "#,
             params![source_path.as_str(), derived_path.as_str(), now],
         )
@@ -1877,11 +1869,6 @@ impl LibraryStore {
                 updated_at_unix_seconds = excluded.updated_at_unix_seconds
             "#,
             params![playlist_id, asset_id.as_str(), now],
-        )
-        .map_err(to_store_error)?;
-        tx.execute(
-            "DELETE FROM playlist_artwork WHERE playlist_id = ?1",
-            params![playlist_id],
         )
         .map_err(to_store_error)?;
         tx.execute(
@@ -2481,7 +2468,7 @@ impl LibraryStore {
         Ok(())
     }
 
-    fn migrate(&self) -> PlayerResult<()> {
+    fn initialize_schema(&self) -> PlayerResult<()> {
         self.conn
             .execute_batch(
                 r#"
@@ -2510,7 +2497,7 @@ impl LibraryStore {
                     audio_hash TEXT,
                     view_id TEXT NOT NULL,
                     primary_view_id TEXT NOT NULL,
-                    view_kind TEXT NOT NULL DEFAULT 'primary',
+                    view_kind TEXT NOT NULL,
                     transform_spec TEXT,
                     quality_profile TEXT,
                     format_name TEXT,
@@ -2539,14 +2526,6 @@ impl LibraryStore {
                     created_at_unix_seconds INTEGER NOT NULL,
                     updated_at_unix_seconds INTEGER NOT NULL,
                     last_used_at_unix_seconds INTEGER NOT NULL DEFAULT 0
-                );
-
-                CREATE TABLE IF NOT EXISTS playlist_artwork (
-                    playlist_id INTEGER PRIMARY KEY REFERENCES playlists(id) ON DELETE CASCADE,
-                    mime_type TEXT,
-                    description TEXT,
-                    data BLOB NOT NULL,
-                    updated_at_unix_seconds INTEGER NOT NULL
                 );
 
                 CREATE TABLE IF NOT EXISTS artwork_assets (
@@ -2620,7 +2599,6 @@ impl LibraryStore {
                 CREATE TABLE IF NOT EXISTS track_artwork_refs (
                     track_path TEXT PRIMARY KEY REFERENCES tracks(path) ON DELETE CASCADE,
                     asset_id TEXT NOT NULL REFERENCES artwork_assets(asset_id) ON DELETE RESTRICT,
-                    source_path TEXT,
                     updated_at_unix_seconds INTEGER NOT NULL
                 );
 
@@ -2628,7 +2606,6 @@ impl LibraryStore {
                     track_path TEXT PRIMARY KEY REFERENCES tracks(path) ON DELETE CASCADE,
                     album_key TEXT NOT NULL,
                     asset_id TEXT NOT NULL REFERENCES artwork_assets(asset_id) ON DELETE RESTRICT,
-                    source_path TEXT,
                     updated_at_unix_seconds INTEGER NOT NULL
                 );
 
@@ -2640,265 +2617,13 @@ impl LibraryStore {
                     notes TEXT NOT NULL,
                     updated_at_unix_seconds INTEGER NOT NULL
                 );
+
+                CREATE INDEX IF NOT EXISTS tracks_file_hash_idx ON tracks(file_hash);
+                CREATE INDEX IF NOT EXISTS tracks_audio_hash_idx ON tracks(audio_hash);
+                CREATE INDEX IF NOT EXISTS tracks_view_id_idx ON tracks(view_id);
+                CREATE INDEX IF NOT EXISTS tracks_primary_view_id_idx ON tracks(primary_view_id);
+                CREATE INDEX IF NOT EXISTS tracks_user_rating_idx ON tracks(user_rating);
                 "#,
-            )
-            .map_err(to_store_error)?;
-        self.ensure_column("analysis_size_bytes", "INTEGER")?;
-        self.ensure_column("analysis_modified_unix_seconds", "INTEGER")?;
-        self.ensure_column("file_hash", "TEXT")?;
-        self.ensure_column("audio_hash", "TEXT")?;
-        self.ensure_column("view_id", "TEXT")?;
-        self.ensure_column("primary_view_id", "TEXT")?;
-        self.ensure_column("view_kind", "TEXT")?;
-        self.ensure_column("transform_spec", "TEXT")?;
-        self.ensure_column("quality_profile", "TEXT")?;
-        self.ensure_column("format_name", "TEXT")?;
-        self.ensure_column("view_name", "TEXT")?;
-        self.ensure_column("user_rating", "INTEGER")?;
-        self.ensure_table_column(
-            "playlists",
-            "last_used_at_unix_seconds",
-            "INTEGER NOT NULL DEFAULT 0",
-        )?;
-        self.ensure_table_column("track_artwork_refs", "asset_id", "TEXT")?;
-        self.ensure_table_column("album_artwork_refs", "asset_id", "TEXT")?;
-        self.migrate_artwork_references_to_assets()?;
-        self.backfill_view_columns()?;
-        self.conn
-            .execute(
-                "CREATE INDEX IF NOT EXISTS tracks_file_hash_idx ON tracks(file_hash)",
-                [],
-            )
-            .map_err(to_store_error)?;
-        self.conn
-            .execute(
-                "CREATE INDEX IF NOT EXISTS tracks_audio_hash_idx ON tracks(audio_hash)",
-                [],
-            )
-            .map_err(to_store_error)?;
-        self.conn
-            .execute(
-                "CREATE INDEX IF NOT EXISTS tracks_view_id_idx ON tracks(view_id)",
-                [],
-            )
-            .map_err(to_store_error)?;
-        self.conn
-            .execute(
-                "CREATE INDEX IF NOT EXISTS tracks_primary_view_id_idx ON tracks(primary_view_id)",
-                [],
-            )
-            .map_err(to_store_error)?;
-        self.conn
-            .execute(
-                "CREATE INDEX IF NOT EXISTS tracks_user_rating_idx ON tracks(user_rating)",
-                [],
-            )
-            .map_err(to_store_error)?;
-        Ok(())
-    }
-
-    fn ensure_column(&self, name: &str, definition: &str) -> PlayerResult<()> {
-        let mut stmt = self
-            .conn
-            .prepare("PRAGMA table_info(tracks)")
-            .map_err(to_store_error)?;
-        let columns = stmt
-            .query_map([], |row| row.get::<_, String>(1))
-            .map_err(to_store_error)?
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(to_store_error)?;
-
-        if !columns.iter().any(|column| column == name) {
-            self.conn
-                .execute(
-                    &format!("ALTER TABLE tracks ADD COLUMN {name} {definition}"),
-                    [],
-                )
-                .map_err(to_store_error)?;
-        }
-
-        Ok(())
-    }
-
-    fn ensure_table_column(&self, table: &str, name: &str, definition: &str) -> PlayerResult<()> {
-        let mut stmt = self
-            .conn
-            .prepare(&format!("PRAGMA table_info({table})"))
-            .map_err(to_store_error)?;
-        let columns = stmt
-            .query_map([], |row| row.get::<_, String>(1))
-            .map_err(to_store_error)?
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(to_store_error)?;
-
-        if !columns.iter().any(|column| column == name) {
-            self.conn
-                .execute(
-                    &format!("ALTER TABLE {table} ADD COLUMN {name} {definition}"),
-                    [],
-                )
-                .map_err(to_store_error)?;
-        }
-
-        Ok(())
-    }
-
-    fn migrate_artwork_references_to_assets(&self) -> PlayerResult<()> {
-        self.migrate_artwork_reference_table("track_artwork_refs")?;
-        self.migrate_artwork_reference_table("album_artwork_refs")?;
-        self.migrate_playlist_artwork_blobs()
-    }
-
-    fn migrate_artwork_reference_table(&self, table: &str) -> PlayerResult<()> {
-        let mut stmt = self
-            .conn
-            .prepare(&format!(
-                r#"
-                SELECT track_path, source_path
-                FROM {table}
-                WHERE (asset_id IS NULL OR trim(asset_id) = '')
-                  AND source_path IS NOT NULL
-                  AND trim(source_path) != ''
-                "#
-            ))
-            .map_err(to_store_error)?;
-        let rows = stmt
-            .query_map([], |row| {
-                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-            })
-            .map_err(to_store_error)?
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(to_store_error)?;
-        drop(stmt);
-
-        for (track_path, source_path) in rows {
-            let image_path = PathBuf::from(&source_path);
-            let asset_id = match std::fs::read(&image_path) {
-                Ok(data) if !data.is_empty() => {
-                    let image = ArtworkImage {
-                        picture_index: 0,
-                        mime_type: None,
-                        picture_type: "CoverFront".to_owned(),
-                        description: image_path
-                            .file_name()
-                            .map(|name| name.to_string_lossy().into_owned()),
-                        data,
-                    };
-                    upsert_artwork_asset_conn(&self.conn, &image)?
-                }
-                _ => {
-                    self.conn
-                        .execute(
-                            &format!("DELETE FROM {table} WHERE track_path = ?1"),
-                            params![track_path.as_str()],
-                        )
-                        .map_err(to_store_error)?;
-                    continue;
-                }
-            };
-
-            self.conn
-                .execute(
-                    &format!(
-                        r#"
-                        UPDATE {table}
-                        SET asset_id = ?2,
-                            source_path = ?2,
-                            updated_at_unix_seconds = ?3
-                        WHERE track_path = ?1
-                        "#
-                    ),
-                    params![track_path.as_str(), asset_id.as_str(), now_unix_seconds()],
-                )
-                .map_err(to_store_error)?;
-        }
-
-        Ok(())
-    }
-
-    fn migrate_playlist_artwork_blobs(&self) -> PlayerResult<()> {
-        let mut stmt = self
-            .conn
-            .prepare(
-                r#"
-                SELECT playlist_artwork.playlist_id, playlist_artwork.mime_type,
-                       playlist_artwork.description, playlist_artwork.data
-                FROM playlist_artwork
-                LEFT JOIN playlist_artwork_refs
-                    ON playlist_artwork_refs.playlist_id = playlist_artwork.playlist_id
-                WHERE playlist_artwork_refs.playlist_id IS NULL
-                "#,
-            )
-            .map_err(to_store_error)?;
-        let rows = stmt
-            .query_map([], |row| {
-                Ok((
-                    row.get::<_, i64>(0)?,
-                    row.get::<_, Option<String>>(1)?,
-                    row.get::<_, Option<String>>(2)?,
-                    row.get::<_, Vec<u8>>(3)?,
-                ))
-            })
-            .map_err(to_store_error)?
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(to_store_error)?;
-        drop(stmt);
-
-        for (playlist_id, mime_type, description, data) in rows {
-            if data.is_empty() {
-                continue;
-            }
-            let image = ArtworkImage {
-                picture_index: 0,
-                mime_type,
-                picture_type: "CoverFront".to_owned(),
-                description,
-                data,
-            };
-            let asset_id = upsert_artwork_asset_conn(&self.conn, &image)?;
-            self.conn
-                .execute(
-                    r#"
-                    INSERT INTO playlist_artwork_refs
-                        (playlist_id, asset_id, updated_at_unix_seconds)
-                    VALUES (?1, ?2, ?3)
-                    ON CONFLICT(playlist_id) DO UPDATE SET
-                        asset_id = excluded.asset_id,
-                        updated_at_unix_seconds = excluded.updated_at_unix_seconds
-                    "#,
-                    params![playlist_id, asset_id.as_str(), now_unix_seconds()],
-                )
-                .map_err(to_store_error)?;
-        }
-
-        self.conn
-            .execute("DELETE FROM playlist_artwork", [])
-            .map_err(to_store_error)?;
-        Ok(())
-    }
-
-    fn backfill_view_columns(&self) -> PlayerResult<()> {
-        self.conn
-            .execute(
-                r#"
-                UPDATE tracks
-                SET view_id = CASE
-                        WHEN audio_hash IS NOT NULL AND trim(audio_hash) != '' THEN 'audio:' || audio_hash
-                        ELSE 'path:' || id
-                    END,
-                    primary_view_id = CASE
-                        WHEN audio_hash IS NOT NULL AND trim(audio_hash) != '' THEN 'audio:' || audio_hash
-                        ELSE 'path:' || id
-                    END,
-                    view_kind = 'primary'
-                WHERE view_id IS NULL
-                   OR trim(view_id) = ''
-                   OR primary_view_id IS NULL
-                   OR trim(primary_view_id) = ''
-                   OR view_kind IS NULL
-                   OR trim(view_kind) = ''
-                "#,
-                [],
             )
             .map_err(to_store_error)?;
         Ok(())
@@ -3020,7 +2745,13 @@ fn row_to_track_at(row: &rusqlite::Row<'_>, offset: usize) -> rusqlite::Result<T
             album_true_peak_dbtp: row
                 .get::<_, Option<f64>>(offset + 17)?
                 .map(|value| value as f32),
-            analysis_version: optional_u32(row.get::<_, Option<i64>>(offset + 18)?).unwrap_or(1),
+            analysis_version: u32::try_from(row.get::<_, i64>(offset + 18)?).map_err(|error| {
+                rusqlite::Error::FromSqlConversionFailure(
+                    offset + 18,
+                    rusqlite::types::Type::Integer,
+                    Box::new(error),
+                )
+            })?,
         }),
         _ => None,
     };
@@ -3259,33 +2990,6 @@ fn upsert_artwork_asset_tx(
     Ok(asset_id)
 }
 
-fn upsert_artwork_asset_conn(conn: &Connection, image: &ArtworkImage) -> PlayerResult<String> {
-    let asset_id = artwork_asset_id(image);
-    let now = now_unix_seconds();
-    conn.execute(
-        r#"
-        INSERT INTO artwork_assets
-            (asset_id, mime_type, description, data, byte_count,
-             created_at_unix_seconds, updated_at_unix_seconds)
-        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6)
-        ON CONFLICT(asset_id) DO UPDATE SET
-            mime_type = COALESCE(artwork_assets.mime_type, excluded.mime_type),
-            description = COALESCE(artwork_assets.description, excluded.description),
-            updated_at_unix_seconds = excluded.updated_at_unix_seconds
-        "#,
-        params![
-            asset_id.as_str(),
-            image.mime_type.as_deref(),
-            image.description.as_deref(),
-            image.data.as_slice(),
-            saturating_i64_from_u64(image.data.len() as u64),
-            now,
-        ],
-    )
-    .map_err(to_store_error)?;
-    Ok(asset_id)
-}
-
 fn artwork_asset_id(image: &ArtworkImage) -> String {
     let mut hasher = blake3::Hasher::new();
     hasher.update(b"normalplayer-artwork-asset-v1");
@@ -3396,6 +3100,50 @@ fn now_unix_seconds() -> i64 {
 mod tests {
     use super::*;
     use std::collections::{BTreeMap, BTreeSet};
+
+    #[test]
+    fn current_schema_initialization_does_not_upgrade_legacy_tables() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            r#"
+            CREATE TABLE tracks (
+                id TEXT NOT NULL,
+                path TEXT NOT NULL UNIQUE,
+                title TEXT NOT NULL
+            );
+            "#,
+        )
+        .unwrap();
+        let store = LibraryStore { conn };
+
+        assert!(store.initialize_schema().is_err());
+        let columns = store
+            .conn
+            .prepare("PRAGMA table_info(tracks)")
+            .unwrap()
+            .query_map([], |row| row.get::<_, String>(1))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(columns, ["id", "path", "title"]);
+    }
+
+    #[test]
+    fn analyzed_rows_require_an_explicit_analysis_version() {
+        let mut store = LibraryStore::in_memory().unwrap();
+        let mut track = Track::from_path("/music/song.flac".into());
+        track.loudness = Some(LoudnessInfo::track(-18.0, -2.0));
+        store.upsert_track(&track).unwrap();
+        store
+            .conn
+            .execute(
+                "UPDATE tracks SET analysis_version = NULL WHERE path = ?1",
+                params!["/music/song.flac"],
+            )
+            .unwrap();
+
+        assert!(store.track_by_path("/music/song.flac").is_err());
+    }
 
     #[test]
     fn stores_and_loads_track_metadata_and_loudness() {

@@ -121,9 +121,7 @@ public struct ContentView: View {
 
     @MainActor
     private func restorePresentation() async {
-        let requestedSnapshot = MacPresentationPersistence.decode(sceneSession)
-            ?? MacPresentationPersistence.load()
-            ?? .initial
+        let requestedSnapshot = MacPresentationPersistence.decode(sceneSession) ?? .initial
         await model.bootstrap(
             restoring: requestedSnapshot.contentScope,
             preferredSelectedViewID: requestedSnapshot.selectedViewID
@@ -144,7 +142,6 @@ public struct ContentView: View {
             return
         }
         sceneSession = encoded
-        MacPresentationPersistence.save(snapshot)
     }
 
     private var restorationPlaceholder: some View {

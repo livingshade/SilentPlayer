@@ -89,11 +89,7 @@ fn compact_row(value: &Value) -> Option<String> {
         object.get("path").and_then(Value::as_str),
     ) {
         let mut fields = Vec::new();
-        if let Some(view) = object
-            .get("view_id")
-            .and_then(Value::as_str)
-            .or_else(|| object.get("id").and_then(Value::as_str))
-        {
+        if let Some(view) = object.get("view_id").and_then(Value::as_str) {
             fields.push(view);
         }
         fields.push(title);

@@ -347,9 +347,7 @@ public struct PhoneContentView: View {
 
     @MainActor
     private func restorePresentation() async {
-        let requestedSnapshot = PhonePresentationPersistence.decode(sceneSession)
-            ?? PhonePresentationPersistence.load()
-            ?? .initial
+        let requestedSnapshot = PhonePresentationPersistence.decode(sceneSession) ?? .initial
 
         selectedTab = requestedSnapshot.selectedTab
         await model.bootstrap(
@@ -385,7 +383,6 @@ public struct PhoneContentView: View {
             return
         }
         sceneSession = encoded
-        PhonePresentationPersistence.save(snapshot)
     }
 
     private var presentationScope: PhonePresentationScope {

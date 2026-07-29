@@ -35,7 +35,7 @@ impl TrackViewId {
         Self(format!("audio:{}", audio_hash.trim()))
     }
 
-    pub fn fallback_from_path(path: &Path) -> Self {
+    pub fn from_path(path: &Path) -> Self {
         Self(format!("path:{:016x}", TrackId::from_path(path).value()))
     }
 
@@ -72,7 +72,7 @@ impl TrackViewKind {
     }
 
     pub fn parse(value: &str) -> Result<Self, TrackViewKindParseError> {
-        match value.trim().to_ascii_lowercase().as_str() {
+        match value {
             "primary" => Ok(Self::Primary),
             "derived" => Ok(Self::Derived),
             _ => Err(TrackViewKindParseError {
@@ -139,7 +139,7 @@ impl Track {
             .filter(|name| !name.is_empty())
             .unwrap_or("Untitled")
             .to_owned();
-        let view_id = TrackViewId::fallback_from_path(&path);
+        let view_id = TrackViewId::from_path(&path);
 
         Self {
             id: TrackId::from_path(&path),
@@ -294,6 +294,8 @@ mod tests {
             TrackViewKind::Derived
         );
         assert!(TrackViewKind::parse("future-kind").is_err());
+        assert!(TrackViewKind::parse("Primary").is_err());
+        assert!(TrackViewKind::parse(" primary").is_err());
     }
 
     #[test]

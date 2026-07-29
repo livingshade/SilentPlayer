@@ -205,20 +205,6 @@ final class PhonePresentationStateTests: XCTestCase {
         XCTAssertEqual(snapshot.bootstrapScope, .playlist(42))
     }
 
-    func testUnknownSnapshotVersionIsIgnored() throws {
-        let snapshot = PhonePresentationSnapshot(
-            version: PhonePresentationSnapshot.currentVersion + 1,
-            selectedTab: .nowPlaying,
-            contentScope: .history,
-            playlistDetailID: nil,
-            selectedViewID: nil
-        )
-
-        let encoded = try XCTUnwrap(PhonePresentationPersistence.encode(snapshot))
-
-        XCTAssertNil(PhonePresentationPersistence.decode(encoded))
-    }
-
     func testDeletedPlaylistFallsBackToLibraryAndClearsDetailRoute() {
         let snapshot = PhonePresentationSnapshot(
             selectedTab: .playlists,
@@ -233,25 +219,6 @@ final class PhonePresentationStateTests: XCTestCase {
         XCTAssertNil(validated.playlistDetailID)
     }
 
-    func testFallbackPersistenceUsesVersionedDefaultsEntry() throws {
-        let suiteName = "PhonePresentationStateTests.\(UUID().uuidString)"
-        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
-        defer {
-            defaults.removePersistentDomain(forName: suiteName)
-        }
-        let snapshot = PhonePresentationSnapshot(
-            selectedTab: .nowPlaying,
-            contentScope: .history,
-            playlistDetailID: nil,
-            selectedViewID: "view:current"
-        )
-
-        PhonePresentationPersistence.save(snapshot, defaults: defaults)
-
-        XCTAssertEqual(PhonePresentationPersistence.load(defaults: defaults), snapshot)
-        PhonePresentationPersistence.clear(defaults: defaults)
-        XCTAssertNil(PhonePresentationPersistence.load(defaults: defaults))
-    }
 }
 
 final class MacPresentationStateTests: XCTestCase {
@@ -266,18 +233,6 @@ final class MacPresentationStateTests: XCTestCase {
         XCTAssertEqual(MacPresentationPersistence.decode(encoded), snapshot)
     }
 
-    func testUnknownSnapshotVersionIsIgnored() throws {
-        let snapshot = MacPresentationSnapshot(
-            version: MacPresentationSnapshot.currentVersion + 1,
-            contentScope: .history,
-            selectedViewID: nil
-        )
-
-        let encoded = try XCTUnwrap(MacPresentationPersistence.encode(snapshot))
-
-        XCTAssertNil(MacPresentationPersistence.decode(encoded))
-    }
-
     func testDeletedPlaylistFallsBackToLibrary() {
         let snapshot = MacPresentationSnapshot(
             contentScope: .playlist(73),
@@ -290,23 +245,6 @@ final class MacPresentationStateTests: XCTestCase {
         XCTAssertEqual(validated.selectedViewID, "view:studio")
     }
 
-    func testFallbackPersistenceUsesVersionedDefaultsEntry() throws {
-        let suiteName = "MacPresentationStateTests.\(UUID().uuidString)"
-        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
-        defer {
-            defaults.removePersistentDomain(forName: suiteName)
-        }
-        let snapshot = MacPresentationSnapshot(
-            contentScope: .history,
-            selectedViewID: "view:current"
-        )
-
-        MacPresentationPersistence.save(snapshot, defaults: defaults)
-
-        XCTAssertEqual(MacPresentationPersistence.load(defaults: defaults), snapshot)
-        MacPresentationPersistence.clear(defaults: defaults)
-        XCTAssertNil(MacPresentationPersistence.load(defaults: defaults))
-    }
 }
 
 @MainActor
