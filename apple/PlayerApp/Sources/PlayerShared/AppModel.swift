@@ -747,7 +747,7 @@ public final class AppModel: ObservableObject {
             }
             status = loaded.isEmpty
                 ? "\(loadingScope.title) is empty"
-                : "\(loadingScope.title): \(tracks.count) tracks, \(loaded.count) views"
+                : "\(loadingScope.title): \(tracks.count) songs"
         }
     }
 
@@ -794,7 +794,7 @@ public final class AppModel: ObservableObject {
         guard let view = allTrackViews.first(where: { $0.id == id })
             ?? detailViewChoices.first(where: { $0.id == id })?.track
         else {
-            status = "Selected view is unavailable"
+            status = "Selected version is unavailable"
             return
         }
         setActiveView(view)
@@ -807,17 +807,36 @@ public final class AppModel: ObservableObject {
     public func search() async {
         let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
         if trimmed.isEmpty {
-            await showLibrary()
+            await reloadActiveScope()
             return
         }
 
+        let searchScope = libraryScope
+        guard searchScope == .library || activePlaylistName != nil else {
+            status = "Search is available in Library and playlists"
+            return
+        }
         cacheCurrentLibraryPresentationIfNeeded()
-        libraryScope = .library
-        await runBusy("Searching") { [self] in
-            let loaded = try await invoke { try $0.search(trimmed, limit: 200) }
+        await runBusy("Searching \(searchScope.title)") { [self] in
+            let loaded: [TrackItem]
+            switch searchScope {
+            case .library:
+                loaded = try await invoke { try $0.search(trimmed, limit: 200) }
+            case .playlist(let name):
+                loaded = try await invoke {
+                    try $0.searchPlaylist(name: name, query: trimmed, limit: 200)
+                }
+            case .favorites, .history:
+                return
+            }
+            guard libraryScope == searchScope else {
+                return
+            }
             applyLoadedViews(loaded, preferredSelectedViewID: selectedTrack?.id)
             isPresentingCompleteLibrary = false
-            status = "Search returned \(tracks.count) tracks, \(loaded.count) views"
+            status = tracks.isEmpty
+                ? "No songs found in \(searchScope.title)"
+                : "\(tracks.count) songs found in \(searchScope.title)"
         }
     }
 
@@ -1751,7 +1770,7 @@ public final class AppModel: ObservableObject {
         )
 
         isViewSaving = true
-        await runBusy("Saving view") { [self] in
+        await runBusy("Saving song") { [self] in
             let artworkAccessGranted = viewEditArtworkURL?.startAccessingSecurityScopedResource() ?? false
             let lyricsAccessGranted = viewEditLyricsURL?.startAccessingSecurityScopedResource() ?? false
             defer {
@@ -1764,7 +1783,7 @@ public final class AppModel: ObservableObject {
             }
             let updated = try await invoke { try $0.editTrackView(path: track.path, edit: edit) }
             replaceTrackViewInLibraryCache(updated)
-            status = "Saved view"
+            status = "Saved song"
             isViewEditPresented = false
             resetViewEditDrafts()
             await reloadActiveScope(
@@ -1783,7 +1802,7 @@ public final class AppModel: ObservableObject {
             return
         }
 
-        await runBusy("Materializing view") { [self] in
+        await runBusy("Exporting song") { [self] in
             let materialized = try await invoke {
                 try $0.exportTrackView(path: track.path, destinationURL: destinationURL)
             }
@@ -2006,7 +2025,7 @@ public final class AppModel: ObservableObject {
         }
         status = cache.views.isEmpty
             ? "Library is empty"
-            : "Library: \(tracks.count) tracks, \(cache.views.count) views"
+            : "Library: \(tracks.count) songs"
         return true
     }
 

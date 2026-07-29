@@ -591,6 +591,27 @@ pub unsafe extern "C" fn player_app_search(
 }
 
 #[no_mangle]
+pub unsafe extern "C" fn player_app_search_playlist(
+    app: *mut PlayerApp,
+    name: *const c_char,
+    query: *const c_char,
+    limit: usize,
+) -> *mut c_char {
+    ffi_result(|| {
+        let app = app_mut(app)?;
+        let name = c_string(name)?;
+        let query = c_string(query)?;
+        let store = app.store()?;
+        let tracks = store
+            .search_playlist_tracks(&name, &query, limit.max(1))?
+            .into_iter()
+            .map(|entry| entry.track)
+            .collect::<Vec<_>>();
+        track_dtos_with_artwork(&tracks, &store, &app.db_path)
+    })
+}
+
+#[no_mangle]
 pub unsafe extern "C" fn player_app_analyze(app: *mut PlayerApp) -> *mut c_char {
     ffi_result(|| {
         let app = app_mut(app)?;
@@ -3518,6 +3539,26 @@ mod tests {
             unsafe { call_json(player_app_playlist_tracks(app, playlist_name.as_ptr())) };
         assert_ok(&playlist_tracks);
         assert_eq!(playlist_tracks["data"].as_array().unwrap().len(), 1);
+        let playlist_search = unsafe {
+            call_json(player_app_search_playlist(
+                app,
+                playlist_name.as_ptr(),
+                c_string_arg("oceans").as_ptr(),
+                25,
+            ))
+        };
+        assert_ok(&playlist_search);
+        assert_eq!(playlist_search["data"].as_array().unwrap().len(), 1);
+        let playlist_miss = unsafe {
+            call_json(player_app_search_playlist(
+                app,
+                playlist_name.as_ptr(),
+                c_string_arg("mountain").as_ptr(),
+                25,
+            ))
+        };
+        assert_ok(&playlist_miss);
+        assert!(playlist_miss["data"].as_array().unwrap().is_empty());
 
         LibraryStore::open(&db_path)
             .unwrap()

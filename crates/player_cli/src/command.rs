@@ -188,7 +188,7 @@ fn run_library(context: &CliContext, mut args: Vec<String>) -> CliResult<()> {
             context.emit(&client.library()?)
         }
         "search" => {
-            let (query, limit) = parse_search_args(args)?;
+            let (query, limit) = parse_search_args(args, "library search")?;
             let mut client = context.open_client()?;
             context.emit(&client.search(&query, limit)?)
         }
@@ -574,6 +574,13 @@ fn run_playlist(context: &CliContext, mut args: Vec<String>) -> CliResult<()> {
             let mut client = context.open_client()?;
             context.emit(&client.playlist_tracks(&name)?)
         }
+        "search" => {
+            let name = take_first(&mut args)
+                .ok_or_else(|| CliError::usage("playlist search requires <name> <query>"))?;
+            let (query, limit) = parse_search_args(args, "playlist search")?;
+            let mut client = context.open_client()?;
+            context.emit(&client.search_playlist(&name, &query, limit)?)
+        }
         "create" => {
             let name = one_value(args, "playlist create requires <name>")?;
             let mut client = context.open_client()?;
@@ -775,15 +782,15 @@ pub(crate) fn resolve_track(
     }
 }
 
-fn parse_search_args(mut args: Vec<String>) -> CliResult<(String, usize)> {
+fn parse_search_args(mut args: Vec<String>, command: &str) -> CliResult<(String, usize)> {
     let mut limit = None;
     let mut query = Vec::new();
     while let Some(value) = take_first(&mut args) {
         if value == "--limit" {
             if limit.is_some() {
-                return Err(CliError::usage(
-                    "library search option `--limit` may only be provided once",
-                ));
+                return Err(CliError::usage(format!(
+                    "{command} option `--limit` may only be provided once"
+                )));
             }
             let parsed = take_first(&mut args)
                 .ok_or_else(|| CliError::usage("--limit requires a value"))?
@@ -795,10 +802,11 @@ fn parse_search_args(mut args: Vec<String>) -> CliResult<(String, usize)> {
         }
     }
     if query.is_empty() {
-        return Err(CliError::usage("library search requires <query>"));
+        return Err(CliError::usage(format!("{command} requires <query>")));
     }
-    let limit = limit
-        .ok_or_else(|| CliError::usage("library search requires explicit option `--limit <n>`"))?;
+    let limit = limit.ok_or_else(|| {
+        CliError::usage(format!("{command} requires explicit option `--limit <n>`"))
+    })?;
     Ok((query.join(" "), limit))
 }
 
@@ -1071,6 +1079,7 @@ fn print_playlist_help() {
 Usage:
   silent --cli [options] playlist list
   silent --cli [options] playlist recent [--limit <n>]
+  silent --cli [options] playlist search <name> <query> --limit <n>
   silent --cli [options] playlist show|create|delete|clear <name>
   silent --cli [options] playlist rename <old-name> <new-name>
   silent --cli [options] playlist add|remove <name> <selector>
@@ -1122,12 +1131,15 @@ mod tests {
 
     #[test]
     fn search_collects_unquoted_query_words() {
-        let (query, limit) = parse_search_args(vec![
-            "miles".to_owned(),
-            "davis".to_owned(),
-            "--limit".to_owned(),
-            "7".to_owned(),
-        ])
+        let (query, limit) = parse_search_args(
+            vec![
+                "miles".to_owned(),
+                "davis".to_owned(),
+                "--limit".to_owned(),
+                "7".to_owned(),
+            ],
+            "library search",
+        )
         .unwrap();
         assert_eq!(query, "miles davis");
         assert_eq!(limit, 7);
@@ -1142,7 +1154,7 @@ mod tests {
             "table".to_owned(),
         ])
         .is_err());
-        assert!(parse_search_args(vec!["miles".to_owned()]).is_err());
+        assert!(parse_search_args(vec!["miles".to_owned()], "library search").is_err());
         assert!(parse_required_limit(Vec::new()).is_err());
         assert!(parse_required_limit(vec!["--limit".to_owned(), "0".to_owned()]).is_err());
     }

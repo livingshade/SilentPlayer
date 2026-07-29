@@ -368,6 +368,27 @@ final class AppModelPresentationRestorationTests: XCTestCase {
         XCTAssertEqual(model.libraryScope, .library)
         XCTAssertEqual(model.restorableLibraryScope, .library)
     }
+
+    func testPlaylistSearchKeepsTheActivePlaylistScope() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let client = try RustPlayerClient(
+            dbURL: root.appendingPathComponent("library.sqlite3"),
+            mediaRootURL: root.appendingPathComponent("Music", isDirectory: true),
+            repoRoot: root
+        )
+        try client.createPlaylist(name: "Road Trip")
+        let playlist = try XCTUnwrap(client.playlists().first)
+        let model = AppModel(client: client)
+        await model.bootstrap(restoring: .playlist(playlist.id))
+
+        model.query = "missing"
+        await model.search()
+
+        XCTAssertEqual(model.libraryScope, .playlist("Road Trip"))
+        XCTAssertEqual(model.status, "No songs found in Road Trip")
+    }
 }
 
 @MainActor

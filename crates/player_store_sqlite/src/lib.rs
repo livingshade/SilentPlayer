@@ -860,6 +860,68 @@ impl LibraryStore {
         Ok(rows)
     }
 
+    pub fn search_playlist_tracks(
+        &self,
+        name: &str,
+        query: &str,
+        limit: usize,
+    ) -> PlayerResult<Vec<PlaylistEntry>> {
+        let Some(playlist_id) = self.playlist_id_by_name(name)? else {
+            return Ok(Vec::new());
+        };
+        let pattern = like_pattern(query);
+        let mut stmt = self
+            .conn
+            .prepare(
+                r#"
+                SELECT playlist_items.id, playlist_items.position,
+                       tracks.id, tracks.path, tracks.title, tracks.artist, tracks.album,
+                       tracks.album_artist, tracks.genre, tracks.track_number, tracks.disc_number,
+                       tracks.year, tracks.duration_ms, tracks.artwork_count,
+                       tracks.size_bytes, tracks.modified_unix_seconds, tracks.integrated_lufs,
+                       tracks.true_peak_dbtp, tracks.album_integrated_lufs,
+                       tracks.album_true_peak_dbtp, tracks.analysis_version,
+                       tracks.file_hash, tracks.audio_hash,
+                       tracks.view_id, tracks.primary_view_id, tracks.view_kind, tracks.transform_spec,
+                       tracks.quality_profile, tracks.format_name, tracks.view_name, tracks.user_rating
+                FROM playlist_items
+                JOIN tracks ON tracks.path = playlist_items.track_path
+                WHERE playlist_items.playlist_id = ?1
+                  AND (
+                       lower(tracks.title) LIKE ?2 ESCAPE '\'
+                    OR lower(COALESCE(tracks.artist, '')) LIKE ?2 ESCAPE '\'
+                    OR lower(COALESCE(tracks.album, '')) LIKE ?2 ESCAPE '\'
+                    OR lower(COALESCE(tracks.album_artist, '')) LIKE ?2 ESCAPE '\'
+                    OR lower(COALESCE(tracks.genre, '')) LIKE ?2 ESCAPE '\'
+                    OR lower(tracks.path) LIKE ?2 ESCAPE '\'
+                  )
+                ORDER BY playlist_items.position, playlist_items.id
+                LIMIT ?3
+                "#,
+            )
+            .map_err(to_store_error)?;
+
+        let rows = stmt
+            .query_map(
+                params![
+                    playlist_id,
+                    pattern,
+                    saturating_i64_from_u64(limit.max(1) as u64)
+                ],
+                |row| {
+                    Ok(PlaylistEntry {
+                        item_id: row.get(0)?,
+                        position: optional_u32(Some(row.get::<_, i64>(1)?)).unwrap_or(0),
+                        track: row_to_track_at(row, 2)?,
+                    })
+                },
+            )
+            .map_err(to_store_error)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(to_store_error)?;
+        Ok(rows)
+    }
+
     pub fn add_playlist_track(
         &mut self,
         playlist_name: &str,
@@ -3811,6 +3873,33 @@ mod tests {
         assert!(store.playlist_tracks("Road").unwrap().is_empty());
         assert!(store.delete_playlist("Road").unwrap());
         assert!(store.playlists().unwrap().is_empty());
+    }
+
+    #[test]
+    fn searches_only_tracks_in_the_requested_playlist_and_preserves_order() {
+        let mut store = LibraryStore::in_memory().unwrap();
+        let mut first = Track::from_path("/music/first.ogg".into());
+        first.title = "Ocean Intro".to_owned();
+        let mut second = Track::from_path("/music/second.ogg".into());
+        second.title = "Mountain Break".to_owned();
+        second.artist = Some("Ocean Band".to_owned());
+        let mut outside = Track::from_path("/music/outside.ogg".into());
+        outside.title = "Ocean Outside".to_owned();
+        store
+            .upsert_tracks(&[first.clone(), second.clone(), outside])
+            .unwrap();
+        store.add_playlist_track("Road", &second.path).unwrap();
+        store.add_playlist_track("Road", &first.path).unwrap();
+
+        let results = store.search_playlist_tracks("Road", "ocean", 10).unwrap();
+
+        assert_eq!(results.len(), 2);
+        assert_eq!(results[0].track.path, second.path);
+        assert_eq!(results[1].track.path, first.path);
+        assert!(store
+            .search_playlist_tracks("Missing", "ocean", 10)
+            .unwrap()
+            .is_empty());
     }
 
     #[test]

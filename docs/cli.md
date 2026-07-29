@@ -88,6 +88,7 @@ silent --cli --db ./silent.sqlite3 --media-root ./Music favorites remove <select
 
 silent --cli --db ./silent.sqlite3 --media-root ./Music playlist list
 silent --cli --db ./silent.sqlite3 --media-root ./Music playlist recent --limit 6
+silent --cli --db ./silent.sqlite3 --media-root ./Music playlist search "Road Trip" oceans --limit 25
 silent --cli --db ./silent.sqlite3 --media-root ./Music playlist create "Road Trip"
 silent --cli --db ./silent.sqlite3 --media-root ./Music playlist add "Road Trip" <selector>
 silent --cli --db ./silent.sqlite3 --media-root ./Music playlist move "Road Trip" <selector> up

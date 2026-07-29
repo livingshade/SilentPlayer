@@ -141,15 +141,15 @@ public struct TrackDetails: Hashable, Sendable {
         if viewID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             items.append(.init(
                 severity: .error,
-                title: "Missing view id",
-                detail: "Playback may still use the file path, but view identity and export lineage are incomplete."
+                title: "Missing file identity",
+                detail: "Playback may still use the file path, but this version can’t be tracked or exported reliably."
             ))
         }
         if primaryViewID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             items.append(.init(
                 severity: .error,
-                title: "Missing primary view",
-                detail: "This view cannot be traced back to an imported primary view."
+                title: "Missing source identity",
+                detail: "This version can’t be traced back to the originally imported song."
             ))
         }
         if audioHash.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
@@ -170,14 +170,14 @@ public struct TrackDetails: Hashable, Sendable {
             items.append(.init(
                 severity: .info,
                 title: "Quality profile not set",
-                detail: "This is expected for imported primary views until transcode profiles are implemented."
+                detail: "This is expected for original imports until additional quality profiles are created."
             ))
         }
         if !isPrimaryView && (transformSpec?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true) {
             items.append(.init(
                 severity: .warning,
                 title: "Missing transform spec",
-                detail: "The view can play, but the derived-view recipe has not been recorded."
+                detail: "This version can play, but its processing recipe has not been recorded."
             ))
         }
         if artworkURL == nil {
@@ -395,6 +395,23 @@ public final class RustPlayerClient: @unchecked Sendable {
         try sync {
             try query.withCString { queryValue in
                 try decode(player_app_search(app, queryValue, limit), as: [TrackDTO].self).map(\.model)
+            }
+        }
+    }
+
+    public func searchPlaylist(
+        name: String,
+        query: String,
+        limit: Int = 200
+    ) throws -> [TrackItem] {
+        try sync {
+            try name.withCString { nameValue in
+                try query.withCString { queryValue in
+                    try decode(
+                        player_app_search_playlist(app, nameValue, queryValue, limit),
+                        as: [TrackDTO].self
+                    ).map(\.model)
+                }
             }
         }
     }

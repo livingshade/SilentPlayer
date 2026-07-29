@@ -20,6 +20,7 @@ char *player_app_import_files(PlayerApp *app, const char *paths_json);
 char *player_app_library(PlayerApp *app);
 char *player_app_library_page(PlayerApp *app, size_t offset, size_t limit);
 char *player_app_search(PlayerApp *app, const char *query, size_t limit);
+char *player_app_search_playlist(PlayerApp *app, const char *name, const char *query, size_t limit);
 char *player_app_analyze(PlayerApp *app);
 char *player_app_audit_database(PlayerApp *app);
 char *player_app_user_data(PlayerApp *app);

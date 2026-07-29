@@ -63,6 +63,7 @@ fn cli_contracts() -> BTreeMap<&'static str, &'static str> {
         ("player_app_library", "silent --cli library list"),
         ("player_app_library_page", "silent --cli library list"),
         ("player_app_search", "silent --cli library search"),
+        ("player_app_search_playlist", "silent --cli playlist search"),
         ("player_app_analyze", "silent --cli library analyze"),
         ("player_app_audit_database", "silent --cli library audit"),
         ("player_app_user_data", "silent --cli user show"),

@@ -252,6 +252,21 @@ fn music_view_collections_and_playlist_commands_cover_app_mutations() {
         .expect("show playlist");
     assert_command_ok(&playlist);
     assert_eq!(json_output(&playlist).as_array().unwrap().len(), 1);
+    let playlist_search = silent_cli(&db_path, &media_root)
+        .args([
+            "--output",
+            "json",
+            "playlist",
+            "search",
+            "Renamed Mix",
+            "CLI",
+            "--limit",
+            "5",
+        ])
+        .output()
+        .expect("search playlist");
+    assert_command_ok(&playlist_search);
+    assert_eq!(json_output(&playlist_search).as_array().unwrap().len(), 1);
 
     let history = silent_cli(&db_path, &media_root)
         .args(["--output", "json", "history", "list", "--limit", "5"])

@@ -238,7 +238,7 @@ public struct ContentView: View {
             Divider()
 
             HStack {
-                Text("Recent Playlists")
+                Text("Playlists")
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(.secondary)
                 Spacer()
@@ -252,25 +252,9 @@ public struct ContentView: View {
             }
 
             ScrollView {
-                VStack(alignment: .leading, spacing: 10) {
-                    VStack(spacing: 4) {
-                        ForEach(model.recentPlaylists) { playlist in
-                            playlistButton(playlist)
-                        }
-                    }
-
-                    if model.playlists != model.recentPlaylists {
-                        Text("All Playlists")
-                            .font(.caption.weight(.semibold))
-                            .foregroundStyle(.secondary)
-                            .padding(.horizontal, 10)
-                            .padding(.top, 4)
-
-                        VStack(spacing: 4) {
-                            ForEach(model.playlists) { playlist in
-                                playlistButton(playlist)
-                            }
-                        }
+                VStack(spacing: 4) {
+                    ForEach(model.playlists) { playlist in
+                        playlistButton(playlist)
                     }
                 }
             }
@@ -307,35 +291,37 @@ public struct ContentView: View {
 
             Spacer(minLength: 12)
 
-            HStack(spacing: 7) {
-                Image(systemName: "magnifyingglass")
-                    .foregroundStyle(.secondary)
+            if supportsSongSearch {
+                HStack(spacing: 7) {
+                    Image(systemName: "magnifyingglass")
+                        .foregroundStyle(.secondary)
 
-                TextField("Search this view", text: $model.query)
-                    .textFieldStyle(.plain)
-                    .onSubmit {
-                        Task { await model.search() }
-                    }
+                    TextField("Search songs", text: $model.query)
+                        .textFieldStyle(.plain)
+                        .onSubmit {
+                            Task { await model.search() }
+                        }
 
-                if !model.query.isEmpty {
-                    Button {
-                        clearSearch()
-                    } label: {
-                        Image(systemName: "xmark.circle.fill")
-                            .foregroundStyle(.secondary)
+                    if !model.query.isEmpty {
+                        Button {
+                            clearSearch()
+                        } label: {
+                            Image(systemName: "xmark.circle.fill")
+                                .foregroundStyle(.secondary)
+                        }
+                        .buttonStyle(.borderless)
+                        .help("Clear search")
                     }
-                    .buttonStyle(.borderless)
-                    .help("Clear search")
                 }
-            }
-            .padding(.horizontal, 10)
-            .padding(.vertical, 7)
-            .frame(width: 280)
-            .background(Color(nsColor: .controlBackgroundColor))
-            .clipShape(RoundedRectangle(cornerRadius: 7))
-            .overlay {
-                RoundedRectangle(cornerRadius: 7)
-                    .stroke(Color(nsColor: .separatorColor).opacity(0.55), lineWidth: 1)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 7)
+                .frame(width: 280)
+                .background(Color(nsColor: .controlBackgroundColor))
+                .clipShape(RoundedRectangle(cornerRadius: 7))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 7)
+                        .stroke(Color(nsColor: .separatorColor).opacity(0.55), lineWidth: 1)
+                }
             }
 
             Button {
@@ -527,6 +513,15 @@ public struct ContentView: View {
         Task { await model.reloadActiveScope() }
     }
 
+    private var supportsSongSearch: Bool {
+        switch model.libraryScope {
+        case .library, .playlist:
+            return true
+        case .favorites, .history:
+            return false
+        }
+    }
+
     private var trackList: some View {
         List(selection: Binding(
             get: { model.selectedTrack?.id },
@@ -650,10 +645,12 @@ public struct ContentView: View {
                 Button {
                     isQueuePresented = true
                 } label: {
-                    Label("Queue", systemImage: "music.note.list")
-                        .labelStyle(.iconOnly)
+                    Label(model.queueStatusText, systemImage: "music.note.list")
+                        .font(.callout.weight(.semibold))
+                        .padding(.horizontal, 3)
                 }
-                .buttonStyle(.borderless)
+                .buttonStyle(.bordered)
+                .controlSize(.regular)
                 .help("Show queue")
 
                 if model.isBusy {
@@ -755,7 +752,7 @@ public struct ContentView: View {
         return Group {
             if choices.count > 1 {
                 Picker(
-                    "View",
+                    "Version",
                     selection: Binding(
                         get: { model.detailTrack?.id ?? "" },
                         set: {
@@ -814,14 +811,14 @@ public struct ContentView: View {
             Button {
                 model.presentViewEdit()
             } label: {
-                Label("Edit Track View…", systemImage: "pencil")
+                Label("Edit Song…", systemImage: "pencil")
             }
             .disabled(model.isLoadingDetails || model.detailTrack == nil)
 
             Button {
                 materialize(track)
             } label: {
-                Label("Export Track View…", systemImage: "square.and.arrow.down")
+                Label("Export Song…", systemImage: "square.and.arrow.down")
             }
             .disabled(model.detailTrack == nil)
         } label: {
@@ -833,7 +830,8 @@ public struct ContentView: View {
     }
 
     private func viewChoiceTitle(_ choice: TrackViewChoice) -> String {
-        var title = choice.track.viewName ?? (choice.track.isPrimaryView ? "Primary view" : "View \(choice.index + 1)")
+        var title = choice.track.viewName
+            ?? (choice.track.isPrimaryView ? "Original" : "Version \(choice.index + 1)")
         var details: [String] = []
         if let format = choice.track.formatName?.trimmingCharacters(in: .whitespacesAndNewlines),
            !format.isEmpty {
@@ -875,14 +873,14 @@ public struct ContentView: View {
                     DisclosureGroup(isExpanded: $isViewChecksExpanded) {
                         VStack(alignment: .leading, spacing: 8) {
                             Grid(alignment: .leading, horizontalSpacing: 10, verticalSpacing: 5) {
-                                viewFieldRow("View name", optionalViewValue(details.viewName))
-                                viewFieldRow("View ID", details.viewID)
-                                viewFieldRow("Primary", details.primaryViewID)
-                                viewFieldRow("Kind", details.viewKind)
+                                viewFieldRow("Version name", optionalViewValue(details.viewName))
+                                viewFieldRow("File ID", details.viewID)
+                                viewFieldRow("Source ID", details.primaryViewID)
+                                viewFieldRow("Type", details.isPrimaryView ? "Original" : "Edited")
                                 viewFieldRow("Format", optionalViewValue(details.formatName))
                                 viewFieldRow("Quality", optionalViewValue(details.qualityProfile))
                                 viewFieldRow("Artwork", optionalViewValue(details.artworkSource))
-                                viewFieldRow("Transform", optionalViewValue(details.transformSpec))
+                                viewFieldRow("Processing", optionalViewValue(details.transformSpec))
                             }
                             .font(.caption)
 
@@ -893,8 +891,8 @@ public struct ContentView: View {
                         .padding(.top, 4)
                     } label: {
                         Label(
-                            details.isPrimaryView ? "Primary View Details" : "Derived View Details",
-                            systemImage: details.isPrimaryView ? "circle.fill" : "square.on.circle"
+                            "File Details",
+                            systemImage: "doc.text.magnifyingglass"
                         )
                         .font(.caption)
                         .foregroundStyle(.secondary)
@@ -1183,7 +1181,7 @@ public struct ContentView: View {
             selectTrackImmediately(track)
             model.presentViewEdit()
         } label: {
-            Label("Edit View", systemImage: "pencil")
+            Label("Edit Song", systemImage: "pencil")
         }
 
         Button {
@@ -1205,7 +1203,7 @@ public struct ContentView: View {
             selectTrackImmediately(track)
             materialize(track)
         } label: {
-            Label("Export View", systemImage: "square.and.arrow.down")
+            Label("Export Song", systemImage: "square.and.arrow.down")
         }
 
         if model.activePlaylistName != nil {
@@ -1250,12 +1248,13 @@ public struct ContentView: View {
                 Label(title, systemImage: icon)
                 Spacer()
             }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 7)
+            .contentShape(Rectangle())
+            .background(selected ? Color.accentColor.opacity(0.14) : Color.clear)
+            .clipShape(RoundedRectangle(cornerRadius: 6))
         }
         .buttonStyle(.plain)
-        .padding(.horizontal, 10)
-        .padding(.vertical, 7)
-        .background(selected ? Color.accentColor.opacity(0.14) : Color.clear)
-        .clipShape(RoundedRectangle(cornerRadius: 6))
     }
 
     private func playlistButton(_ playlist: PlaylistItem) -> some View {
@@ -1275,12 +1274,13 @@ public struct ContentView: View {
                     .font(.caption.monospacedDigit())
                     .foregroundStyle(.secondary)
             }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 7)
+            .contentShape(Rectangle())
+            .background(selected ? Color.accentColor.opacity(0.14) : Color.clear)
+            .clipShape(RoundedRectangle(cornerRadius: 6))
         }
         .buttonStyle(.plain)
-        .padding(.horizontal, 10)
-        .padding(.vertical, 7)
-        .background(selected ? Color.accentColor.opacity(0.14) : Color.clear)
-        .clipShape(RoundedRectangle(cornerRadius: 6))
         .contextMenu {
             Button {
                 model.presentPlaylistSettings(playlist)
@@ -1489,9 +1489,9 @@ private struct TrackViewEditSheet: View {
     var body: some View {
         NavigationStack {
             Form {
-                Section("View") {
-                    TextField("Name", text: $model.viewEditNameDraft)
-                    readOnlyRow("Kind", isPrimaryView ? "Primary" : "Derived")
+                Section("Version") {
+                    TextField("Version Name (Optional)", text: $model.viewEditNameDraft)
+                    readOnlyRow("Source", isPrimaryView ? "Original" : "Edited")
                     readOnlyRow("Format", formatName)
                 }
 
@@ -1545,7 +1545,7 @@ private struct TrackViewEditSheet: View {
                         .frame(minHeight: 120)
                 }
             }
-            .navigationTitle("Edit View")
+            .navigationTitle("Edit Song")
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel", role: .cancel) {
