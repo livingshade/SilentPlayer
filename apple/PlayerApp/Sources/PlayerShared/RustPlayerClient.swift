@@ -81,13 +81,8 @@ public struct PlaybackQueue: Hashable, Sendable {
 }
 
 public struct TrackDetails: Hashable, Sendable {
-    public let viewID: String
-    public let primaryViewID: String
-    public let isPrimaryView: Bool
-    public let viewKind: String
-    public let viewName: String?
+    public let identity: String
     public let rating: Int?
-    public let transformSpec: String?
     public let qualityProfile: String?
     public let formatName: String?
     public let artworkURL: URL?
@@ -105,13 +100,8 @@ public struct TrackDetails: Hashable, Sendable {
 
     public static func placeholder(for track: TrackItem) -> TrackDetails {
         TrackDetails(
-            viewID: track.viewID,
-            primaryViewID: track.primaryViewID,
-            isPrimaryView: track.isPrimaryView,
-            viewKind: track.viewKind,
-            viewName: track.viewName,
+            identity: track.identity,
             rating: track.rating,
-            transformSpec: nil,
             qualityProfile: track.qualityProfile,
             formatName: track.formatName,
             artworkURL: nil,
@@ -136,27 +126,13 @@ public struct TrackDetails: Hashable, Sendable {
         return !lyricsText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
-    public var diagnostics: [TrackViewDiagnostic] {
-        var items: [TrackViewDiagnostic] = []
-        if viewID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            items.append(.init(
-                severity: .error,
-                title: "Missing file identity",
-                detail: "Playback may still use the file path, but this version can’t be tracked or exported reliably."
-            ))
-        }
-        if primaryViewID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            items.append(.init(
-                severity: .error,
-                title: "Missing source identity",
-                detail: "This version can’t be traced back to the originally imported song."
-            ))
-        }
+    public var diagnostics: [TrackDiagnostic] {
+        var items: [TrackDiagnostic] = []
         if audioHash.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             items.append(.init(
                 severity: .warning,
                 title: "Missing audio hash",
-                detail: "Playback can continue from the file path, but deduplication and primary identity are limited."
+                detail: "Playback can continue from the file path, but content deduplication is limited."
             ))
         }
         if formatName?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true {
@@ -170,14 +146,7 @@ public struct TrackDetails: Hashable, Sendable {
             items.append(.init(
                 severity: .info,
                 title: "Quality profile not set",
-                detail: "This is expected for original imports until additional quality profiles are created."
-            ))
-        }
-        if !isPrimaryView && (transformSpec?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true) {
-            items.append(.init(
-                severity: .warning,
-                title: "Missing transform spec",
-                detail: "This version can play, but its processing recipe has not been recorded."
+                detail: "The current file does not declare a quality profile."
             ))
         }
         if artworkURL == nil {
@@ -202,8 +171,7 @@ public struct AlbumArtworkSummary: Hashable, Sendable {
     public let tracksUpdated: Int
 }
 
-public struct TrackViewEdit: Encodable, Hashable, Sendable {
-    public let viewName: String
+public struct TrackEdit: Encodable, Hashable, Sendable {
     public let title: String
     public let artist: String
     public let album: String
@@ -212,7 +180,6 @@ public struct TrackViewEdit: Encodable, Hashable, Sendable {
     public let lyricsPath: String?
 
     public init(
-        viewName: String,
         title: String,
         artist: String,
         album: String,
@@ -220,7 +187,6 @@ public struct TrackViewEdit: Encodable, Hashable, Sendable {
         artworkPath: String?,
         lyricsPath: String?
     ) {
-        self.viewName = viewName
         self.title = title
         self.artist = artist
         self.album = album
@@ -230,7 +196,6 @@ public struct TrackViewEdit: Encodable, Hashable, Sendable {
     }
 
     enum CodingKeys: String, CodingKey {
-        case viewName = "view_name"
         case title
         case artist
         case album
@@ -240,19 +205,19 @@ public struct TrackViewEdit: Encodable, Hashable, Sendable {
     }
 }
 
-public enum TrackViewDiagnosticSeverity: String, Hashable, Sendable {
+public enum TrackDiagnosticSeverity: String, Hashable, Sendable {
     case error
     case warning
     case info
 }
 
-public struct TrackViewDiagnostic: Identifiable, Hashable, Sendable {
+public struct TrackDiagnostic: Identifiable, Hashable, Sendable {
     public let id: String
-    public let severity: TrackViewDiagnosticSeverity
+    public let severity: TrackDiagnosticSeverity
     public let title: String
     public let detail: String
 
-    public init(severity: TrackViewDiagnosticSeverity, title: String, detail: String) {
+    public init(severity: TrackDiagnosticSeverity, title: String, detail: String) {
         self.id = "\(severity.rawValue):\(title):\(detail)"
         self.severity = severity
         self.title = title
@@ -620,7 +585,7 @@ public final class RustPlayerClient: @unchecked Sendable {
         }
     }
 
-    public func editTrackView(path: String, edit: TrackViewEdit) throws -> TrackItem {
+    public func editTrack(path: String, edit: TrackEdit) throws -> TrackItem {
         let payload = try JSONEncoder().encode(edit)
         let json = String(decoding: payload, as: UTF8.self)
         return try sync {
@@ -701,7 +666,7 @@ public final class RustPlayerClient: @unchecked Sendable {
         }
     }
 
-    public func exportTrackView(path: String, destinationURL: URL) throws -> TrackItem {
+    public func exportTrack(path: String, destinationURL: URL) throws -> TrackItem {
         try sync {
             try path.withCString { pathValue in
                 try destinationURL.path.withCString { destinationPath in
@@ -903,10 +868,6 @@ private struct LibraryPageDTO: Decodable {
 private struct TrackDTO: Decodable {
     let id: String
     let viewId: String
-    let primaryViewId: String
-    let isPrimaryView: Bool
-    let viewKind: String
-    let viewName: String?
     let rating: Int?
     let title: String
     let artist: String?
@@ -915,7 +876,6 @@ private struct TrackDTO: Decodable {
     let artworkCount: UInt32
     let artworkPath: String?
     let artworkSource: String?
-    let defaultViewPriority: UInt8?
     let hasAlbumIdentity: Bool
     let path: String
     let qualityProfile: String?
@@ -926,11 +886,7 @@ private struct TrackDTO: Decodable {
     var model: TrackItem {
         TrackItem(
             id: id,
-            viewID: viewId,
-            primaryViewID: primaryViewId,
-            isPrimaryView: isPrimaryView,
-            viewKind: viewKind,
-            viewName: viewName,
+            identity: viewId,
             rating: rating,
             title: MetadataDefaults.title(title),
             artist: MetadataDefaults.artist(artist),
@@ -939,7 +895,6 @@ private struct TrackDTO: Decodable {
             artworkCount: Int(artworkCount),
             artworkURL: artworkPath.map { URL(fileURLWithPath: $0) },
             artworkSource: artworkSource,
-            defaultViewPriority: defaultViewPriority.map(Int.init),
             hasAlbumIdentity: hasAlbumIdentity,
             path: path,
             qualityProfile: qualityProfile,
@@ -1122,12 +1077,7 @@ private struct PlaybackQueueDTO: Decodable {
 
 private struct TrackDetailsDTO: Decodable {
     let viewId: String
-    let primaryViewId: String
-    let isPrimaryView: Bool
-    let viewKind: String
-    let viewName: String?
     let rating: Int?
-    let transformSpec: String?
     let qualityProfile: String?
     let formatName: String?
     let artworkPath: String?
@@ -1145,13 +1095,8 @@ private struct TrackDetailsDTO: Decodable {
 
     var model: TrackDetails {
         TrackDetails(
-            viewID: viewId,
-            primaryViewID: primaryViewId,
-            isPrimaryView: isPrimaryView,
-            viewKind: viewKind,
-            viewName: viewName,
+            identity: viewId,
             rating: rating,
-            transformSpec: transformSpec,
             qualityProfile: qualityProfile,
             formatName: formatName,
             artworkURL: artworkPath.map { URL(fileURLWithPath: $0) },

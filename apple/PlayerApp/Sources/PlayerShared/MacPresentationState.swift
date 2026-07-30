@@ -2,19 +2,19 @@ import Foundation
 
 public struct MacPresentationSnapshot: Codable, Equatable, Sendable {
     public let contentScope: RestorableLibraryScope
-    public let selectedViewID: String?
+    public let selectedTrackID: String?
 
     public init(
         contentScope: RestorableLibraryScope,
-        selectedViewID: String?
+        selectedTrackID: String?
     ) {
         self.contentScope = contentScope
-        self.selectedViewID = selectedViewID
+        self.selectedTrackID = selectedTrackID
     }
 
     public static let initial = MacPresentationSnapshot(
         contentScope: .library,
-        selectedViewID: nil
+        selectedTrackID: nil
     )
 
     public func validated(against playlists: [PlaylistItem]) -> MacPresentationSnapshot {
@@ -24,7 +24,7 @@ public struct MacPresentationSnapshot: Codable, Equatable, Sendable {
         guard playlists.contains(where: { $0.id == playlistID }) else {
             return MacPresentationSnapshot(
                 contentScope: .library,
-                selectedViewID: selectedViewID
+                selectedTrackID: selectedTrackID
             )
         }
         return self

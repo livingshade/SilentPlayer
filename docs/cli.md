@@ -57,13 +57,13 @@ silent --cli --db ./silent.sqlite3 --media-root ./Music --yes library zero
 `library import` accepts either one folder or one or more files. It uses the same managed-copy, sidecar,
 metadata, artwork-cache, file-hash, and audio-hash deduplication behavior as the app.
 
-## Music views and tracks
+## Tracks
 
 A track selector can be an exact managed path, `view_id`, or track id.
 
 ```bash
 silent --cli --db ./silent.sqlite3 --media-root ./Music track show <selector>
-silent --cli --db ./silent.sqlite3 --media-root ./Music track edit <selector> --name "Phone edit" --title "Title" --notes "Note"
+silent --cli --db ./silent.sqlite3 --media-root ./Music track edit <selector> --title "Title" --notes "Note"
 silent --cli --db ./silent.sqlite3 --media-root ./Music track metadata set <selector> --title "Title" --artist "Artist" --album "Album"
 silent --cli --db ./silent.sqlite3 --media-root ./Music track notes set <selector> "Notes"
 silent --cli --db ./silent.sqlite3 --media-root ./Music track rate <selector> 8
@@ -75,9 +75,10 @@ silent --cli --db ./silent.sqlite3 --media-root ./Music track export <selector> 
 silent --cli track analyze ./song.flac
 ```
 
-Metadata, notes, track artwork, lyrics, and combined `track edit` operations create derived music
-views according to the same rules as the app. Export/materialize creates a new independent primary
-view.
+Metadata, notes, track artwork, lyrics, and combined `track edit` operations update the track's
+primary view in place. They do not copy the audio file or create a derived view.
+
+Export/materialize creates a new independent primary view.
 
 ## Favorites, playlists, history, and user data
 

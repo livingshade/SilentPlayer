@@ -40,7 +40,7 @@ Apple 平台细节保持原生，队列和播放规则保持跨平台一致。Sw
 
 ## 产品面边界
 
-macOS 和 iPhone 是播放端，不是 Rust/SQLite 能力的图形化管理控制台。Apple UI 主要负责曲库浏览、搜索、最近歌单、播放中信息、当前队列和系统媒体集成。Music View 编辑、metadata/封面/歌词维护、歌单 CRUD 与批量排序、分析、审计、迁移和修复由 `silent` CLI 提供完整入口。
+macOS 和 iPhone 是播放端，不是 Rust/SQLite 能力的图形化管理控制台。Apple UI 主要负责曲库浏览、搜索、最近歌单、播放中信息、当前队列和系统媒体集成。歌曲原地编辑、metadata/封面/歌词维护、独立导出、歌单 CRUD 与批量排序、分析、审计、迁移和修复由 `silent` CLI 提供完整入口。
 
 Apple target 必须能读取并播放 CLI 产生的数据，但不需要提供对等的编辑入口。SwiftUI 信息架构按用户的聆听任务设计，不能根据 Rust 或 FFI 方法列表机械生成按钮；低频技术能力不进入主导航和常驻工具栏。
 

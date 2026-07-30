@@ -118,7 +118,7 @@ public struct PhoneContentView: View {
                 presentFileImporter(.playlistSettingsArtwork)
             }
         }
-        .sheet(isPresented: $model.isViewEditPresented) {
+        .sheet(isPresented: $model.isTrackEditPresented) {
             PhoneTrackEditSheet(
                 model: model,
                 chooseArtwork: { presentFileImporter(.editArtwork) },
@@ -352,7 +352,7 @@ public struct PhoneContentView: View {
         selectedTab = requestedSnapshot.selectedTab
         await model.bootstrap(
             restoring: requestedSnapshot.bootstrapScope,
-            preferredSelectedViewID: requestedSnapshot.selectedViewID
+            preferredSelectedTrackID: requestedSnapshot.selectedTrackID
         )
 
         let validatedSnapshot = requestedSnapshot.validated(against: model.playlists)
@@ -377,7 +377,7 @@ public struct PhoneContentView: View {
             selectedTab: selectedTab,
             contentScope: presentationScope,
             playlistDetailID: playlistPath.last?.playlistID,
-            selectedViewID: model.selectedTrack?.id
+            selectedTrackID: model.selectedTrack?.id
         )
         guard let encoded = PhonePresentationPersistence.encode(snapshot) else {
             return
@@ -499,7 +499,7 @@ public struct PhoneContentView: View {
     private func details(for track: TrackItem?) -> TrackDetails? {
         guard let track,
               let details = model.nowPlayingDetails,
-              details.viewID == track.viewID else {
+              details.identity == track.identity else {
             return nil
         }
         return details
@@ -978,12 +978,12 @@ public struct PhoneContentView: View {
             guard let url = urls.first else {
                 return
             }
-            model.setViewEditArtworkURL(url)
+            model.setTrackEditArtworkURL(url)
         case .editLyrics:
             guard let url = urls.first else {
                 return
             }
-            model.setViewEditLyricsURL(url)
+            model.setTrackEditLyricsURL(url)
         }
     }
 
@@ -1356,7 +1356,7 @@ private struct PhoneTrackDetailView: View {
     let requestAddToPlaylist: (TrackItem) -> Void
     let requestTrackCover: (TrackItem) -> Void
     let requestAlbumCover: (TrackItem) -> Void
-    let exportView: (TrackItem) -> Void
+    let exportTrack: (TrackItem) -> Void
 
     var body: some View {
         let currentTrack = displayedTrack
@@ -1394,17 +1394,7 @@ private struct PhoneTrackDetailView: View {
                     }
                 }
 
-                if viewChoices.count > 1 {
-                    Picker("Version", selection: viewBinding) {
-                        ForEach(viewChoices) { choice in
-                            Text(viewChoiceTitle(choice))
-                                .tag(choice.id)
-                        }
-                    }
-                }
-
                 if let currentDetails {
-                    LabeledContent("File", value: currentDetails.isPrimaryView ? "Original" : "Edited")
                     LabeledContent("Format", value: optionalValue(currentDetails.formatName ?? currentTrack.formatName))
                     LabeledContent("Quality", value: optionalValue(currentDetails.qualityProfile ?? currentTrack.qualityProfile))
                 }
@@ -1474,7 +1464,7 @@ private struct PhoneTrackDetailView: View {
 
                 Button {
                     model.selectTrack(id: currentTrack.id)
-                    model.presentViewEdit()
+                    model.presentTrackEdit()
                 } label: {
                     Label("Edit Song", systemImage: "pencil")
                 }
@@ -1493,7 +1483,7 @@ private struct PhoneTrackDetailView: View {
                 .disabled(!currentTrack.hasAlbumIdentity)
 
                 Button {
-                    exportView(currentTrack)
+                    exportTrack(currentTrack)
                 } label: {
                     Label("Export Song", systemImage: "square.and.arrow.up")
                 }
@@ -1536,7 +1526,7 @@ private struct PhoneTrackDetailView: View {
 
     private var displayedTrack: TrackItem {
         if let detailTrack = model.detailTrack,
-           detailTrack.primaryViewID == track.primaryViewID {
+           detailTrack.id == track.id {
             return detailTrack
         }
         return track
@@ -1544,17 +1534,10 @@ private struct PhoneTrackDetailView: View {
 
     private var details: TrackDetails? {
         guard let details = model.nowPlayingDetails,
-              details.viewID == displayedTrack.viewID else {
+              details.identity == displayedTrack.identity else {
             return nil
         }
         return details
-    }
-
-    private var viewChoices: [TrackViewChoice] {
-        guard model.detailTrack?.primaryViewID == displayedTrack.primaryViewID else {
-            return []
-        }
-        return model.detailViewChoices
     }
 
     private var ratingBinding: Binding<Int> {
@@ -1565,34 +1548,6 @@ private struct PhoneTrackDetailView: View {
                 Task { await model.setRating(value == 0 ? nil : value) }
             }
         )
-    }
-
-    private var viewBinding: Binding<String> {
-        Binding(
-            get: { displayedTrack.id },
-            set: { model.selectDetailView(id: $0) }
-        )
-    }
-
-    private func viewChoiceTitle(_ choice: TrackViewChoice) -> String {
-        viewTitle(for: choice.track, index: choice.index)
-    }
-
-    private func viewTitle(for track: TrackItem, index: Int) -> String {
-        var title = track.viewName ?? (track.isPrimaryView ? "Original" : "Version \(index + 1)")
-        var details: [String] = []
-        if let format = track.formatName?.trimmingCharacters(in: .whitespacesAndNewlines),
-           !format.isEmpty {
-            details.append(format.uppercased())
-        }
-        if let quality = track.qualityProfile?.trimmingCharacters(in: .whitespacesAndNewlines),
-           !quality.isEmpty {
-            details.append(quality)
-        }
-        if !details.isEmpty {
-            title += " - " + details.joined(separator: " / ")
-        }
-        return title
     }
 
     private func hasOriginalMetadata(_ details: TrackDetails) -> Bool {
@@ -1643,7 +1598,7 @@ private struct PhoneTrackDetailHeader: View {
 }
 
 private struct PhoneDiagnosticRow: View {
-    let diagnostic: TrackViewDiagnostic
+    let diagnostic: TrackDiagnostic
 
     var body: some View {
         Label {
@@ -1852,36 +1807,17 @@ private struct PhoneTrackActionPanel: View {
     let requestAddToPlaylist: () -> Void
     let requestTrackCover: () -> Void
     let requestAlbumCover: () -> Void
-    let exportView: () -> Void
+    let exportTrack: () -> Void
 
     var body: some View {
         VStack(spacing: 12) {
-            HStack {
-                Picker("Rating", selection: ratingBinding) {
-                    Text("Unrated").tag(0)
-                    ForEach(1...10, id: \.self) { value in
-                        Text("\(value)/10").tag(value)
-                    }
-                }
-                .pickerStyle(.menu)
-
-                Spacer()
-
-                if viewChoices.count > 1 {
-                    Picker("Version", selection: viewBinding) {
-                        ForEach(viewChoices) { choice in
-                            Text(
-                                choice.track.viewName
-                                    ?? (choice.track.isPrimaryView
-                                        ? "Original"
-                                        : "Version \(choice.index + 1)")
-                            )
-                                .tag(choice.id)
-                        }
-                    }
-                    .pickerStyle(.menu)
+            Picker("Rating", selection: ratingBinding) {
+                Text("Unrated").tag(0)
+                ForEach(1...10, id: \.self) { value in
+                    Text("\(value)/10").tag(value)
                 }
             }
+            .pickerStyle(.menu)
 
             Grid(horizontalSpacing: 12, verticalSpacing: 12) {
                 GridRow {
@@ -1907,7 +1843,7 @@ private struct PhoneTrackActionPanel: View {
 
                     Button {
                         model.selectTrack(id: track.id)
-                        model.presentViewEdit()
+                        model.presentTrackEdit()
                     } label: {
                         Label("Edit Song", systemImage: "pencil")
                     }
@@ -1928,7 +1864,7 @@ private struct PhoneTrackActionPanel: View {
                     .disabled(!track.hasAlbumIdentity)
 
                     Button {
-                        exportView()
+                        exportTrack()
                     } label: {
                         Label("Export", systemImage: "square.and.arrow.up")
                     }
@@ -1956,24 +1892,6 @@ private struct PhoneTrackActionPanel: View {
         )
     }
 
-    private var viewChoices: [TrackViewChoice] {
-        guard model.detailTrack?.primaryViewID == track.primaryViewID else {
-            return []
-        }
-        return model.detailViewChoices
-    }
-
-    private var viewBinding: Binding<String> {
-        Binding(
-            get: {
-                if model.detailTrack?.primaryViewID == track.primaryViewID {
-                    return model.detailTrack?.id ?? track.id
-                }
-                return track.id
-            },
-            set: { model.selectDetailView(id: $0) }
-        )
-    }
 }
 
 private struct PhoneLyricsNotesPanel: View {
@@ -2015,14 +1933,10 @@ private struct PhoneTrackEditSheet: View {
     var body: some View {
         NavigationStack {
             Form {
-                Section("Version") {
-                    TextField("Version Name (Optional)", text: $model.viewEditNameDraft)
-                }
-
                 Section("Music") {
-                    TextField("Title", text: $model.viewEditTitleDraft)
-                    TextField("Artist", text: $model.viewEditArtistDraft)
-                    TextField("Album", text: $model.viewEditAlbumDraft)
+                    TextField("Title", text: $model.trackEditTitleDraft)
+                    TextField("Artist", text: $model.trackEditArtistDraft)
+                    TextField("Album", text: $model.trackEditAlbumDraft)
                 }
 
                 Section("Artwork") {
@@ -2042,7 +1956,7 @@ private struct PhoneTrackEditSheet: View {
                 }
 
                 Section("Notes") {
-                    TextEditor(text: $model.viewEditNotesDraft)
+                    TextEditor(text: $model.trackEditNotesDraft)
                         .frame(minHeight: 140)
                 }
             }
@@ -2051,34 +1965,34 @@ private struct PhoneTrackEditSheet: View {
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel", role: .cancel) {
-                        model.cancelViewEdit()
+                        model.cancelTrackEdit()
                     }
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Save") {
-                        Task { await model.saveViewEdit() }
+                        Task { await model.saveTrackEdit() }
                     }
                     .disabled(!canSave)
                 }
             }
         }
-        .interactiveDismissDisabled(model.isViewSaving)
+        .interactiveDismissDisabled(model.isTrackSaving)
     }
 
     private var canSave: Bool {
-        !model.isViewSaving
-            && model.viewEditChanged
-            && !model.viewEditTitleDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        !model.isTrackSaving
+            && model.trackEditChanged
+            && !model.trackEditTitleDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
     private var artworkName: String {
-        model.viewEditArtworkURL?.lastPathComponent
+        model.trackEditArtworkURL?.lastPathComponent
             ?? model.detailDetails?.artworkURL?.lastPathComponent
             ?? "Choose Artwork"
     }
 
     private var lyricsName: String {
-        model.viewEditLyricsURL?.lastPathComponent
+        model.trackEditLyricsURL?.lastPathComponent
             ?? model.detailDetails?.lyricsURL?.lastPathComponent
             ?? "Choose Lyrics"
     }

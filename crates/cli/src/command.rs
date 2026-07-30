@@ -344,7 +344,6 @@ fn edit_track(context: &CliContext, mut args: Vec<String>) -> CliResult<()> {
     let options = parse_named_values(
         args,
         &[
-            "--name",
             "--title",
             "--artist",
             "--album",
@@ -364,7 +363,6 @@ fn edit_track(context: &CliContext, mut args: Vec<String>) -> CliResult<()> {
     let selected = resolve_track(&mut client, &selector)?;
     let details = client.track_details(&selected.path)?;
     let edit = json!({
-        "view_name": options.get("--name").cloned().or_else(|| json_string(&details, "view_name")),
         "title": match options.get("--title") {
             Some(title) => title.clone(),
             None => required_json_string(&details, "display_title")?,
@@ -914,22 +912,12 @@ fn track_diagnostics(details: &Value) -> Vec<Value> {
             "This is expected for imported primary views until transcode profiles are implemented.",
         );
     }
-    match details.get("is_primary_view").and_then(Value::as_bool) {
-        Some(false) if blank_json_string(details, "transform_spec") => {
-            push(
-                "warning",
-                "Missing transform spec",
-                "The view can play, but the derived-view recipe has not been recorded.",
-            );
-        }
-        None => {
-            push(
-                "error",
-                "Missing primary-view state",
-                "Track details do not identify whether this is a primary or derived view.",
-            );
-        }
-        _ => {}
+    if details.get("is_primary_view").and_then(Value::as_bool) != Some(true) {
+        push(
+            "error",
+            "Invalid primary identity",
+            "Every library track must be its own primary view.",
+        );
     }
     if details.get("artwork_path").is_none_or(Value::is_null) {
         push(
@@ -1023,7 +1011,7 @@ Global options must appear before the domain and may only be specified once.
 
 Domains:
   library       Scan, import, query, migrate, audit, and analyze the library
-  track         Inspect and edit music views, artwork, lyrics, rating, and export
+  track         Inspect and edit tracks, artwork, lyrics, rating, and export
   favorites     List, add, and remove favorites
   playlist      Full playlist and playlist-artwork management
   history       List playback history
@@ -1057,7 +1045,7 @@ fn print_track_help() {
         "\
 Usage:
   silent --cli [options] track show <path-or-view-id>
-  silent --cli [options] track edit <selector> [--name <v>] [--title <v>] [--artist <v>] [--album <v>] [--notes <v>] [--artwork <file>] [--lyrics <file>]
+  silent --cli [options] track edit <selector> [--title <v>] [--artist <v>] [--album <v>] [--notes <v>] [--artwork <file>] [--lyrics <file>]
   silent --cli [options] track metadata set <selector> --title <v> --artist <v> --album <v>
   silent --cli [options] track notes set <selector> <notes>
   silent --cli [options] track rate <selector> <1..10|clear>

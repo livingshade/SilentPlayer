@@ -10,7 +10,7 @@ public struct ContentView: View {
     @State private var isRestoringPresentation = true
     @State private var pendingSeekProgress: Double?
     @State private var pendingSingleClick: DispatchWorkItem?
-    @State private var isViewChecksExpanded = false
+    @State private var isFileChecksExpanded = false
     @State private var isZeroOutConfirmationPresented = false
     @State private var isQueuePresented = false
     @State private var isLibraryInformationPresented = false
@@ -48,8 +48,8 @@ public struct ContentView: View {
             }
         }
         .frame(minWidth: 960, idealWidth: 1180, minHeight: 620, idealHeight: 780)
-        .sheet(isPresented: $model.isViewEditPresented) {
-            TrackViewEditSheet(
+        .sheet(isPresented: $model.isTrackEditPresented) {
+            TrackEditSheet(
                 model: model,
                 chooseArtworkFile: chooseArtworkFile,
                 chooseLyricsFile: chooseLyricsFile
@@ -124,7 +124,7 @@ public struct ContentView: View {
         let requestedSnapshot = MacPresentationPersistence.decode(sceneSession) ?? .initial
         await model.bootstrap(
             restoring: requestedSnapshot.contentScope,
-            preferredSelectedViewID: requestedSnapshot.selectedViewID
+            preferredSelectedTrackID: requestedSnapshot.selectedTrackID
         )
         isRestoringPresentation = false
         persistPresentation()
@@ -136,7 +136,7 @@ public struct ContentView: View {
         }
         let snapshot = MacPresentationSnapshot(
             contentScope: model.restorableLibraryScope,
-            selectedViewID: model.selectedTrack?.id
+            selectedTrackID: model.selectedTrack?.id
         )
         guard let encoded = MacPresentationPersistence.encode(snapshot) else {
             return
@@ -723,14 +723,12 @@ public struct ContentView: View {
                         VStack(alignment: .trailing, spacing: 8) {
                             ratingPicker(for: track)
                                 .frame(maxWidth: 140, alignment: .trailing)
-                            viewPicker
-                                .frame(maxWidth: 220, alignment: .trailing)
                             trackActionsMenu(for: track)
                         }
                     }
 
                     secondaryContentPanels
-                    advancedViewPanel
+                    fileDetailsPanel
                 }
                 .padding(.vertical, 1)
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -742,30 +740,6 @@ public struct ContentView: View {
         .frame(maxWidth: .infinity, alignment: .topLeading)
         .frame(height: layout.detailPanelHeight, alignment: .topLeading)
         .background(Color(nsColor: .controlBackgroundColor).opacity(0.55))
-    }
-
-    private var viewPicker: some View {
-        let choices = model.detailViewChoices
-        return Group {
-            if choices.count > 1 {
-                Picker(
-                    "Version",
-                    selection: Binding(
-                        get: { model.detailTrack?.id ?? "" },
-                        set: {
-                            model.selectDetailView(id: $0)
-                            persistPresentation()
-                        }
-                    )
-                ) {
-                    ForEach(choices) { choice in
-                        Text(viewChoiceTitle(choice))
-                            .tag(choice.id)
-                    }
-                }
-                .pickerStyle(.menu)
-            }
-        }
     }
 
     private func ratingPicker(for track: TrackItem) -> some View {
@@ -806,7 +780,7 @@ public struct ContentView: View {
             Divider()
 
             Button {
-                model.presentViewEdit()
+                model.presentTrackEdit()
             } label: {
                 Label("Edit Song…", systemImage: "pencil")
             }
@@ -826,24 +800,6 @@ public struct ContentView: View {
         .help("Track actions")
     }
 
-    private func viewChoiceTitle(_ choice: TrackViewChoice) -> String {
-        var title = choice.track.viewName
-            ?? (choice.track.isPrimaryView ? "Original" : "Version \(choice.index + 1)")
-        var details: [String] = []
-        if let format = choice.track.formatName?.trimmingCharacters(in: .whitespacesAndNewlines),
-           !format.isEmpty {
-            details.append(format.uppercased())
-        }
-        if let quality = choice.track.qualityProfile?.trimmingCharacters(in: .whitespacesAndNewlines),
-           !quality.isEmpty {
-            details.append(quality)
-        }
-        if !details.isEmpty {
-            title += " - " + details.joined(separator: " / ")
-        }
-        return title
-    }
-
     @ViewBuilder
     private var secondaryContentPanels: some View {
         let hasLyrics = model.nowPlayingDetails?.hasLyrics ?? false
@@ -856,7 +812,7 @@ public struct ContentView: View {
         }
     }
 
-    private var advancedViewPanel: some View {
+    private var fileDetailsPanel: some View {
         Group {
             if let details = model.nowPlayingDetails {
                 let errorDiagnostics = details.diagnostics.filter { $0.severity == .error }
@@ -867,17 +823,13 @@ public struct ContentView: View {
                         diagnosticsList(errorDiagnostics)
                     }
 
-                    DisclosureGroup(isExpanded: $isViewChecksExpanded) {
+                    DisclosureGroup(isExpanded: $isFileChecksExpanded) {
                         VStack(alignment: .leading, spacing: 8) {
                             Grid(alignment: .leading, horizontalSpacing: 10, verticalSpacing: 5) {
-                                viewFieldRow("Version name", optionalViewValue(details.viewName))
-                                viewFieldRow("File ID", details.viewID)
-                                viewFieldRow("Source ID", details.primaryViewID)
-                                viewFieldRow("Type", details.isPrimaryView ? "Original" : "Edited")
-                                viewFieldRow("Format", optionalViewValue(details.formatName))
-                                viewFieldRow("Quality", optionalViewValue(details.qualityProfile))
-                                viewFieldRow("Artwork", optionalViewValue(details.artworkSource))
-                                viewFieldRow("Processing", optionalViewValue(details.transformSpec))
+                                fileFieldRow("File ID", details.identity)
+                                fileFieldRow("Format", optionalFileValue(details.formatName))
+                                fileFieldRow("Quality", optionalFileValue(details.qualityProfile))
+                                fileFieldRow("Artwork", optionalFileValue(details.artworkSource))
                             }
                             .font(.caption)
 
@@ -901,7 +853,7 @@ public struct ContentView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
-    private func diagnosticsList(_ diagnostics: [TrackViewDiagnostic]) -> some View {
+    private func diagnosticsList(_ diagnostics: [TrackDiagnostic]) -> some View {
         VStack(alignment: .leading, spacing: 5) {
             ForEach(diagnostics) { diagnostic in
                 HStack(alignment: .top, spacing: 6) {
@@ -921,7 +873,7 @@ public struct ContentView: View {
         }
     }
 
-    private func viewFieldRow(_ label: String, _ value: String) -> some View {
+    private func fileFieldRow(_ label: String, _ value: String) -> some View {
         GridRow {
             Text(label)
                 .foregroundStyle(.secondary)
@@ -932,14 +884,14 @@ public struct ContentView: View {
         }
     }
 
-    private func optionalViewValue(_ value: String?) -> String {
+    private func optionalFileValue(_ value: String?) -> String {
         guard let value = value?.trimmingCharacters(in: .whitespacesAndNewlines), !value.isEmpty else {
             return "Not set"
         }
         return value
     }
 
-    private func diagnosticIcon(_ severity: TrackViewDiagnosticSeverity) -> String {
+    private func diagnosticIcon(_ severity: TrackDiagnosticSeverity) -> String {
         switch severity {
         case .error:
             return "xmark.octagon.fill"
@@ -950,7 +902,7 @@ public struct ContentView: View {
         }
     }
 
-    private func diagnosticColor(_ severity: TrackViewDiagnosticSeverity) -> Color {
+    private func diagnosticColor(_ severity: TrackDiagnosticSeverity) -> Color {
         switch severity {
         case .error:
             return .red
@@ -1176,7 +1128,7 @@ public struct ContentView: View {
 
         Button {
             selectTrackImmediately(track)
-            model.presentViewEdit()
+            model.presentTrackEdit()
         } label: {
             Label("Edit Song", systemImage: "pencil")
         }
@@ -1478,7 +1430,7 @@ private struct PlaybackQueueSheet: View {
     }
 }
 
-private struct TrackViewEditSheet: View {
+private struct TrackEditSheet: View {
     @ObservedObject var model: AppModel
     let chooseArtworkFile: () async -> URL?
     let chooseLyricsFile: () async -> URL?
@@ -1486,16 +1438,11 @@ private struct TrackViewEditSheet: View {
     var body: some View {
         NavigationStack {
             Form {
-                Section("Version") {
-                    TextField("Version Name (Optional)", text: $model.viewEditNameDraft)
-                    readOnlyRow("Source", isPrimaryView ? "Original" : "Edited")
-                    readOnlyRow("Format", formatName)
-                }
-
                 Section("Music") {
-                    TextField("Title", text: $model.viewEditTitleDraft)
-                    TextField("Artist", text: $model.viewEditArtistDraft)
-                    TextField("Album", text: $model.viewEditAlbumDraft)
+                    TextField("Title", text: $model.trackEditTitleDraft)
+                    TextField("Artist", text: $model.trackEditArtistDraft)
+                    TextField("Album", text: $model.trackEditAlbumDraft)
+                    LabeledContent("Format", value: formatName)
                 }
 
                 Section("Artwork") {
@@ -1507,7 +1454,7 @@ private struct TrackViewEditSheet: View {
                             Task {
                                 if let url = await chooseArtworkFile() {
                                     await MainActor.run {
-                                        model.setViewEditArtworkURL(url)
+                                        model.setTrackEditArtworkURL(url)
                                     }
                                 }
                             }
@@ -1526,7 +1473,7 @@ private struct TrackViewEditSheet: View {
                             Task {
                                 if let url = await chooseLyricsFile() {
                                     await MainActor.run {
-                                        model.setViewEditLyricsURL(url)
+                                        model.setTrackEditLyricsURL(url)
                                     }
                                 }
                             }
@@ -1537,7 +1484,7 @@ private struct TrackViewEditSheet: View {
                 }
 
                 Section("Notes") {
-                    TextEditor(text: $model.viewEditNotesDraft)
+                    TextEditor(text: $model.trackEditNotesDraft)
                         .font(.callout)
                         .frame(minHeight: 120)
                 }
@@ -1546,42 +1493,38 @@ private struct TrackViewEditSheet: View {
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel", role: .cancel) {
-                        model.cancelViewEdit()
+                        model.cancelTrackEdit()
                     }
-                    .disabled(model.isViewSaving)
+                    .disabled(model.isTrackSaving)
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Save") {
-                        Task { await model.saveViewEdit() }
+                        Task { await model.saveTrackEdit() }
                     }
                     .disabled(!canSave)
                 }
             }
         }
         .frame(minWidth: 520, idealWidth: 560, maxWidth: 720, minHeight: 560, idealHeight: 620, maxHeight: 760)
-        .interactiveDismissDisabled(model.isViewSaving)
+        .interactiveDismissDisabled(model.isTrackSaving)
     }
 
     private var canSave: Bool {
-        !model.isViewSaving
-            && model.viewEditChanged
-            && !model.viewEditTitleDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        !model.isTrackSaving
+            && model.trackEditChanged
+            && !model.trackEditTitleDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
     private var selectedArtworkName: String {
-        model.viewEditArtworkURL?.lastPathComponent
+        model.trackEditArtworkURL?.lastPathComponent
             ?? model.nowPlayingDetails?.artworkURL?.lastPathComponent
             ?? "No Artwork"
     }
 
     private var selectedLyricsName: String {
-        model.viewEditLyricsURL?.lastPathComponent
+        model.trackEditLyricsURL?.lastPathComponent
             ?? model.nowPlayingDetails?.lyricsURL?.lastPathComponent
             ?? "No Lyrics"
-    }
-
-    private var isPrimaryView: Bool {
-        model.nowPlayingDetails?.isPrimaryView ?? model.detailTrack?.isPrimaryView ?? false
     }
 
     private var formatName: String {
@@ -1590,15 +1533,6 @@ private struct TrackViewEditSheet: View {
             ?? "Unknown"
     }
 
-    private func readOnlyRow(_ title: String, _ value: String) -> some View {
-        HStack {
-            Text(title)
-                .foregroundStyle(.secondary)
-            Spacer()
-            Text(value)
-                .lineLimit(1)
-        }
-    }
 }
 
 private struct PlaylistCreateSheet: View {

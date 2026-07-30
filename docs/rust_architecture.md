@@ -14,7 +14,7 @@ macOS adapter / iPhone adapter / silent CLI / workers
 
 核心只保存可确定测试的领域规则：
 
-- track/view 领域模型；
+- 单一 primary 歌曲身份与 track 领域模型；
 - 播放队列及插入、移动、删除和清空规则；
 - repeat、shuffle、seek 和当前曲目状态；
 - 播放中断生命周期；
@@ -31,7 +31,7 @@ macOS adapter / iPhone adapter / silent CLI / workers
 - `store_sqlite` 实现本地持久化。
 - `app_ffi` 当前承载共享 `PlayerApp` composition root，并提供两个薄入口：
   Apple target 使用 C ABI，`silent` CLI target 使用安全 Rust client。两者调用同一个
-  托管导入、Music View、曲库迁移、播放列表、用户活动和播放会话实现。
+  托管导入、歌曲原地编辑与独立导出、曲库迁移、播放列表、用户活动和播放会话实现。
 - `silent_cli` 生成公开的 `silent` executable。根层只处理 `--version`/`--help`，
   共享产品命令必须经过 `silent --cli`。
 - `analyzer` 与 `library_worker` 是 Apple app 的内部进度 worker，不是公开

@@ -174,6 +174,12 @@ fn music_view_collections_and_playlist_commands_cover_app_mutations() {
     assert_eq!(details["details"]["view_id"], primary_view);
     assert!(details["diagnostics"].is_array());
 
+    let rejected_view_name = silent_cli(&db_path, &media_root)
+        .args(["track", "edit", &primary_view, "--name", "Old view name"])
+        .output()
+        .expect("reject removed view name option");
+    assert_eq!(rejected_view_name.status.code(), Some(2));
+
     let edit = silent_cli(&db_path, &media_root)
         .args([
             "--output",
@@ -181,8 +187,6 @@ fn music_view_collections_and_playlist_commands_cover_app_mutations() {
             "track",
             "edit",
             &primary_view,
-            "--name",
-            "CLI View",
             "--title",
             "CLI Title",
             "--notes",
@@ -193,8 +197,9 @@ fn music_view_collections_and_playlist_commands_cover_app_mutations() {
     assert_command_ok(&edit);
     let edited = json_output(&edit);
     assert_eq!(edited["title"], "CLI Title");
-    assert_eq!(edited["view_kind"], "derived");
+    assert_eq!(edited["view_kind"], "primary");
     let edited_view = edited["view_id"].as_str().unwrap().to_owned();
+    assert_eq!(edited_view, primary_view);
 
     let rate = silent_cli(&db_path, &media_root)
         .args(["--output", "json", "track", "rate", &edited_view, "8"])
@@ -350,6 +355,7 @@ fn artwork_lyrics_materialization_and_library_package_roundtrip() {
         .as_str()
         .unwrap()
         .to_owned();
+    assert_eq!(album_selector, selector);
 
     let album_artwork = silent_cli(&db_path, &media_root)
         .args([
@@ -382,6 +388,7 @@ fn artwork_lyrics_materialization_and_library_package_roundtrip() {
         .as_str()
         .unwrap()
         .to_owned();
+    assert_eq!(artwork_view, selector);
 
     let lyrics_result = silent_cli(&db_path, &media_root)
         .args(["--output", "json", "track", "lyrics", "set", &artwork_view])
@@ -393,6 +400,7 @@ fn artwork_lyrics_materialization_and_library_package_roundtrip() {
         .as_str()
         .unwrap()
         .to_owned();
+    assert_eq!(lyrics_view, selector);
 
     assert_command_ok(
         &silent_cli(&db_path, &media_root)

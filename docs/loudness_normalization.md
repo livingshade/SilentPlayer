@@ -98,7 +98,7 @@ silent --cli --db player_library.sqlite3 --media-root Music library analyze
 silent --cli --db player_library.sqlite3 --media-root Music playback shell
 ```
 
-`track analyze` 会分析文件并输出 integrated LUFS 与 true peak。`playback shell` 播放曲库中的 Music View 时会使用与 macOS/iPhone 相同的 `NormalizationSettings`。
+`track analyze` 会分析文件并输出 integrated LUFS 与 true peak。`playback shell` 播放曲库中的歌曲时会使用与 macOS/iPhone 相同的 `NormalizationSettings`。
 
 `library analyze` 会从 SQLite 曲库中找出缺少分析结果、分析版本过期、或文件 fingerprint 已变化的曲目，批量分析后写回缓存。
 

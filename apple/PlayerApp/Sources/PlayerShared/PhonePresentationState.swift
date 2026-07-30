@@ -47,25 +47,25 @@ public struct PhonePresentationSnapshot: Codable, Equatable, Sendable {
     public let selectedTab: PhonePresentationTab
     public let contentScope: PhonePresentationScope
     public let playlistDetailID: Int64?
-    public let selectedViewID: String?
+    public let selectedTrackID: String?
 
     public init(
         selectedTab: PhonePresentationTab,
         contentScope: PhonePresentationScope,
         playlistDetailID: Int64?,
-        selectedViewID: String?
+        selectedTrackID: String?
     ) {
         self.selectedTab = selectedTab
         self.contentScope = contentScope
         self.playlistDetailID = playlistDetailID
-        self.selectedViewID = selectedViewID
+        self.selectedTrackID = selectedTrackID
     }
 
     public static let initial = PhonePresentationSnapshot(
         selectedTab: .library,
         contentScope: .library,
         playlistDetailID: nil,
-        selectedViewID: nil
+        selectedTrackID: nil
     )
 
     public var bootstrapScope: RestorableLibraryScope {
@@ -97,7 +97,7 @@ public struct PhonePresentationSnapshot: Codable, Equatable, Sendable {
             selectedTab: selectedTab,
             contentScope: validatedScope,
             playlistDetailID: validatedDetailID,
-            selectedViewID: selectedViewID
+            selectedTrackID: selectedTrackID
         )
     }
 }

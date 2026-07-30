@@ -143,17 +143,9 @@ enum PlaybackPollingPolicy {
     }
 }
 
-public struct TrackViewChoice: Identifiable, Hashable, Sendable {
-    public let id: String
-    public let track: TrackItem
-    public let index: Int
-    public let total: Int
-}
-
 private struct LibraryPresentationCache {
-    var views: [TrackItem]
-    var activeViewIDByPrimaryID: [String: String]
-    var selectedViewID: String?
+    var tracks: [TrackItem]
+    var selectedTrackID: String?
 }
 
 @MainActor
@@ -171,15 +163,14 @@ public final class AppModel: ObservableObject {
     @Published public var nowPlaying: TrackItem?
     @Published public var nowPlayingDetails: TrackDetails?
     @Published public var isLoadingDetails: Bool = false
-    @Published public var isViewEditPresented: Bool = false
-    @Published public var isViewSaving: Bool = false
-    @Published public var viewEditNameDraft: String = ""
-    @Published public var viewEditTitleDraft: String = ""
-    @Published public var viewEditArtistDraft: String = ""
-    @Published public var viewEditAlbumDraft: String = ""
-    @Published public var viewEditNotesDraft: String = ""
-    @Published public var viewEditArtworkURL: URL?
-    @Published public var viewEditLyricsURL: URL?
+    @Published public var isTrackEditPresented: Bool = false
+    @Published public var isTrackSaving: Bool = false
+    @Published public var trackEditTitleDraft: String = ""
+    @Published public var trackEditArtistDraft: String = ""
+    @Published public var trackEditAlbumDraft: String = ""
+    @Published public var trackEditNotesDraft: String = ""
+    @Published public var trackEditArtworkURL: URL?
+    @Published public var trackEditLyricsURL: URL?
     @Published public var playbackElapsedMS: Int = 0
     @Published public var playbackError: String = ""
     @Published public var playbackDetail: String = ""
@@ -219,8 +210,7 @@ public final class AppModel: ObservableObject {
     private var detailsTask: Task<Void, Never>?
     private var detailsTrackID: String?
     private var loadingDetailsTrackID: String?
-    private var allTrackViews: [TrackItem] = []
-    private var activeViewIDByPrimaryID: [String: String] = [:]
+    private var loadedTracks: [TrackItem] = []
     private var libraryPresentationCache: LibraryPresentationCache?
     private var isPresentingCompleteLibrary = false
     private var hasBootstrapped = false
@@ -329,25 +319,17 @@ public final class AppModel: ObservableObject {
         return matchingDetails(for: track)
     }
 
-    public var detailViewChoices: [TrackViewChoice] {
-        guard let track = detailTrack else {
-            return []
-        }
-        return viewChoices(for: track)
-    }
-
-    public var viewEditChanged: Bool {
+    public var trackEditChanged: Bool {
         guard let track = detailTrack else {
             return false
         }
         let details = matchingDetails(for: track)
-        return normalizedDraft(viewEditNameDraft) != normalizedDraft(details?.viewName ?? track.viewName)
-            || viewEditTitleDraft != (details?.displayTitle ?? track.title)
-            || viewEditArtistDraft != (details?.displayArtist ?? track.artist)
-            || viewEditAlbumDraft != (details?.displayAlbum ?? track.album)
-            || viewEditNotesDraft != (details?.notes ?? "")
-            || viewEditArtworkURL != nil
-            || viewEditLyricsURL != nil
+        return trackEditTitleDraft != (details?.displayTitle ?? track.title)
+            || trackEditArtistDraft != (details?.displayArtist ?? track.artist)
+            || trackEditAlbumDraft != (details?.displayAlbum ?? track.album)
+            || trackEditNotesDraft != (details?.notes ?? "")
+            || trackEditArtworkURL != nil
+            || trackEditLyricsURL != nil
     }
 
     public var playlistSettingsChanged: Bool {
@@ -364,7 +346,7 @@ public final class AppModel: ObservableObject {
 
     public func bootstrap(
         restoring restorationScope: RestorableLibraryScope? = nil,
-        preferredSelectedViewID: String? = nil
+        preferredSelectedTrackID: String? = nil
     ) async {
         guard client != nil else {
             status = "Player unavailable"
@@ -380,7 +362,7 @@ public final class AppModel: ObservableObject {
             applyRestoredLibraryScope(restorationScope)
         }
         await reloadActiveScope(
-            preferredSelectedViewID: preferredSelectedViewID,
+            preferredSelectedTrackID: preferredSelectedTrackID,
             forceDetails: false
         )
         await refreshPlaybackState()
@@ -524,8 +506,7 @@ public final class AppModel: ObservableObject {
         query = ""
         selectedTrack = nil
         nowPlaying = nil
-        allTrackViews = []
-        activeViewIDByPrimaryID = [:]
+        loadedTracks = []
         libraryPresentationCache = nil
         isPresentingCompleteLibrary = false
         tracks = []
@@ -700,14 +681,13 @@ public final class AppModel: ObservableObject {
     }
 
     public func reloadActiveScope(quiet: Bool = false) async {
-        await reloadActiveScope(quiet: quiet, preferredSelectedViewID: nil, forceDetails: false)
+        await reloadActiveScope(quiet: quiet, preferredSelectedTrackID: nil, forceDetails: false)
     }
 
     private func reloadActiveScope(
         quiet: Bool = false,
-        preferredSelectedViewID: String?,
-        forceDetails: Bool,
-        preferredSelectedView: TrackItem? = nil
+        preferredSelectedTrackID: String?,
+        forceDetails: Bool
     ) async {
         let loadingScope = libraryScope
         await runBusy(quiet ? nil : "Loading \(loadingScope.title)") { [self] in
@@ -725,14 +705,9 @@ public final class AppModel: ObservableObject {
             guard libraryScope == loadingScope else {
                 return
             }
-            if let preferredSelectedView,
-               !loaded.contains(where: { $0.id == preferredSelectedView.id }),
-               loaded.contains(where: { $0.primaryViewID == preferredSelectedView.primaryViewID }) {
-                loaded.append(preferredSelectedView)
-            }
-            applyLoadedViews(
+            applyLoadedTracks(
                 loaded,
-                preferredSelectedViewID: preferredSelectedView?.id ?? preferredSelectedViewID
+                preferredSelectedTrackID: preferredSelectedTrackID
             )
             if loadingScope == .library {
                 isPresentingCompleteLibrary = true
@@ -777,30 +752,12 @@ public final class AppModel: ObservableObject {
 
         selectedTrack = newSelection
         if let selectedTrack {
-            setActiveView(selectedTrack)
-            tracks = visibleTracks(from: allTrackViews)
-        }
-        if let selectedTrack {
             loadDetails(for: selectedTrack)
         } else if let nowPlaying {
             loadDetails(for: nowPlaying)
         } else {
             clearDetails()
         }
-        cacheCurrentLibraryPresentationIfNeeded()
-    }
-
-    public func selectDetailView(id: String) {
-        guard let view = allTrackViews.first(where: { $0.id == id })
-            ?? detailViewChoices.first(where: { $0.id == id })?.track
-        else {
-            status = "Selected version is unavailable"
-            return
-        }
-        setActiveView(view)
-        selectedTrack = view
-        tracks = visibleTracks(from: allTrackViews)
-        loadDetails(for: view, force: true)
         cacheCurrentLibraryPresentationIfNeeded()
     }
 
@@ -832,7 +789,7 @@ public final class AppModel: ObservableObject {
             guard libraryScope == searchScope else {
                 return
             }
-            applyLoadedViews(loaded, preferredSelectedViewID: selectedTrack?.id)
+            applyLoadedTracks(loaded, preferredSelectedTrackID: selectedTrack?.id)
             isPresentingCompleteLibrary = false
             status = tracks.isEmpty
                 ? "No songs found in \(searchScope.title)"
@@ -1215,7 +1172,7 @@ public final class AppModel: ObservableObject {
         playlistSortMode = sortMode
 
         guard let name = activePlaylistName else {
-            tracks = visibleTracks(from: allTrackViews)
+            tracks = visibleTracks(from: loadedTracks)
             status = sortMode == .defaultOrder
                 ? "\(libraryScope.title) default order"
                 : "Sorted \(libraryScope.title) by \(sortMode.label)"
@@ -1277,13 +1234,13 @@ public final class AppModel: ObservableObject {
             status = "Library is empty"
             return
         }
-        let activeViewPaths = tracks.map(\.path)
+        let trackPaths = tracks.map(\.path)
         await runBusy(nil) { [self] in
             let previousTrackID = nowPlaying?.id
             let previousPositionMS = playbackElapsedMS
             try playbackSystemIntegration?.prepareForPlayback()
             let snapshot = try await invoke {
-                try $0.playQueue(paths: activeViewPaths, startPath: firstTrack.path)
+                try $0.playQueue(paths: trackPaths, startPath: firstTrack.path)
             }
             selectedTrack = snapshot.currentTrack
             apply(snapshot: snapshot, fallbackTrack: firstTrack)
@@ -1649,7 +1606,7 @@ public final class AppModel: ObservableObject {
 
         await runBusy("Updating rating") { [self] in
             let updated = try await invoke { try $0.setTrackRating(path: track.path, rating: rating) }
-            replaceTrackView(updated)
+            replaceTrack(updated)
             status = rating.map { "Rated \($0)/10" } ?? "Cleared rating"
             loadDetails(for: updated, force: true)
         }
@@ -1664,13 +1621,12 @@ public final class AppModel: ObservableObject {
                 }
             }
             let updated = try await invoke { try $0.setTrackArtwork(path: track.path, imageURL: imageURL) }
-            replaceTrackViewInLibraryCache(updated)
+            replaceTrack(updated)
             status = "Saved track cover"
             await reloadActiveScope(
                 quiet: true,
-                preferredSelectedViewID: updated.id,
-                forceDetails: true,
-                preferredSelectedView: updated
+                preferredSelectedTrackID: updated.id,
+                forceDetails: true
             )
             await refreshPlaylists()
         }
@@ -1704,7 +1660,7 @@ public final class AppModel: ObservableObject {
                 : "Updated album cover for \(summary.tracksUpdated) tracks"
             await reloadActiveScope(
                 quiet: true,
-                preferredSelectedViewID: track.id,
+                preferredSelectedTrackID: track.id,
                 forceDetails: true
             )
             await refreshPlaylists()
@@ -1719,81 +1675,78 @@ public final class AppModel: ObservableObject {
         await setAlbumArtwork(for: track, imageURL: imageURL)
     }
 
-    public func presentViewEdit() {
+    public func presentTrackEdit() {
         guard let track = detailTrack else {
             status = "Select or play a track first"
             return
         }
         let details = matchingDetails(for: track)
-        viewEditNameDraft = details?.viewName ?? track.viewName ?? ""
-        viewEditTitleDraft = details?.displayTitle ?? track.title
-        viewEditArtistDraft = details?.displayArtist ?? track.artist
-        viewEditAlbumDraft = details?.displayAlbum ?? track.album
-        viewEditNotesDraft = details?.notes ?? ""
-        viewEditArtworkURL = nil
-        viewEditLyricsURL = nil
-        isViewEditPresented = true
+        trackEditTitleDraft = details?.displayTitle ?? track.title
+        trackEditArtistDraft = details?.displayArtist ?? track.artist
+        trackEditAlbumDraft = details?.displayAlbum ?? track.album
+        trackEditNotesDraft = details?.notes ?? ""
+        trackEditArtworkURL = nil
+        trackEditLyricsURL = nil
+        isTrackEditPresented = true
     }
 
-    public func cancelViewEdit() {
-        isViewEditPresented = false
-        resetViewEditDrafts()
+    public func cancelTrackEdit() {
+        isTrackEditPresented = false
+        resetTrackEditDrafts()
     }
 
-    public func setViewEditArtworkURL(_ url: URL) {
-        viewEditArtworkURL = url
+    public func setTrackEditArtworkURL(_ url: URL) {
+        trackEditArtworkURL = url
     }
 
-    public func setViewEditLyricsURL(_ url: URL) {
-        viewEditLyricsURL = url
+    public func setTrackEditLyricsURL(_ url: URL) {
+        trackEditLyricsURL = url
     }
 
-    public func saveViewEdit() async {
+    public func saveTrackEdit() async {
         guard let track = detailTrack else {
             status = "Select or play a track first"
             return
         }
-        let title = viewEditTitleDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        let title = trackEditTitleDraft.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !title.isEmpty else {
             status = "Title cannot be empty"
             return
         }
 
-        let edit = TrackViewEdit(
-            viewName: viewEditNameDraft.trimmingCharacters(in: .whitespacesAndNewlines),
+        let edit = TrackEdit(
             title: title,
-            artist: viewEditArtistDraft.trimmingCharacters(in: .whitespacesAndNewlines),
-            album: viewEditAlbumDraft.trimmingCharacters(in: .whitespacesAndNewlines),
-            notes: viewEditNotesDraft,
-            artworkPath: viewEditArtworkURL?.path,
-            lyricsPath: viewEditLyricsURL?.path
+            artist: trackEditArtistDraft.trimmingCharacters(in: .whitespacesAndNewlines),
+            album: trackEditAlbumDraft.trimmingCharacters(in: .whitespacesAndNewlines),
+            notes: trackEditNotesDraft,
+            artworkPath: trackEditArtworkURL?.path,
+            lyricsPath: trackEditLyricsURL?.path
         )
 
-        isViewSaving = true
+        isTrackSaving = true
         await runBusy("Saving song") { [self] in
-            let artworkAccessGranted = viewEditArtworkURL?.startAccessingSecurityScopedResource() ?? false
-            let lyricsAccessGranted = viewEditLyricsURL?.startAccessingSecurityScopedResource() ?? false
+            let artworkAccessGranted = trackEditArtworkURL?.startAccessingSecurityScopedResource() ?? false
+            let lyricsAccessGranted = trackEditLyricsURL?.startAccessingSecurityScopedResource() ?? false
             defer {
                 if artworkAccessGranted {
-                    viewEditArtworkURL?.stopAccessingSecurityScopedResource()
+                    trackEditArtworkURL?.stopAccessingSecurityScopedResource()
                 }
                 if lyricsAccessGranted {
-                    viewEditLyricsURL?.stopAccessingSecurityScopedResource()
+                    trackEditLyricsURL?.stopAccessingSecurityScopedResource()
                 }
             }
-            let updated = try await invoke { try $0.editTrackView(path: track.path, edit: edit) }
-            replaceTrackViewInLibraryCache(updated)
+            let updated = try await invoke { try $0.editTrack(path: track.path, edit: edit) }
+            replaceTrack(updated)
             status = "Saved song"
-            isViewEditPresented = false
-            resetViewEditDrafts()
+            isTrackEditPresented = false
+            resetTrackEditDrafts()
             await reloadActiveScope(
                 quiet: true,
-                preferredSelectedViewID: updated.id,
-                forceDetails: true,
-                preferredSelectedView: updated
+                preferredSelectedTrackID: updated.id,
+                forceDetails: true
             )
         }
-        isViewSaving = false
+        isTrackSaving = false
     }
 
     public func materializeSelected(to destinationURL: URL) async {
@@ -1804,15 +1757,14 @@ public final class AppModel: ObservableObject {
 
         await runBusy("Exporting song") { [self] in
             let materialized = try await invoke {
-                try $0.exportTrackView(path: track.path, destinationURL: destinationURL)
+                try $0.exportTrack(path: track.path, destinationURL: destinationURL)
             }
-            replaceTrackViewInLibraryCache(materialized)
+            replaceTrack(materialized)
             status = "Exported \(materialized.title)"
             await reloadActiveScope(
                 quiet: true,
-                preferredSelectedViewID: materialized.id,
-                forceDetails: true,
-                preferredSelectedView: materialized
+                preferredSelectedTrackID: materialized.id,
+                forceDetails: true
             )
         }
     }
@@ -1996,9 +1948,8 @@ public final class AppModel: ObservableObject {
             return
         }
         libraryPresentationCache = LibraryPresentationCache(
-            views: allTrackViews,
-            activeViewIDByPrimaryID: activeViewIDByPrimaryID,
-            selectedViewID: selectedTrack?.id
+            tracks: loadedTracks,
+            selectedTrackID: selectedTrack?.id
         )
     }
 
@@ -2007,14 +1958,13 @@ public final class AppModel: ObservableObject {
             return false
         }
 
-        activeViewIDByPrimaryID = cache.activeViewIDByPrimaryID
         isPresentingCompleteLibrary = true
         let currentSelectionID = selectedTrack.flatMap { selected in
-            cache.views.contains(where: { $0.id == selected.id }) ? selected.id : nil
+            cache.tracks.contains(where: { $0.id == selected.id }) ? selected.id : nil
         }
-        applyLoadedViews(
-            cache.views,
-            preferredSelectedViewID: currentSelectionID ?? cache.selectedViewID
+        applyLoadedTracks(
+            cache.tracks,
+            preferredSelectedTrackID: currentSelectionID ?? cache.selectedTrackID
         )
         cacheCurrentLibraryPresentationIfNeeded()
 
@@ -2023,7 +1973,7 @@ public final class AppModel: ObservableObject {
         } else if let nowPlaying {
             loadDetails(for: nowPlaying)
         }
-        status = cache.views.isEmpty
+        status = cache.tracks.isEmpty
             ? "Library is empty"
             : "Library: \(tracks.count) songs"
         return true
@@ -2034,45 +1984,32 @@ public final class AppModel: ObservableObject {
         isPresentingCompleteLibrary = false
     }
 
-    private func replaceTrackViewInLibraryCache(_ updated: TrackItem) {
+    private func replaceTrackInLibraryCache(_ updated: TrackItem) {
         guard var cache = libraryPresentationCache else {
             return
         }
-        var previousID: String?
-        if let index = cache.views.firstIndex(where: {
+        if let index = cache.tracks.firstIndex(where: {
             $0.id == updated.id || $0.path == updated.path
         }) {
-            previousID = cache.views[index].id
-            cache.views[index] = updated
+            cache.tracks[index] = updated
         } else {
-            cache.views.append(updated)
+            cache.tracks.append(updated)
         }
-        if let previousID, cache.selectedViewID == previousID {
-            cache.selectedViewID = updated.id
-        }
-        if let previousID,
-           let activeID = cache.activeViewIDByPrimaryID[updated.primaryViewID],
-           activeID == previousID {
-            cache.activeViewIDByPrimaryID[updated.primaryViewID] = updated.id
+        if selectedTrack?.id == updated.id || selectedTrack?.path == updated.path {
+            cache.selectedTrackID = updated.id
         }
         libraryPresentationCache = cache
     }
 
-    private func applyLoadedViews(_ loaded: [TrackItem], preferredSelectedViewID: String?) {
-        allTrackViews = loaded
+    private func applyLoadedTracks(_ loaded: [TrackItem], preferredSelectedTrackID: String?) {
+        loadedTracks = loaded
 
-        if let preferredSelectedViewID,
-           let preferred = loaded.first(where: { $0.id == preferredSelectedViewID }) {
-            setActiveView(preferred)
+        if let preferredSelectedTrackID,
+           let preferred = loaded.first(where: { $0.id == preferredSelectedTrackID }) {
             selectedTrack = preferred
         } else if let selectedTrack,
                   let refreshed = loaded.first(where: { $0.id == selectedTrack.id }) {
-            setActiveView(refreshed)
             self.selectedTrack = refreshed
-        } else if let selectedTrack,
-                  let fallback = loaded.first(where: { $0.primaryViewID == selectedTrack.primaryViewID }) {
-            setActiveView(fallback)
-            self.selectedTrack = fallback
         } else {
             selectedTrack = nil
         }
@@ -2080,42 +2017,13 @@ public final class AppModel: ObservableObject {
         if let nowPlaying,
            let refreshed = loaded.first(where: { $0.id == nowPlaying.id }) {
             self.nowPlaying = refreshed
-            setActiveView(refreshed)
         }
 
-        pruneActiveViews(to: loaded)
         tracks = visibleTracks(from: loaded)
     }
 
-    private func collapsedTracks(from views: [TrackItem]) -> [TrackItem] {
-        var groups: [String: [TrackItem]] = [:]
-        var primaryOrder: [String] = []
-        for view in views {
-            let primaryID = view.primaryViewID
-            if groups[primaryID] == nil {
-                primaryOrder.append(primaryID)
-            }
-            groups[primaryID, default: []].append(view)
-        }
-
-        return primaryOrder.compactMap { primaryID in
-            guard let options = groups[primaryID] else {
-                return nil
-            }
-            if let activeID = activeViewIDByPrimaryID[primaryID],
-               let active = options.first(where: { $0.id == activeID }) {
-                return active
-            }
-            if let preferred = TrackItem.preferredDefaultView(in: options) {
-                activeViewIDByPrimaryID[primaryID] = preferred.id
-                return preferred
-            }
-            return nil
-        }
-    }
-
-    private func visibleTracks(from views: [TrackItem]) -> [TrackItem] {
-        sortedTrackItems(collapsedTracks(from: views), by: playlistSortMode)
+    private func visibleTracks(from tracks: [TrackItem]) -> [TrackItem] {
+        sortedTrackItems(tracks, by: playlistSortMode)
     }
 
     private func sortedTrackItems(_ items: [TrackItem], by sortMode: PlaylistSortMode) -> [TrackItem] {
@@ -2173,40 +2081,24 @@ public final class AppModel: ObservableObject {
         return trimmed.isEmpty ? "\u{10FFFF}" : trimmed
     }
 
-    private func replaceTrackView(_ updated: TrackItem) {
-        if let index = allTrackViews.firstIndex(where: { $0.id == updated.id }) {
-            allTrackViews[index] = updated
+    private func replaceTrack(_ updated: TrackItem) {
+        if let index = loadedTracks.firstIndex(where: {
+            $0.id == updated.id || $0.path == updated.path
+        }) {
+            loadedTracks[index] = updated
         } else {
-            allTrackViews.append(updated)
+            loadedTracks.append(updated)
         }
 
-        setActiveView(updated)
         if selectedTrack?.id == updated.id || selectedTrack?.path == updated.path {
             selectedTrack = updated
         }
         if nowPlaying?.id == updated.id || nowPlaying?.path == updated.path {
             nowPlaying = updated
         }
-        tracks = visibleTracks(from: allTrackViews)
-        replaceTrackViewInLibraryCache(updated)
+        tracks = visibleTracks(from: loadedTracks)
+        replaceTrackInLibraryCache(updated)
         cacheCurrentLibraryPresentationIfNeeded()
-    }
-
-    private func viewChoices(for track: TrackItem) -> [TrackViewChoice] {
-        let views = allTrackViews.filter { $0.primaryViewID == track.primaryViewID }
-        let options = views.isEmpty ? [track] : views
-        return options.enumerated().map { index, option in
-            TrackViewChoice(id: option.id, track: option, index: index, total: options.count)
-        }
-    }
-
-    private func setActiveView(_ view: TrackItem) {
-        activeViewIDByPrimaryID[view.primaryViewID] = view.id
-    }
-
-    private func pruneActiveViews(to views: [TrackItem]) {
-        let primaryIDs = Set(views.map(\.primaryViewID))
-        activeViewIDByPrimaryID = activeViewIDByPrimaryID.filter { primaryIDs.contains($0.key) }
     }
 
     private func apply(snapshot: PlaybackSnapshot, fallbackTrack: TrackItem? = nil) {
@@ -2245,9 +2137,8 @@ public final class AppModel: ObservableObject {
             let trackChanged = nowPlaying != track
             if trackChanged {
                 nowPlaying = track
-                setActiveView(track)
-                if !allTrackViews.isEmpty {
-                    let visible = visibleTracks(from: allTrackViews)
+                if !loadedTracks.isEmpty {
+                    let visible = visibleTracks(from: loadedTracks)
                     if tracks != visible {
                         tracks = visible
                     }
@@ -2257,7 +2148,7 @@ public final class AppModel: ObservableObject {
             if previousTrackID != track.id {
                 let shouldFollowNowPlaying = selectedTrack == nil || selectedTrack?.id == previousTrackID
                 if shouldFollowNowPlaying {
-                    selectedTrack = allTrackViews.first(where: { $0.id == track.id }) ?? track
+                    selectedTrack = loadedTracks.first(where: { $0.id == track.id }) ?? track
                 }
             }
             if detailTrack?.id == track.id
@@ -2384,19 +2275,18 @@ public final class AppModel: ObservableObject {
         detailsTrackID = nil
         loadingDetailsTrackID = nil
         nowPlayingDetails = nil
-        resetViewEditDrafts()
+        resetTrackEditDrafts()
         isLoadingDetails = false
     }
 
-    private func resetViewEditDrafts() {
-        viewEditNameDraft = ""
-        viewEditTitleDraft = ""
-        viewEditArtistDraft = ""
-        viewEditAlbumDraft = ""
-        viewEditNotesDraft = ""
-        viewEditArtworkURL = nil
-        viewEditLyricsURL = nil
-        isViewSaving = false
+    private func resetTrackEditDrafts() {
+        trackEditTitleDraft = ""
+        trackEditArtistDraft = ""
+        trackEditAlbumDraft = ""
+        trackEditNotesDraft = ""
+        trackEditArtworkURL = nil
+        trackEditLyricsURL = nil
+        isTrackSaving = false
     }
 
     private func startPlaybackTimer() {
@@ -2426,7 +2316,7 @@ public final class AppModel: ObservableObject {
 
     private func matchingDetails(for track: TrackItem) -> TrackDetails? {
         guard let details = nowPlayingDetails,
-              details.viewID == track.viewID else {
+              details.identity == track.identity else {
             return nil
         }
         return details

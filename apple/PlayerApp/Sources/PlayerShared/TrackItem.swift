@@ -2,11 +2,7 @@ import Foundation
 
 public struct TrackItem: Identifiable, Hashable, Sendable {
     public let id: String
-    public let viewID: String
-    public let primaryViewID: String
-    public let isPrimaryView: Bool
-    public let viewKind: String
-    public let viewName: String?
+    public let identity: String
     public let rating: Int?
     public let title: String
     public let artist: String
@@ -15,7 +11,6 @@ public struct TrackItem: Identifiable, Hashable, Sendable {
     public let artworkCount: Int
     public let artworkURL: URL?
     public let artworkSource: String?
-    public let defaultViewPriority: Int
     public let hasAlbumIdentity: Bool
     public let path: String
     public let qualityProfile: String?
@@ -25,11 +20,7 @@ public struct TrackItem: Identifiable, Hashable, Sendable {
 
     public init(
         id: String,
-        viewID: String? = nil,
-        primaryViewID: String? = nil,
-        isPrimaryView: Bool = true,
-        viewKind: String = "primary",
-        viewName: String? = nil,
+        identity: String? = nil,
         rating: Int? = nil,
         title: String,
         artist: String,
@@ -38,7 +29,6 @@ public struct TrackItem: Identifiable, Hashable, Sendable {
         artworkCount: Int = 0,
         artworkURL: URL? = nil,
         artworkSource: String? = nil,
-        defaultViewPriority: Int? = nil,
         hasAlbumIdentity: Bool = false,
         path: String,
         qualityProfile: String? = nil,
@@ -47,11 +37,7 @@ public struct TrackItem: Identifiable, Hashable, Sendable {
         loudnessStatus: String = "NeedsAnalysis"
     ) {
         self.id = id
-        self.viewID = viewID ?? id
-        self.primaryViewID = primaryViewID ?? id
-        self.isPrimaryView = isPrimaryView
-        self.viewKind = viewKind
-        self.viewName = MetadataDefaults.optional(viewName)
+        self.identity = identity ?? id
         self.rating = rating
         self.title = MetadataDefaults.title(title)
         self.artist = MetadataDefaults.artist(artist)
@@ -60,21 +46,12 @@ public struct TrackItem: Identifiable, Hashable, Sendable {
         self.artworkCount = artworkCount
         self.artworkURL = artworkURL
         self.artworkSource = artworkSource
-        self.defaultViewPriority = defaultViewPriority
-            ?? (artworkURL != nil ? 2 : (isPrimaryView ? 1 : 0))
         self.hasAlbumIdentity = hasAlbumIdentity
         self.path = path
         self.qualityProfile = qualityProfile
         self.formatName = formatName
         self.gainDB = gainDB
         self.loudnessStatus = loudnessStatus
-    }
-
-    public static func preferredDefaultView(in views: [TrackItem]) -> TrackItem? {
-        guard let highestPriority = views.map(\.defaultViewPriority).max() else {
-            return nil
-        }
-        return views.first { $0.defaultViewPriority == highestPriority }
     }
 
     public var durationText: String {

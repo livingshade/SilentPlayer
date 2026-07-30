@@ -44,76 +44,23 @@ private func testTrackItemTrimsDisplayMetadata() {
     expect(track.durationText == "1:01", "duration should format milliseconds as m:ss")
 }
 
-private func testTrackItemKeepsViewIdentityDefaults() {
+private func testTrackItemKeepsStableIdentity() {
     let track = TrackItem(
         id: "audio:hash",
+        identity: "content:hash",
         title: "Song",
         artist: "Artist",
         durationMS: nil,
         path: "/tmp/song.wav"
     )
 
-    expect(track.viewID == "audio:hash", "viewID should default to track id")
-    expect(track.primaryViewID == "audio:hash", "primaryViewID should default to track id")
-    expect(track.isPrimaryView, "new TrackItem should default to primary view")
-    expect(track.viewKind == "primary", "view kind should default to primary")
-}
-
-private func testTrackItemKeepsOptionalViewName() {
-    let named = TrackItem(
-        id: "audio:named",
-        viewName: "  Evening edit  ",
-        title: "Song",
-        artist: "Artist",
-        durationMS: nil,
-        path: "/tmp/song.wav"
-    )
-    let unnamed = TrackItem(
-        id: "audio:unnamed",
-        viewName: "  ",
-        title: "Song",
-        artist: "Artist",
-        durationMS: nil,
-        path: "/tmp/song.wav"
-    )
-
-    expect(named.viewName == "Evening edit", "view name should be trimmed")
-    expect(unnamed.viewName == nil, "blank view name should be nil")
-}
-
-private func testPreferredDefaultViewUsesRustArtworkPriority() {
-    let primary = TrackItem(
-        id: "audio:hash",
-        title: "Song",
-        artist: "Artist",
-        durationMS: nil,
-        defaultViewPriority: 1,
-        path: "/tmp/primary.wav"
-    )
-    let coveredView = TrackItem(
-        id: "audio:hash:view:artwork",
-        primaryViewID: "audio:hash",
-        isPrimaryView: false,
-        viewKind: "derived",
-        title: "Song",
-        artist: "Artist",
-        durationMS: nil,
-        artworkURL: URL(fileURLWithPath: "/tmp/cover.jpg"),
-        defaultViewPriority: 4,
-        path: "/tmp/covered.wav"
-    )
-
-    let preferred = TrackItem.preferredDefaultView(in: [primary, coveredView])
-    expect(preferred?.id == coveredView.id, "covered view should replace a bare primary by default")
+    expect(track.identity == "content:hash", "track should keep the Rust identity")
 }
 
 private func testPlaceholderDetailsUseTrackDisplayMetadata() {
     let track = TrackItem(
         id: "audio:hash",
-        viewID: "view:one",
-        primaryViewID: "view:primary",
-        isPrimaryView: false,
-        viewKind: "derived",
+        identity: "content:hash",
         title: "",
         artist: "",
         album: "",
@@ -124,8 +71,7 @@ private func testPlaceholderDetailsUseTrackDisplayMetadata() {
     )
     let details = TrackDetails.placeholder(for: track)
 
-    expect(details.viewID == "view:one", "placeholder should keep view id")
-    expect(details.primaryViewID == "view:primary", "placeholder should keep primary view id")
+    expect(details.identity == "content:hash", "placeholder should keep track identity")
     expect(details.displayTitle == "Untitled", "placeholder title should use display default")
     expect(details.displayArtist == "Unknown Artist", "placeholder artist should use display default")
     expect(details.displayAlbum == "Unknown Album", "placeholder album should use display default")
@@ -134,9 +80,7 @@ private func testPlaceholderDetailsUseTrackDisplayMetadata() {
 
 testTrackItemUsesDisplayDefaultsForBlankMetadata()
 testTrackItemTrimsDisplayMetadata()
-testTrackItemKeepsViewIdentityDefaults()
-testTrackItemKeepsOptionalViewName()
-testPreferredDefaultViewUsesRustArtworkPriority()
+testTrackItemKeepsStableIdentity()
 testPlaceholderDetailsUseTrackDisplayMetadata()
 
 if failures.isEmpty {
@@ -148,7 +92,7 @@ if failures.isEmpty {
         )
         try? "passed\n".write(to: resultURL, atomically: true, encoding: .utf8)
     }
-    print("PlayerSharedSmokeTests passed (6 cases)")
+    print("PlayerSharedSmokeTests passed (4 cases)")
 } else {
     for failure in failures {
         fputs("PlayerSharedSmokeTests failure: \(failure)\n", stderr)

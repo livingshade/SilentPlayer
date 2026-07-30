@@ -196,7 +196,7 @@ final class PhonePresentationStateTests: XCTestCase {
             selectedTab: .playlists,
             contentScope: .playlist(42),
             playlistDetailID: 42,
-            selectedViewID: "view:favorite"
+            selectedTrackID: "track:favorite"
         )
 
         let encoded = try XCTUnwrap(PhonePresentationPersistence.encode(snapshot))
@@ -210,7 +210,7 @@ final class PhonePresentationStateTests: XCTestCase {
             selectedTab: .playlists,
             contentScope: .playlist(42),
             playlistDetailID: 42,
-            selectedViewID: nil
+            selectedTrackID: nil
         )
 
         let validated = snapshot.validated(against: [])
@@ -225,7 +225,7 @@ final class MacPresentationStateTests: XCTestCase {
     func testSnapshotRoundTripsThroughSceneStorageEncoding() throws {
         let snapshot = MacPresentationSnapshot(
             contentScope: .playlist(73),
-            selectedViewID: "view:studio"
+            selectedTrackID: "track:studio"
         )
 
         let encoded = try XCTUnwrap(MacPresentationPersistence.encode(snapshot))
@@ -236,13 +236,13 @@ final class MacPresentationStateTests: XCTestCase {
     func testDeletedPlaylistFallsBackToLibrary() {
         let snapshot = MacPresentationSnapshot(
             contentScope: .playlist(73),
-            selectedViewID: "view:studio"
+            selectedTrackID: "track:studio"
         )
 
         let validated = snapshot.validated(against: [])
 
         XCTAssertEqual(validated.contentScope, .library)
-        XCTAssertEqual(validated.selectedViewID, "view:studio")
+        XCTAssertEqual(validated.selectedTrackID, "track:studio")
     }
 
 }
@@ -364,6 +364,72 @@ final class LibraryPresentationCacheTests: XCTestCase {
         withExtendedLifetime(observation) {}
     }
 }
+
+@MainActor
+final class SinglePrimaryPresentationTests: XCTestCase {
+    func testLibraryDisplaysEveryTrackReturnedByRustWithoutClientSideCollapse() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let client = try RustPlayerClient(
+            dbURL: root.appendingPathComponent("library.sqlite3"),
+            mediaRootURL: root.appendingPathComponent("Music", isDirectory: true),
+            repoRoot: root
+        )
+        _ = try client.importFiles([
+            repositoryRoot
+                .appendingPathComponent("test-assets/audio/into_the_oceans_chorus.ogg"),
+            repositoryRoot
+                .appendingPathComponent("test-assets/audio/funk_room_reverb.ogg")
+        ])
+        let rustTracks = try client.library()
+        let model = AppModel(client: client)
+
+        await model.bootstrap()
+
+        XCTAssertEqual(model.tracks.count, rustTracks.count)
+        XCTAssertEqual(Set(model.tracks.map(\.id)), Set(rustTracks.map(\.id)))
+    }
+
+    func testMetadataEditReplacesTheSameTrackInPlace() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let client = try RustPlayerClient(
+            dbURL: root.appendingPathComponent("library.sqlite3"),
+            mediaRootURL: root.appendingPathComponent("Music", isDirectory: true),
+            repoRoot: root
+        )
+        _ = try client.importFiles([
+            repositoryRoot
+                .appendingPathComponent("test-assets/audio/into_the_oceans_chorus.ogg")
+        ])
+        let model = AppModel(client: client)
+        await model.bootstrap()
+        let original = try XCTUnwrap(model.tracks.first)
+        model.selectTrack(id: original.id)
+        model.presentTrackEdit()
+        model.trackEditTitleDraft = "Updated in place"
+
+        await model.saveTrackEdit()
+
+        let updated = try XCTUnwrap(model.selectedTrack)
+        XCTAssertEqual(model.tracks.count, 1)
+        XCTAssertEqual(updated.id, original.id)
+        XCTAssertEqual(updated.path, original.path)
+        XCTAssertEqual(updated.title, "Updated in place")
+        XCTAssertEqual(try client.library().count, 1)
+    }
+}
+
+private let repositoryRoot = URL(fileURLWithPath: #filePath)
+    .deletingLastPathComponent()
+    .deletingLastPathComponent()
+    .deletingLastPathComponent()
+    .deletingLastPathComponent()
+    .deletingLastPathComponent()
 
 @MainActor
 final class LibraryMigrationTests: XCTestCase {

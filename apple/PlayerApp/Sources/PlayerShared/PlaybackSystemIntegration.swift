@@ -438,7 +438,7 @@ public final class IOSPlaybackSystemIntegration: NSObject, PlaybackSystemIntegra
         }
 
         let detailsArtworkURL = model.nowPlayingDetails.flatMap { details in
-            details.viewID == track.viewID ? details.artworkURL : nil
+            details.identity == track.identity ? details.artworkURL : nil
         }
         if let artwork = artwork(for: detailsArtworkURL ?? track.artworkURL) {
             info[MPMediaItemPropertyArtwork] = artwork

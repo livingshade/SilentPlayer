@@ -9,16 +9,16 @@
 Silent 的三个 target 共享数据和应用行为，但不追求功能入口一一对应：
 
 - macOS 和 iPhone 是面向日常聆听的播放器。它们的首要任务是让用户快速找到音乐、播放音乐、控制当前队列、查看最近歌单，并与锁屏、耳机和系统媒体控制自然配合。图形界面必须简洁、熟悉且用户友好。
-- `silent` CLI 是完整的曲库管理和高级操作界面。Music View 创建与编辑、metadata、封面、歌词、歌单 CRUD 与排序、批量导入导出、响度分析、审计、迁移和修复等复杂工作应优先在 CLI 中完整实现，并支持脚本化。
-- Rust application services 提供三个 target 共用的规则、持久化和数据兼容性。共享 Rust/FFI 能力不意味着 Apple UI 必须为每个 API 提供按钮。
+- `silent` CLI 是完整的曲库管理和高级操作界面。歌曲导入与原地编辑、metadata、封面、歌词、歌单 CRUD 与排序、批量导入导出、响度分析、审计、迁移和修复等复杂工作应优先在 CLI 中完整实现，并支持脚本化。
+- Rust application services 提供三个 target 共用的规则和持久化。共享 Rust/FFI 能力不意味着 Apple UI 必须为每个 API 提供按钮。
 
-Apple 端可以读取并播放 CLI 创建的 Music View 和歌单，也可以提供与当前聆听任务直接相关的轻量操作，例如搜索、播放下一首、调整当前队列或打开最近歌单；它不应演变成数据库管理控制台。新增能力默认先保证 Rust 与 CLI 完整，只有在它属于高频播放流程、能明显改善聆听体验时才进入 macOS 或 iPhone 主界面。
+Apple 端可以读取并播放 CLI 管理的歌曲和歌单，也可以提供与当前聆听任务直接相关的轻量操作，例如搜索、播放下一首、调整当前队列或打开最近歌单；它不应演变成数据库管理控制台。新增能力默认先保证 Rust 与 CLI 完整，只有在它属于高频播放流程、能明显改善聆听体验时才进入 macOS 或 iPhone 主界面。
 
 ## Music View 模型
 
-播放器内部把每个可播放音乐条目建模成一个 `view`。每个 view 有稳定的 `view_id`，并指向自己的 `primary_view_id`；最初导入的托管音频副本就是 primary view。primary view 使用 `audio:<audio_hash>` 作为身份，因此导入时会按音频内容去重，而不是按文件名或 metadata 去重。
+播放器内部把每首独立歌曲建模成唯一的 primary view。`view_id` 是歌曲的稳定身份，并始终与 `primary_view_id` 相等；`view_kind` 始终为 `primary`。导入歌曲通常使用 `audio:<audio_hash>` 作为身份，因此导入时会按音频内容去重，而不是按文件名或 metadata 去重。
 
-后续改名、剪裁时间、降低音质、换封面、转格式等都可以建模成从 primary view 派生出的新 view。当前代码已经持久化了 `view_id`、`primary_view_id`、`view_kind`、`transform_spec`、`quality_profile`、`format_name` 这些字段；其中音质、格式和变换 spec 先作为占位字段，后续导出/转码流水线会基于它们生成完全独立、可携带、可播放的音频文件。完整字段说明见 `docs/music_view_model.md`。
+改名、metadata、封面、歌词、格式或音频内容编辑都直接更新这首 primary 歌曲，并保持同一个歌曲身份。只有显式 export/materialize 才会复制或渲染当前歌曲，并把结果注册为另一首具有独立身份的 primary 歌曲；源歌曲保持不变。完整字段说明见 `docs/music_view_model.md`。
 
 ## 技术方向
 
@@ -38,7 +38,7 @@ Apple 端可以读取并播放 CLI 创建的 Music View 和歌单，也可以提
 - `crates/analyzer`: 独立 loudness 分析 worker，后台分析并把结果持久化到 SQLite。
 - `crates/metadata_lofty`: metadata 解析后端，读取 title、artist、album、duration 和内嵌 artwork。
 - `crates/store_sqlite`: SQLite 曲库和缓存，保存 metadata、file fingerprint、loudness analysis、搜索索引字段、播放列表、收藏、播放历史和 artwork bytes。
-- `crates/cli`: `silent` 通用 CLI target，是完整的曲库管理界面，覆盖 Music View、播放列表、导入导出、分析、审计、历史和播放控制能力。
+- `crates/cli`: `silent` 通用 CLI target，是完整的曲库管理界面，覆盖歌曲原地编辑、播放列表、导入导出、分析、审计、历史和播放控制能力。
 - `test-assets/audio`: 真实下载的 Ogg Vorbis 音频 fixtures，用于解码、响度分析和播放 smoke tests。
 - `docs/product_design.md`: 产品和界面设计。
 - `docs/loudness_normalization.md`: 响度归一化设计。
@@ -82,7 +82,7 @@ target/debug/silent --cli --db player_library.sqlite3 --media-root Music library
 target/debug/silent --cli --db player_library.sqlite3 --media-root Music playback shell
 ```
 
-完整命令、JSON 输出、Music View 编辑、曲库迁移及 target 覆盖矩阵见
+完整命令、JSON 输出、歌曲原地编辑、导出/实体化、曲库迁移及 target 覆盖矩阵见
 [`docs/cli.md`](docs/cli.md)。
 
 本机启动 macOS SwiftUI 调试版：

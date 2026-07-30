@@ -17,3 +17,6 @@ xcuserdata/
 /youtube-music-library/
 /missing_youtube_links.csv
 /missing_youtube_links.md
+
+# Local recovery material; never commit personal library data.
+/.local-recovery/
