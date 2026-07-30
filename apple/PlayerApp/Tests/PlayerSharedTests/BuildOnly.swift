@@ -118,6 +118,22 @@ final class PlaybackPolicyTests: XCTestCase {
         )
     }
 
+    @MainActor
+    func testEnteringBackgroundKeepsActivePlaybackSessionPrepared() {
+        let model = AppModel(discoverClient: {
+            throw RustPlayerError.startupFailed("background playback test")
+        })
+        let integration = RecordingPlaybackSystemIntegration()
+        model.installPlaybackSystemIntegration(integration)
+
+        model.applicationDidEnterBackground()
+        XCTAssertEqual(integration.backgroundCount, 0)
+
+        model.isPlaying = true
+        model.applicationDidEnterBackground()
+        XCTAssertEqual(integration.backgroundCount, 1)
+    }
+
     func testTrackChangeStatusMatchesConfirmedPlaybackState() {
         XCTAssertEqual(
             PlaybackStatusText.afterTrackChange(isPlaying: true, title: "Next Track"),
@@ -579,11 +595,16 @@ final class AppModelAudioInterruptionTests: XCTestCase {
 @MainActor
 private final class RecordingPlaybackSystemIntegration: PlaybackSystemIntegration {
     private(set) var prepareCount = 0
+    private(set) var backgroundCount = 0
 
     func start() {}
 
     func prepareForPlayback() throws {
         prepareCount += 1
+    }
+
+    func applicationDidEnterBackground() throws {
+        backgroundCount += 1
     }
 
     func playbackPositionDidChange() {}

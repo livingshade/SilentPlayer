@@ -101,6 +101,17 @@ compile_app_icon() {
   /usr/libexec/PlistBuddy -c "Merge $partial_plist" "$APP_BUNDLE/Info.plist"
 }
 
+verify_background_audio_configuration() {
+  local plist="$APP_BUNDLE/Info.plist"
+  local background_mode
+
+  background_mode=$(/usr/libexec/PlistBuddy -c "Print :UIBackgroundModes:0" "$plist")
+  if [[ "$background_mode" != "audio" ]]; then
+    echo "error: packaged iPhone app does not declare UIBackgroundModes=audio" >&2
+    exit 1
+  fi
+}
+
 package_app_bundle() {
   local binary="$PRODUCT_DIR/NormalPlayer-iOS"
 
@@ -120,6 +131,7 @@ package_app_bundle() {
     "$LAUNCH_SCREEN_SOURCE"
   write_info_plist
   compile_app_icon
+  verify_background_audio_configuration
   xattr -cr "$APP_BUNDLE"
   codesign --force --sign - --timestamp=none "$APP_BUNDLE"
 }

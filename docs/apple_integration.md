@@ -46,7 +46,7 @@ Apple target 必须能读取并播放 CLI 产生的数据，但不需要提供�
 
 Normalize 增益由 Rodio 播放 backend 应用到渲染链路，不修改系统音量。`engine` 的命令只有在 backend 操作完成后才返回；Swift 随后读取已经确认的 snapshot，不使用固定延时猜测状态。
 
-当前 iOS 外壳已经完成系统播放集成：使用 `.playback` / `.longFormAudio` 配置并按需激活 `AVAudioSession`，通过 `MPNowPlayingInfoCenter` 发布锁屏标题、艺人、专辑、封面、时长、进度和播放状态，通过 `MPRemoteCommandCenter` 接收播放、暂停、上一首、下一首、拖动进度、循环和随机命令。来电等系统中断与耳机断开事件会进入 Rust `PlaybackLifecycle` 状态机，只有中断前正在播放且系统允许恢复时才会自动恢复。模拟器 app bundle 声明了 `UIBackgroundModes = audio`。
+当前 iOS 外壳已经完成系统播放集成：使用 `.playback` / `.longFormAudio` 配置并按需激活 `AVAudioSession`，通过 `MPNowPlayingInfoCenter` 发布锁屏标题、艺人、专辑、封面、时长、进度和播放状态，通过 `MPRemoteCommandCenter` 接收播放、暂停、上一首、下一首、拖动进度、循环和随机命令。进入锁屏或后台时，如果仍在播放，iOS 外壳会重新确认播放会话处于激活状态。来电等系统中断与耳机断开事件会进入 Rust `PlaybackLifecycle` 状态机，只有中断前正在播放且系统允许恢复时才会自动恢复。真机与模拟器 app bundle 都声明并在打包时校验 `UIBackgroundModes = audio`。
 
 锁屏播放信息按事件更新：换歌、元数据、播放状态和跳转位置变化时重新发布；正常播放期间由系统根据已发布的进度和速率推算时间，不随 Swift 的播放轮询重复提交整份 `MPNowPlayingInfoCenter` 字典。
 

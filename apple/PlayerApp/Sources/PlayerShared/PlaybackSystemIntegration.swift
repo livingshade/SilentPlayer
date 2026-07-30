@@ -5,12 +5,14 @@ import Foundation
 public protocol PlaybackSystemIntegration: AnyObject {
     func start()
     func prepareForPlayback() throws
+    func applicationDidEnterBackground() throws
     func playbackPositionDidChange()
     func playbackDidStop()
     func shutdown()
 }
 
 public extension PlaybackSystemIntegration {
+    func applicationDidEnterBackground() throws {}
     func playbackPositionDidChange() {}
 }
 
@@ -143,6 +145,13 @@ public final class IOSPlaybackSystemIntegration: NSObject, PlaybackSystemIntegra
     public func prepareForPlayback() throws {
         try configureAudioSession()
         try audioSession.setActive(true)
+    }
+
+    public func applicationDidEnterBackground() throws {
+        guard model?.isPlaying == true else {
+            return
+        }
+        try prepareForPlayback()
     }
 
     public func playbackPositionDidChange() {

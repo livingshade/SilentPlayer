@@ -166,6 +166,7 @@ public struct PhoneContentView: View {
         }
         .onChange(of: scenePhase) { phase in
             if phase == .background {
+                model.applicationDidEnterBackground()
                 persistPresentation()
             }
         }

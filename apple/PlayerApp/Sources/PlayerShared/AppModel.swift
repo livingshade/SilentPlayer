@@ -970,6 +970,17 @@ public final class AppModel: ObservableObject {
         }
     }
 
+    public func applicationDidEnterBackground() {
+        guard isPlaying else {
+            return
+        }
+        do {
+            try playbackSystemIntegration?.applicationDidEnterBackground()
+        } catch {
+            report(error)
+        }
+    }
+
     public func presentCreatePlaylist() {
         isPlaylistPickerPresented = false
         newPlaylistNameDraft = defaultNewPlaylistName()

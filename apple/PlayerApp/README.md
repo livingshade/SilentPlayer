@@ -29,9 +29,10 @@ The iPhone UI uses a compact tab-based layout and the same `AppModel`/Rust FFI A
 The iOS entry point installs an Apple playback-system integration that configures an
 `AVAudioSession` for long-form playback, publishes lock-screen metadata through
 `MPNowPlayingInfoCenter`, handles play/pause/next/previous/seek/repeat/shuffle remote
-commands, pauses when an audio output disconnects, and coordinates interruption resume
-decisions with the Rust playback lifecycle state machine. The simulator packaging script
-adds the `audio` background mode to the generated app `Info.plist`.
+commands, pauses when an audio output disconnects, keeps an active playback session alive
+when the app enters the background, and coordinates interruption resume decisions with the
+Rust playback lifecycle state machine. The device and simulator packaging scripts add and
+verify the `audio` background mode in the generated app `Info.plist`.
 
 Building the iOS app requires the full Xcode install, not Command Line Tools only. First build the Rust static libraries and generate the ignored local XCFramework:
 

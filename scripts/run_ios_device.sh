@@ -96,6 +96,17 @@ compile_resources() {
   /usr/libexec/PlistBuddy -c "Merge $partial_plist" "$APP_BUNDLE/Info.plist"
 }
 
+verify_background_audio_configuration() {
+  local plist="$APP_BUNDLE/Info.plist"
+  local background_mode
+
+  background_mode=$(/usr/libexec/PlistBuddy -c "Print :UIBackgroundModes:0" "$plist")
+  if [[ "$background_mode" != "audio" ]]; then
+    echo "error: packaged iPhone app does not declare UIBackgroundModes=audio" >&2
+    exit 1
+  fi
+}
+
 package_and_sign() {
   if [[ ! -x "$RAW_BINARY" ]]; then
     echo "error: expected device binary at $RAW_BINARY" >&2
@@ -112,6 +123,7 @@ package_and_sign() {
   cp "$NORMALPLAYER_IOS_PROFILE" "$APP_BUNDLE/embedded.mobileprovision"
   write_info_plist
   compile_resources
+  verify_background_audio_configuration
 
   security cms -D -i "$NORMALPLAYER_IOS_PROFILE" > "$PROFILE_PLIST"
   /usr/libexec/PlistBuddy -x -c "Print :Entitlements" "$PROFILE_PLIST" > "$ENTITLEMENTS"
