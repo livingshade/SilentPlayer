@@ -558,6 +558,15 @@ public final class RustPlayerClient: @unchecked Sendable {
         }
     }
 
+    public func playQueueItem(at index: Int) throws -> PlaybackSnapshot {
+        try sync {
+            try decode(
+                player_app_queue_play(app, max(0, index)),
+                as: PlaybackSnapshotDTO.self
+            ).model
+        }
+    }
+
     public func addToQueue(path: String) throws -> PlaybackSnapshot {
         try sync {
             try path.withCString { pathValue in

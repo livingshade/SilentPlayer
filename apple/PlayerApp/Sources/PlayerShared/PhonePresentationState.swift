@@ -1,9 +1,8 @@
 import Foundation
 
-public enum PhonePresentationTab: String, Codable, Hashable, Sendable {
+public enum PhonePresentationTab: String, CaseIterable, Codable, Hashable, Sendable {
     case library
     case playlists
-    case nowPlaying
 }
 
 public enum PhonePresentationScopeKind: String, Codable, Hashable, Sendable {

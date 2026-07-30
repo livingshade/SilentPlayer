@@ -141,6 +141,10 @@ fn run_queue_command(
     }
     let action = args.remove(0);
     match action.as_str() {
+        "play" => {
+            let position = exactly_one(args, "queue play requires <position>")?;
+            context.emit(&client.queue_play(parse_queue_position(&position)?)?)
+        }
         "add" | "next" => {
             let selector = exactly_one(args, "queue add/next requires <path-or-view-id>")?;
             let selected = resolve_track(client, &selector)?;
@@ -170,7 +174,7 @@ fn run_queue_command(
             context.emit(&client.queue_clear()?)
         }
         _ => Err(CliError::usage(
-            "queue supports add, next, move, remove, or clear",
+            "queue supports play, add, next, move, remove, or clear",
         )),
     }
 }
@@ -334,6 +338,7 @@ Playback shell commands:
   next | previous
   seek <milliseconds|mm:ss>
   status | queue
+  queue play <position>               Play the item at a 1-based queue position
   queue add <selector>                Add a track to the end
   queue next <selector>               Play a track next
   queue move <from> <to>              Reorder using 1-based positions

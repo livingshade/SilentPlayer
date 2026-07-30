@@ -676,6 +676,7 @@ public final class AppModel: ObservableObject {
         libraryScope = .playlist(playlist.name)
         playlistSortMode = .defaultOrder
         query = ""
+        applyLoadedTracks([], preferredSelectedTrackID: nil)
         await reloadActiveScope()
         await refreshPlaylists()
     }
@@ -1433,6 +1434,34 @@ public final class AppModel: ObservableObject {
             let snapshot = try await invoke { try $0.moveQueueItem(from: from, to: to) }
             apply(snapshot: snapshot)
             await refreshQueue()
+        } catch {
+            report(error)
+        }
+    }
+
+    public func playQueueItem(at index: Int) async {
+        guard playbackQueue.indices.contains(index) else {
+            return
+        }
+        guard !isAudioInterrupted else {
+            status = "Wait for the audio interruption to end"
+            return
+        }
+        let requestedTrack = playbackQueue[index]
+        do {
+            let previousTrackID = nowPlaying?.id
+            let previousPositionMS = playbackElapsedMS
+            try playbackSystemIntegration?.prepareForPlayback()
+            let snapshot = try await invoke { try $0.playQueueItem(at: index) }
+            selectedTrack = snapshot.currentTrack
+            apply(snapshot: snapshot, fallbackTrack: requestedTrack)
+            await refreshQueue()
+            publishPlaybackPositionDiscontinuity(
+                previousTrackID: previousTrackID,
+                previousPositionMS: previousPositionMS,
+                force: true
+            )
+            status = "Playing \(snapshot.currentTrack?.title ?? requestedTrack.title)"
         } catch {
             report(error)
         }

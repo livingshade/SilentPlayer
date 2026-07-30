@@ -71,6 +71,14 @@ impl PlayerSession {
         &self.state
     }
 
+    pub fn playback_order(&self) -> &[usize] {
+        &self.shuffle_order
+    }
+
+    pub fn playback_position(&self) -> Option<usize> {
+        self.shuffle_cursor
+    }
+
     pub fn set_queue(&mut self, queue: Vec<Track>, start_index: usize) -> PlaybackResult<()> {
         if queue.is_empty() {
             self.queue = queue;
@@ -209,10 +217,51 @@ impl PlayerSession {
         }
     }
 
+    pub fn start_shuffled(&mut self) -> PlaybackResult<()> {
+        let Some(current_index) = self.state.current_index else {
+            return Err(PlaybackError::EmptyQueue);
+        };
+
+        let mut order = (0..self.queue.len()).collect::<Vec<_>>();
+        self.shuffle_rng.shuffle(&mut order);
+        if order.len() > 1 && order.first().copied() == Some(current_index) {
+            let swap_with = order
+                .iter()
+                .position(|index| *index != current_index)
+                .unwrap_or(0);
+            order.swap(0, swap_with);
+        }
+
+        self.state.shuffle = true;
+        self.state.current_index = order.first().copied();
+        self.state.position_ms = 0;
+        self.shuffle_order = order;
+        self.shuffle_cursor = Some(0);
+        Ok(())
+    }
+
     pub fn current_track(&self) -> Option<&Track> {
         self.state
             .current_index
             .and_then(|index| self.queue.get(index))
+    }
+
+    pub fn select_queue_index(&mut self, index: usize) -> PlaybackResult<()> {
+        if index >= self.queue.len() {
+            return Err(PlaybackError::InvalidQueueIndex {
+                index,
+                len: self.queue.len(),
+            });
+        }
+
+        self.state.current_index = Some(index);
+        self.state.position_ms = 0;
+        if self.state.shuffle {
+            self.sync_shuffle_cursor(index);
+        } else {
+            self.shuffle_cursor = Some(index);
+        }
+        Ok(())
     }
 
     pub fn current_gain(&self) -> Option<GainDecision> {
@@ -621,6 +670,45 @@ mod tests {
         visited.sort();
         assert_eq!(visited, vec!["a", "b", "c", "d"]);
         assert!(!session.state().is_playing);
+    }
+
+    #[test]
+    fn starting_shuffle_selects_a_randomized_first_track_and_exposes_playback_order() {
+        let mut session = PlayerSession::new(NormalizationSettings::default());
+        session.shuffle_rng = ShuffleRng::new(42);
+        session
+            .set_queue(vec![track("a"), track("b"), track("c"), track("d")], 0)
+            .unwrap();
+
+        session.start_shuffled().unwrap();
+
+        assert!(session.state().shuffle);
+        assert_ne!(session.current_track().unwrap().title, "a");
+        assert_eq!(session.playback_position(), Some(0));
+        assert_eq!(
+            session.playback_order().first().copied(),
+            session.state().current_index
+        );
+        let mut order = session.playback_order().to_vec();
+        order.sort_unstable();
+        assert_eq!(order, vec![0, 1, 2, 3]);
+    }
+
+    #[test]
+    fn selecting_a_visible_shuffle_item_updates_the_shuffle_cursor() {
+        let mut session = PlayerSession::new(NormalizationSettings::default());
+        session.shuffle_rng = ShuffleRng::new(77);
+        session
+            .set_queue(vec![track("a"), track("b"), track("c"), track("d")], 0)
+            .unwrap();
+        session.start_shuffled().unwrap();
+        let selected_source_index = session.playback_order()[2];
+
+        session.select_queue_index(selected_source_index).unwrap();
+
+        assert_eq!(session.state().current_index, Some(selected_source_index));
+        assert_eq!(session.playback_position(), Some(2));
+        assert_eq!(session.state().position_ms, 0);
     }
 
     #[test]

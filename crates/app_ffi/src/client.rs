@@ -186,6 +186,10 @@ impl SilentAppClient {
         self.call(|app| app.service_queue_play_next(path.as_ref()))
     }
 
+    pub fn queue_play(&mut self, index: usize) -> ClientResult {
+        self.call(|app| app.service_queue_play(index))
+    }
+
     pub fn queue_add(&mut self, path: impl AsRef<Path>) -> ClientResult {
         self.call(|app| app.service_queue_add(path.as_ref()))
     }

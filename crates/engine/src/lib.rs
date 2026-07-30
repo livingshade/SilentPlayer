@@ -53,9 +53,11 @@ enum EngineCommand {
         start_index: usize,
         repeat_mode: RepeatMode,
         shuffle: bool,
+        randomize_start: bool,
     },
     AppendToQueue(Vec<Track>),
     InsertNext(Vec<Track>),
+    PlayQueueItem(usize),
     MoveQueueItem {
         from: usize,
         to: usize,
@@ -78,6 +80,10 @@ enum EngineCommand {
 #[derive(Clone, Debug, PartialEq)]
 pub enum PlaybackEvent {
     StateChanged(PlaybackState),
+    QueueOrderChanged {
+        order: Vec<usize>,
+        current_position: Option<usize>,
+    },
     TrackChanged(Option<Box<Track>>),
     GainChanged(Option<GainDecision>),
     PositionChanged(u64),
@@ -193,12 +199,14 @@ impl PlayerEngine {
         start_index: usize,
         repeat_mode: RepeatMode,
         shuffle: bool,
+        randomize_start: bool,
     ) -> PlayerResult<()> {
         self.execute(EngineCommand::PlayQueue {
             queue,
             start_index,
             repeat_mode,
             shuffle,
+            randomize_start,
         })
     }
 
@@ -212,6 +220,10 @@ impl PlayerEngine {
 
     pub fn insert_next(&self, tracks: Vec<Track>) -> PlayerResult<()> {
         self.execute(EngineCommand::InsertNext(tracks))
+    }
+
+    pub fn play_queue_item(&self, index: usize) -> PlayerResult<()> {
+        self.execute(EngineCommand::PlayQueueItem(index))
     }
 
     pub fn move_queue_item(&self, from: usize, to: usize) -> PlayerResult<()> {
@@ -433,13 +445,18 @@ fn handle_command<B: AudioBackend>(
             start_index,
             repeat_mode,
             shuffle,
+            randomize_start,
         } => {
             *loaded_track_id = None;
             session
                 .set_queue(queue, start_index)
                 .map_err(errors_from_playback)?;
             session.set_repeat_mode(repeat_mode);
-            session.set_shuffle(shuffle);
+            if shuffle && randomize_start {
+                session.start_shuffled().map_err(errors_from_playback)?;
+            } else {
+                session.set_shuffle(shuffle);
+            }
             start_playback(session, backend, loaded_track_id)
         }
         EngineCommand::AppendToQueue(tracks) => {
@@ -449,6 +466,13 @@ fn handle_command<B: AudioBackend>(
         EngineCommand::InsertNext(tracks) => {
             session.insert_next(tracks);
             Ok(())
+        }
+        EngineCommand::PlayQueueItem(index) => {
+            session
+                .select_queue_index(index)
+                .map_err(errors_from_playback)?;
+            *loaded_track_id = None;
+            start_playback(session, backend, loaded_track_id)
         }
         EngineCommand::MoveQueueItem { from, to } => {
             session
@@ -628,6 +652,10 @@ fn publish_snapshot<B: AudioBackend>(
     }
 
     let _ = event_tx.send(PlaybackEvent::StateChanged(session.state().clone()));
+    let _ = event_tx.send(PlaybackEvent::QueueOrderChanged {
+        order: session.playback_order().to_vec(),
+        current_position: session.playback_position(),
+    });
     let _ = event_tx.send(PlaybackEvent::TrackChanged(
         session.current_track().cloned().map(Box::new),
     ));
@@ -781,7 +809,13 @@ mod tests {
         .unwrap();
 
         engine
-            .play_queue(vec![track("a"), track("b")], 1, RepeatMode::All, true)
+            .play_queue(
+                vec![track("a"), track("b")],
+                1,
+                RepeatMode::All,
+                true,
+                false,
+            )
             .unwrap();
 
         assert!(calls.values().iter().any(|value| value == "load:b:4.00"));

@@ -70,7 +70,9 @@ macOS 版本建议使用：
 
 iPhone 版本建议使用：
 
-- SwiftUI tab navigation。
+- SwiftUI tab navigation，tab 只承载曲库和歌单等稳定顶层区域。
+- 曲库与歌单共用全局 MiniPlayer；点击后以全屏播放页展示当前歌曲和队列。
+- Shuffle 由 Rust 决定首曲和后续顺序，Apple UI 直接展示 Rust 返回的实际播放队列。
 - Files picker 导入目录或文件。
 - App 沙盒缓存曲库数据库。
 - `AVAudioSessionCategoryPlayback` 支持后台播放。

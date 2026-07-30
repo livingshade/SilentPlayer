@@ -44,6 +44,8 @@ pub struct PlayerApp {
     current_track: Option<TrackDto>,
     queue_tracks: Vec<TrackDto>,
     queue_current_index: Option<usize>,
+    queue_playback_order: Vec<usize>,
+    queue_playback_position: Option<usize>,
     repeat_mode: RepeatMode,
     shuffle_enabled: bool,
     is_playing: bool,
@@ -335,6 +337,8 @@ impl PlayerApp {
             current_track: None,
             queue_tracks: Vec::new(),
             queue_current_index: None,
+            queue_playback_order: Vec::new(),
+            queue_playback_position: None,
             repeat_mode: RepeatMode::Off,
             shuffle_enabled: false,
             is_playing: false,
@@ -575,12 +579,12 @@ impl PlayerApp {
 
     pub(crate) fn service_play_library(&mut self) -> PlayerResult<impl Serialize> {
         let (tracks, start_index) = library_playback_plan(&self.store()?, None)?;
-        self.play_queue_tracks(tracks, start_index)
+        self.play_queue_tracks(tracks, start_index, false)
     }
 
     pub(crate) fn service_play_path(&mut self, path: &Path) -> PlayerResult<impl Serialize> {
         let (tracks, start_index) = library_playback_plan(&self.store()?, Some(path))?;
-        self.play_queue_tracks(tracks, start_index)
+        self.play_queue_tracks(tracks, start_index, false)
     }
 
     pub(crate) fn service_play_queue(
@@ -608,7 +612,7 @@ impl PlayerApp {
                     start_path.display()
                 ))
             })?;
-        self.play_queue_tracks(tracks, start_index)
+        self.play_queue_tracks(tracks, start_index, false)
     }
 
     pub(crate) fn service_play_playlist(
@@ -642,7 +646,7 @@ impl PlayerApp {
         };
         store.touch_playlist(name)?;
         self.shuffle_enabled = shuffle;
-        self.play_queue_tracks(tracks, start_index)
+        self.play_queue_tracks(tracks, start_index, shuffle && start_path.is_none())
     }
 
     pub(crate) fn service_pause(&mut self) -> PlayerResult<impl Serialize> {
@@ -781,9 +785,15 @@ impl PlayerApp {
 
     pub(crate) fn service_queue(&mut self) -> PlayerResult<impl Serialize> {
         self.poll_events();
+        let order = self.valid_queue_playback_order();
         Ok(PlaybackQueueDto {
-            tracks: self.queue_tracks.clone(),
-            current_index: self.queue_current_index,
+            tracks: order
+                .iter()
+                .filter_map(|index| self.queue_tracks.get(*index).cloned())
+                .collect(),
+            current_index: self
+                .queue_playback_position
+                .filter(|position| *position < order.len()),
             repeat_mode: repeat_mode_name(self.repeat_mode).to_owned(),
             shuffle_enabled: self.shuffle_enabled,
         })
@@ -791,6 +801,10 @@ impl PlayerApp {
 
     pub(crate) fn service_queue_play_next(&mut self, path: &Path) -> PlayerResult<impl Serialize> {
         self.add_path_to_queue(path, true)
+    }
+
+    pub(crate) fn service_queue_play(&mut self, index: usize) -> PlayerResult<impl Serialize> {
+        self.play_queue_item(index)
     }
 
     pub(crate) fn service_queue_add(&mut self, path: &Path) -> PlayerResult<impl Serialize> {
@@ -1396,6 +1410,14 @@ pub unsafe extern "C" fn player_app_queue_play_next(
 }
 
 #[no_mangle]
+pub unsafe extern "C" fn player_app_queue_play(app: *mut PlayerApp, index: usize) -> *mut c_char {
+    ffi_result(|| {
+        let app = app_mut(app)?;
+        app.service_queue_play(index)
+    })
+}
+
+#[no_mangle]
 pub unsafe extern "C" fn player_app_queue_add(
     app: *mut PlayerApp,
     path: *const c_char,
@@ -1870,6 +1892,7 @@ impl PlayerApp {
 
         self.queue_tracks = queue_tracks;
         self.queue_current_index = current_index;
+        self.reset_queue_playback_order();
         self.current_track = current_index.and_then(|index| self.queue_tracks.get(index).cloned());
         self.position_ms = if current_index.is_some() {
             restored.position_ms
@@ -2249,6 +2272,7 @@ impl PlayerApp {
         &mut self,
         tracks: Vec<Track>,
         start_index: usize,
+        randomize_start: bool,
     ) -> PlayerResult<PlaybackSnapshot> {
         if tracks.is_empty() {
             return Err(PlayerError::invalid_input("queue is empty"));
@@ -2270,13 +2294,41 @@ impl PlayerApp {
         let shuffle_enabled = self.shuffle_enabled;
         {
             let engine = self.engine()?;
-            engine.play_queue(tracks, start_index, repeat_mode, shuffle_enabled)?;
+            engine.play_queue(
+                tracks,
+                start_index,
+                repeat_mode,
+                shuffle_enabled,
+                randomize_start,
+            )?;
         }
         self.queue_tracks = queue_tracks;
+        self.reset_queue_playback_order();
         self.last_error = None;
         self.poll_events();
         self.persist_queue_state()?;
         Ok(self.snapshot())
+    }
+
+    fn valid_queue_playback_order(&self) -> Vec<usize> {
+        if is_valid_queue_order(&self.queue_playback_order, self.queue_tracks.len()) {
+            self.queue_playback_order.clone()
+        } else {
+            (0..self.queue_tracks.len()).collect()
+        }
+    }
+
+    fn reset_queue_playback_order(&mut self) {
+        self.queue_playback_order = (0..self.queue_tracks.len()).collect();
+        self.queue_playback_position = self
+            .queue_current_index
+            .filter(|index| *index < self.queue_tracks.len());
+    }
+
+    fn source_queue_index(&self, displayed_index: usize) -> Option<usize> {
+        self.valid_queue_playback_order()
+            .get(displayed_index)
+            .copied()
     }
 
     fn add_path_to_queue(
@@ -2345,12 +2397,37 @@ impl PlayerApp {
             self.current_track = self.queue_tracks.first().cloned();
             self.position_ms = 0;
         }
+        self.reset_queue_playback_order();
+        self.poll_events();
+        self.persist_queue_state()?;
+        Ok(self.snapshot())
+    }
+
+    fn play_queue_item(&mut self, displayed_index: usize) -> PlayerResult<PlaybackSnapshot> {
+        self.poll_events();
+        let source_index = self.source_queue_index(displayed_index).ok_or_else(|| {
+            PlayerError::invalid_input(format!(
+                "queue index {displayed_index} is outside queue length {}",
+                self.queue_tracks.len()
+            ))
+        })?;
+        self.ensure_playback_can_start()?;
+        self.finish_active_session("played_other_track").ok();
+        {
+            let engine = self.ensure_engine_queue_loaded()?;
+            engine.play_queue_item(source_index)?;
+        }
         self.poll_events();
         self.persist_queue_state()?;
         Ok(self.snapshot())
     }
 
     fn move_queue_item(&mut self, from: usize, to: usize) -> PlayerResult<PlaybackSnapshot> {
+        if self.shuffle_enabled {
+            return Err(PlayerError::invalid_input(
+                "turn shuffle off before reordering the queue",
+            ));
+        }
         let len = self.queue_tracks.len();
         if from >= len || to >= len {
             return Err(PlayerError::invalid_input(format!(
@@ -2364,18 +2441,19 @@ impl PlayerApp {
         }
         let track = self.queue_tracks.remove(from);
         self.queue_tracks.insert(to, track);
+        self.reset_queue_playback_order();
         self.poll_events();
         self.persist_queue_state()?;
         Ok(self.snapshot())
     }
 
-    fn remove_queue_item(&mut self, index: usize) -> PlayerResult<PlaybackSnapshot> {
-        if index >= self.queue_tracks.len() {
+    fn remove_queue_item(&mut self, displayed_index: usize) -> PlayerResult<PlaybackSnapshot> {
+        let Some(index) = self.source_queue_index(displayed_index) else {
             return Err(PlayerError::invalid_input(format!(
-                "queue index {index} is outside queue length {}",
+                "queue index {displayed_index} is outside queue length {}",
                 self.queue_tracks.len()
             )));
-        }
+        };
         let removed_current = self.queue_current_index == Some(index);
         if removed_current {
             self.pending_session_end_reason = Some("removed_from_queue".to_owned());
@@ -2398,6 +2476,7 @@ impl PlayerApp {
                 self.position_ms = 0;
             }
         }
+        self.reset_queue_playback_order();
         self.poll_events();
         self.persist_queue_state()?;
         Ok(self.snapshot())
@@ -2411,6 +2490,8 @@ impl PlayerApp {
         }
         self.queue_tracks.clear();
         self.queue_current_index = None;
+        self.queue_playback_order.clear();
+        self.queue_playback_position = None;
         self.is_playing = false;
         self.position_ms = 0;
         self.poll_events();
@@ -2560,6 +2641,18 @@ impl PlayerApp {
                 self.repeat_mode = state.repeat_mode;
                 self.shuffle_enabled = state.shuffle;
             }
+            PlaybackEvent::QueueOrderChanged {
+                order,
+                current_position,
+            } => {
+                if is_valid_queue_order(&order, self.queue_tracks.len()) {
+                    self.queue_playback_order = order;
+                    self.queue_playback_position =
+                        current_position.filter(|position| *position < self.queue_tracks.len());
+                } else {
+                    self.reset_queue_playback_order();
+                }
+            }
             PlaybackEvent::TrackChanged(track) => {
                 let next_track = match track
                     .as_deref()
@@ -2598,6 +2691,11 @@ impl PlayerApp {
                         .iter()
                         .position(|track| track.path == next_track.path)
                 });
+                self.queue_playback_position = self.queue_current_index.and_then(|current_index| {
+                    self.valid_queue_playback_order()
+                        .iter()
+                        .position(|index| *index == current_index)
+                });
                 self.current_track = next_track;
             }
             PlaybackEvent::GainChanged(gain) => {
@@ -2630,7 +2728,7 @@ impl PlayerApp {
             position_ms: self.position_ms,
             current_track: self.current_track.clone(),
             queue_len: self.queue_tracks.len(),
-            queue_position: self.queue_current_index,
+            queue_position: self.queue_playback_position,
             repeat_mode: repeat_mode_name(self.repeat_mode).to_owned(),
             shuffle_enabled: self.shuffle_enabled,
             gain_db: self.gain_db,
@@ -2962,6 +3060,14 @@ fn repeat_mode_name(repeat_mode: RepeatMode) -> &'static str {
         RepeatMode::One => "one",
         RepeatMode::All => "all",
     }
+}
+
+fn is_valid_queue_order(order: &[usize], queue_len: usize) -> bool {
+    if order.len() != queue_len {
+        return false;
+    }
+    let unique = order.iter().copied().collect::<HashSet<_>>();
+    unique.len() == queue_len && unique.iter().all(|index| *index < queue_len)
 }
 
 fn moved_queue_index(current: Option<usize>, from: usize, to: usize) -> Option<usize> {
@@ -3507,7 +3613,7 @@ mod tests {
         let engine =
             PlayerEngine::spawn(NormalizationSettings::default(), || Ok(LoadedBackend)).unwrap();
         engine
-            .play_queue(vec![track.clone()], 0, RepeatMode::Off, false)
+            .play_queue(vec![track.clone()], 0, RepeatMode::Off, false, false)
             .unwrap();
         unsafe {
             (*app).queue_tracks = track_dtos(std::slice::from_ref(&track)).unwrap();
@@ -4334,6 +4440,39 @@ mod tests {
             second_path.to_string_lossy().as_ref()
         );
         assert_eq!(shuffled["data"]["shuffle_enabled"], true);
+
+        let randomized_start = unsafe {
+            call_json(player_app_play_playlist(
+                app,
+                c_string_arg("Phone Mix").as_ptr(),
+                ptr::null(),
+                true,
+            ))
+        };
+        assert_ok(&randomized_start);
+        assert_eq!(
+            randomized_start["data"]["current_track"]["path"],
+            second_path.to_string_lossy().as_ref()
+        );
+        let randomized_queue = unsafe { call_json(player_app_queue(app)) };
+        assert_ok(&randomized_queue);
+        assert_eq!(randomized_queue["data"]["current_index"], 0);
+        assert_eq!(
+            randomized_queue["data"]["tracks"][0]["path"],
+            second_path.to_string_lossy().as_ref()
+        );
+        assert_eq!(
+            randomized_queue["data"]["tracks"][1]["path"],
+            first_path.to_string_lossy().as_ref()
+        );
+        let jumped = unsafe { call_json(player_app_queue_play(app, 1)) };
+        assert_ok(&jumped);
+        assert_eq!(
+            jumped["data"]["current_track"]["path"],
+            first_path.to_string_lossy().as_ref()
+        );
+        assert_eq!(jumped["data"]["queue_position"], 1);
+        assert_eq!(jumped["data"]["is_playing"], true);
 
         let sequential = unsafe {
             call_json(player_app_play_playlist(
@@ -5220,7 +5359,7 @@ mod tests {
 
         unsafe {
             (*app).playback_lifecycle.begin_interruption(false);
-            let error = match (*app).play_queue_tracks(vec![track], 0) {
+            let error = match (*app).play_queue_tracks(vec![track], 0, false) {
                 Ok(_) => panic!("playback unexpectedly started during an interruption"),
                 Err(error) => error,
             };
@@ -5272,16 +5411,24 @@ mod tests {
                 repeat_mode: RepeatMode::All,
                 shuffle: true,
             }));
+            app_ref.apply_event(PlaybackEvent::QueueOrderChanged {
+                order: vec![1, 0],
+                current_position: Some(0),
+            });
             app_ref.apply_event(PlaybackEvent::TrackChanged(Some(Box::new(second))));
         }
 
         let snapshot = unsafe { call_json(player_app_poll(app)) };
         assert_ok(&snapshot);
         assert_eq!(snapshot["data"]["queue_len"], 2);
-        assert_eq!(snapshot["data"]["queue_position"], 1);
+        assert_eq!(snapshot["data"]["queue_position"], 0);
         assert_eq!(snapshot["data"]["repeat_mode"], "all");
         assert_eq!(snapshot["data"]["shuffle_enabled"], true);
         assert_eq!(snapshot["data"]["current_track"]["title"], "Second");
+        let queue = unsafe { call_json(player_app_queue(app)) };
+        assert_ok(&queue);
+        assert_eq!(queue["data"]["tracks"][0]["title"], "Second");
+        assert_eq!(queue["data"]["tracks"][1]["title"], "First");
 
         unsafe { player_app_destroy(app) };
         fs::remove_file(db_path).ok();

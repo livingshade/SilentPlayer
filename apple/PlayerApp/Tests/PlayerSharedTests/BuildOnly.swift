@@ -207,6 +207,10 @@ final class PhoneDisplayTextTests: XCTestCase {
 }
 
 final class PhonePresentationStateTests: XCTestCase {
+    func testTabsRepresentOnlyStableTopLevelDestinations() {
+        XCTAssertEqual(PhonePresentationTab.allCases, [.library, .playlists])
+    }
+
     func testSnapshotRoundTripsThroughSceneStorageEncoding() throws {
         let snapshot = PhonePresentationSnapshot(
             selectedTab: .playlists,
