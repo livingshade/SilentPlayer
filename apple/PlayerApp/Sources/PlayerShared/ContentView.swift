@@ -14,6 +14,8 @@ public struct ContentView: View {
     @State private var isZeroOutConfirmationPresented = false
     @State private var isQueuePresented = false
     @State private var isLibraryInformationPresented = false
+    @State private var pendingLibraryDeletion: TrackItem?
+    @State private var isLibraryDeletionConfirmationPresented = false
     private let chooseFolder: () async -> URL?
     private let chooseArtworkFile: () async -> URL?
     private let chooseLyricsFile: () async -> URL?
@@ -85,6 +87,26 @@ public struct ContentView: View {
             Button("Cancel", role: .cancel) {}
         } message: {
             Text("This permanently deletes the current database and managed music files. No internal backup will be created.")
+        }
+        .confirmationDialog(
+            "Delete Song from Library?",
+            isPresented: $isLibraryDeletionConfirmationPresented,
+            titleVisibility: .visible
+        ) {
+            Button("Delete from Library", role: .destructive) {
+                guard let track = pendingLibraryDeletion else {
+                    return
+                }
+                pendingLibraryDeletion = nil
+                Task { await model.deleteFromLibrary(track) }
+            }
+            Button("Cancel", role: .cancel) {
+                pendingLibraryDeletion = nil
+            }
+        } message: {
+            if let track = pendingLibraryDeletion {
+                Text("“\(track.title)” will be removed from Library, every playlist, favorites, history, and the managed music folder. This can’t be undone.")
+            }
         }
         .task {
             await restorePresentation()
@@ -1172,12 +1194,21 @@ public struct ContentView: View {
                 Label("Move Down", systemImage: "arrow.down")
             }
 
-            Button {
+            Button(role: .destructive) {
                 selectTrackImmediately(track)
                 Task { await model.removeSelectedFromActivePlaylist() }
             } label: {
                 Label("Remove from Playlist", systemImage: "minus.circle")
             }
+        }
+
+        Divider()
+
+        Button(role: .destructive) {
+            pendingLibraryDeletion = track
+            isLibraryDeletionConfirmationPresented = true
+        } label: {
+            Label("Delete from Library…", systemImage: "trash")
         }
     }
 

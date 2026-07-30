@@ -49,6 +49,7 @@ silent --cli --db ./silent.sqlite3 --media-root ./Music library list
 silent --cli --db ./silent.sqlite3 --media-root ./Music library search "artist or title" --limit 25
 silent --cli --db ./silent.sqlite3 --media-root ./Music library analyze
 silent --cli --db ./silent.sqlite3 --media-root ./Music library audit
+silent --cli --db ./silent.sqlite3 --media-root ./Music --yes library delete <selector>
 silent --cli --db ./silent.sqlite3 --media-root ./Music library package export ./Library.silentlibrary
 silent --cli --db ./restored.sqlite3 --media-root ./RestoredMusic --yes library package import ./Library.silentlibrary
 silent --cli --db ./silent.sqlite3 --media-root ./Music --yes library zero

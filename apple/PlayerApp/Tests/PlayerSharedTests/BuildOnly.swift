@@ -438,6 +438,45 @@ final class SinglePrimaryPresentationTests: XCTestCase {
         XCTAssertEqual(updated.title, "Updated in place")
         XCTAssertEqual(try client.library().count, 1)
     }
+
+    func testRemovingFromPlaylistKeepsSongWhileDeletingFromLibraryRemovesItEverywhere() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let client = try RustPlayerClient(
+            dbURL: root.appendingPathComponent("library.sqlite3"),
+            mediaRootURL: root.appendingPathComponent("Music", isDirectory: true),
+            repoRoot: root
+        )
+        _ = try client.importFiles([
+            repositoryRoot
+                .appendingPathComponent("test-assets/audio/into_the_oceans_chorus.ogg"),
+            repositoryRoot
+                .appendingPathComponent("test-assets/audio/funk_room_reverb.ogg")
+        ])
+        try client.createPlaylist(name: "Road")
+        let playlist = try XCTUnwrap(client.playlists().first)
+        let target = try XCTUnwrap(client.library().first)
+        try client.addToPlaylist(name: playlist.name, path: target.path)
+        let model = AppModel(client: client)
+        await model.bootstrap(restoring: .playlist(playlist.id))
+
+        await model.removeFromActivePlaylist(target)
+
+        XCTAssertEqual(try client.library().count, 2)
+        XCTAssertTrue(try client.playlistTracks(name: playlist.name).isEmpty)
+        try client.addToPlaylist(name: playlist.name, path: target.path)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: target.path))
+
+        await model.deleteFromLibrary(target)
+
+        XCTAssertEqual(try client.library().count, 1)
+        XCTAssertTrue(try client.playlistTracks(name: playlist.name).isEmpty)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: target.path))
+        XCTAssertFalse(model.tracks.contains(where: { $0.id == target.id }))
+        XCTAssertEqual(model.status, "Deleted \(target.title) from Library")
+    }
 }
 
 private let repositoryRoot = URL(fileURLWithPath: #filePath)

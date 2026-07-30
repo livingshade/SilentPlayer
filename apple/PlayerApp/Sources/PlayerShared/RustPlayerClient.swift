@@ -16,6 +16,11 @@ public struct LibraryPackageSummary: Hashable, Sendable {
     public let sidecarFiles: Int
 }
 
+public struct DeleteTrackSummary: Hashable, Sendable {
+    public let managedFilesDeleted: Int
+    public let cleanupError: String?
+}
+
 public struct LibraryPage: Hashable, Sendable {
     public let total: Int
     public let offset: Int
@@ -317,6 +322,17 @@ public final class RustPlayerClient: @unchecked Sendable {
     public func zeroOutLibrary() throws {
         try sync {
             _ = try decode(player_app_zero_out_library(app), as: EmptyDTO.self)
+        }
+    }
+
+    public func deleteFromLibrary(path: String) throws -> DeleteTrackSummary {
+        try sync {
+            try path.withCString { pathValue in
+                try decode(
+                    player_app_delete_from_library(app, pathValue),
+                    as: DeleteTrackSummaryDTO.self
+                ).model
+            }
         }
     }
 
@@ -919,6 +935,18 @@ private struct ImportSummaryDTO: Decodable {
             duplicatesSkipped: duplicatesSkipped,
             artworkCached: artworkCached,
             metadataWarnings: metadataWarnings
+        )
+    }
+}
+
+private struct DeleteTrackSummaryDTO: Decodable {
+    let managedFilesDeleted: Int
+    let cleanupError: String?
+
+    var model: DeleteTrackSummary {
+        DeleteTrackSummary(
+            managedFilesDeleted: managedFilesDeleted,
+            cleanupError: cleanupError
         )
     }
 }

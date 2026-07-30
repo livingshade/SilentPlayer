@@ -39,6 +39,8 @@ public struct PhoneContentView: View {
     @State private var lastExportURL: URL?
     @State private var activeAlert: PhoneAppAlert?
     @State private var isQueuePresented = false
+    @State private var pendingLibraryDeletion: TrackItem?
+    @State private var isLibraryDeletionConfirmationPresented = false
 
     public init(model: AppModel) {
         self.model = model
@@ -103,6 +105,26 @@ public struct PhoneContentView: View {
             Button("Cancel", role: .cancel) {}
         } message: {
             Text("This permanently deletes the current database and managed music files. No internal backup will be created.")
+        }
+        .confirmationDialog(
+            "Delete Song from Library?",
+            isPresented: $isLibraryDeletionConfirmationPresented,
+            titleVisibility: .visible
+        ) {
+            Button("Delete from Library", role: .destructive) {
+                guard let track = pendingLibraryDeletion else {
+                    return
+                }
+                pendingLibraryDeletion = nil
+                Task { await model.deleteFromLibrary(track) }
+            }
+            Button("Cancel", role: .cancel) {
+                pendingLibraryDeletion = nil
+            }
+        } message: {
+            if let track = pendingLibraryDeletion {
+                Text("“\(track.title)” will be removed from Library, every playlist, favorites, history, and the managed music folder. This can’t be undone.")
+            }
         }
         .sheet(isPresented: $isQueuePresented) {
             PhonePlaybackQueueSheet(model: model)
@@ -291,7 +313,11 @@ public struct PhoneContentView: View {
                 switch route {
                 case .playlist(let id):
                     if let playlist = model.playlists.first(where: { $0.id == id }) {
-                        PhonePlaylistDetailView(model: model, playlist: playlist)
+                        PhonePlaylistDetailView(
+                            model: model,
+                            playlist: playlist,
+                            confirmLibraryDeletion: presentLibraryDeletion
+                        )
                     } else {
                         PhoneEmptyState(
                             title: "Playlist Unavailable",
@@ -856,6 +882,14 @@ public struct PhoneContentView: View {
         } label: {
             Label("Add to Playlist", systemImage: "music.note.list")
         }
+
+        Divider()
+
+        Button(role: .destructive) {
+            presentLibraryDeletion(for: track)
+        } label: {
+            Label("Delete from Library…", systemImage: "trash")
+        }
     }
 
     private func play(_ track: TrackItem) {
@@ -876,6 +910,11 @@ public struct PhoneContentView: View {
         model.selectTrack(id: track.id)
         model.presentPlaylistPicker(for: track)
         Task { await model.refreshPlaylists() }
+    }
+
+    private func presentLibraryDeletion(for track: TrackItem) {
+        pendingLibraryDeletion = track
+        isLibraryDeletionConfirmationPresented = true
     }
 
     private func exportDestination(for track: TrackItem) -> URL {
@@ -1642,6 +1681,7 @@ private struct PhoneDiagnosticRow: View {
 private struct PhonePlaylistDetailView: View {
     @ObservedObject var model: AppModel
     let playlist: PlaylistItem
+    let confirmLibraryDeletion: (TrackItem) -> Void
 
     var body: some View {
         List {
@@ -1694,6 +1734,7 @@ private struct PhonePlaylistDetailView: View {
 
             Section("Songs") {
                 ForEach(model.tracks) { track in
+                    let isCurrent = model.nowPlaying?.id == track.id
                     Button {
                         model.selectTrack(id: track.id)
                         Task {
@@ -1706,14 +1747,21 @@ private struct PhonePlaylistDetailView: View {
                     } label: {
                         PhoneTrackRow(
                             track: track,
-                            isCurrent: model.nowPlaying?.id == track.id,
-                            isPlaying: model.nowPlaying?.id == track.id && model.isPlaying
+                            isCurrent: isCurrent,
+                            isPlaying: isCurrent && model.isPlaying
                         )
                         .frame(maxWidth: .infinity, alignment: .leading)
                     }
                     .buttonStyle(.plain)
                     .accessibilityLabel("Play \(track.phoneDisplayTitle)")
                     .accessibilityHint("Starts this track and queues the playlist")
+                    .swipeActions(edge: .trailing, allowsFullSwipe: true) {
+                        Button(role: .destructive) {
+                            Task { await model.removeFromActivePlaylist(track) }
+                        } label: {
+                            Label("Remove", systemImage: "minus.circle")
+                        }
+                    }
                     .contextMenu {
                         Button {
                             Task {
@@ -1749,6 +1797,20 @@ private struct PhonePlaylistDetailView: View {
                             Task { await model.addToQueue(track) }
                         } label: {
                             Label("Add to Queue", systemImage: "text.badge.plus")
+                        }
+
+                        Divider()
+
+                        Button(role: .destructive) {
+                            Task { await model.removeFromActivePlaylist(track) }
+                        } label: {
+                            Label("Remove from Playlist", systemImage: "minus.circle")
+                        }
+
+                        Button(role: .destructive) {
+                            confirmLibraryDeletion(track)
+                        } label: {
+                            Label("Delete from Library…", systemImage: "trash")
                         }
                     }
                 }

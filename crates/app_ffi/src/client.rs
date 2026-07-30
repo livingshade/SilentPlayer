@@ -69,6 +69,10 @@ impl SilentAppClient {
         self.call(PlayerApp::service_zero_out_library)
     }
 
+    pub fn delete_from_library(&mut self, path: impl AsRef<Path>) -> ClientResult {
+        self.call(|app| app.service_delete_from_library(path.as_ref()))
+    }
+
     pub fn import_folder(&mut self, path: impl AsRef<Path>) -> ClientResult {
         self.call(|app| app.service_import_folder(path.as_ref()))
     }

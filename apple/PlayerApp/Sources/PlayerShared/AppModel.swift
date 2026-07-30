@@ -1146,12 +1146,16 @@ public final class AppModel: ObservableObject {
     }
 
     public func removeSelectedFromActivePlaylist() async {
-        guard let name = activePlaylistName else {
-            status = "Select a playlist first"
-            return
-        }
         guard let track = selectedTrack else {
             status = "Select a track first"
+            return
+        }
+        await removeFromActivePlaylist(track)
+    }
+
+    public func removeFromActivePlaylist(_ track: TrackItem) async {
+        guard let name = activePlaylistName else {
+            status = "Select a playlist first"
             return
         }
         await runBusy("Removing from playlist") { [self] in
@@ -1159,6 +1163,26 @@ public final class AppModel: ObservableObject {
             status = "Removed \(track.title)"
             await refreshPlaylists()
             await reloadActiveScope(quiet: true)
+        }
+    }
+
+    public func deleteFromLibrary(_ track: TrackItem) async {
+        await runBusy("Deleting \(track.title)") { [self] in
+            let summary = try await invoke { try $0.deleteFromLibrary(path: track.path) }
+            if selectedTrack?.id == track.id {
+                selectedTrack = nil
+                clearDetails()
+            }
+            invalidateLibraryPresentationCache()
+            await refreshPlaylists()
+            await reloadActiveScope(quiet: true)
+            await refreshPlaybackState()
+            if let cleanupError = summary.cleanupError {
+                status = "Removed \(track.title) from Library"
+                playbackDetail = "Managed file cleanup failed: \(cleanupError)"
+            } else {
+                status = "Deleted \(track.title) from Library"
+            }
         }
     }
 

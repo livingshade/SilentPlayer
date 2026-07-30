@@ -200,6 +200,13 @@ fn run_library(context: &CliContext, mut args: Vec<String>) -> CliResult<()> {
             let mut client = context.open_client()?;
             context.emit(&client.zero_out_library()?)
         }
+        "delete" => {
+            let selector = one_value(args, "library delete requires <path-or-view-id>")?;
+            require_confirmation(context, "library delete")?;
+            let mut client = context.open_client()?;
+            let selected = resolve_track(&mut client, &selector)?;
+            context.emit(&client.delete_from_library(&selected.path)?)
+        }
         "audit" => {
             ensure_empty(&args, "library audit")?;
             let mut client = context.open_client()?;
@@ -1030,13 +1037,14 @@ Usage:
   silent --cli [options] library list
   silent --cli [options] library search <query> --limit <n>
   silent --cli [options] library import <file>... | <folder>
+  silent --cli [options] library delete <path-or-view-id>
   silent --cli [options] library package export <directory>
   silent --cli [options] library package import <directory>
   silent --cli [options] library zero
   silent --cli [options] library audit
   silent --cli [options] library analyze
 
-Package import and zero require global option --yes before `library`."
+Delete, package import, and zero require global option --yes before `library`."
     );
 }
 

@@ -598,6 +598,141 @@ impl LibraryStore {
             .map_err(to_store_error)
     }
 
+    pub fn delete_track(&mut self, path: impl AsRef<Path>) -> PlayerResult<bool> {
+        let path = path_to_string(path.as_ref());
+        let tx = self.conn.transaction().map_err(to_store_error)?;
+        let playlist_ids = {
+            let mut stmt = tx
+                .prepare("SELECT DISTINCT playlist_id FROM playlist_items WHERE track_path = ?1")
+                .map_err(to_store_error)?;
+            let rows = stmt
+                .query_map(params![path.as_str()], |row| row.get::<_, i64>(0))
+                .map_err(to_store_error)?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(to_store_error)?;
+            rows
+        };
+        let removed_queue_positions = {
+            let mut stmt = tx
+                .prepare(
+                    "SELECT position FROM playback_queue_items WHERE track_path = ?1 ORDER BY position",
+                )
+                .map_err(to_store_error)?;
+            let rows = stmt
+                .query_map(params![path.as_str()], |row| row.get::<_, i64>(0))
+                .map_err(to_store_error)?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(to_store_error)?;
+            rows
+        };
+        let deleted = tx
+            .execute("DELETE FROM tracks WHERE path = ?1", params![path.as_str()])
+            .map_err(to_store_error)?;
+        if deleted == 0 {
+            tx.commit().map_err(to_store_error)?;
+            return Ok(false);
+        }
+
+        for playlist_id in playlist_ids {
+            let item_ids = {
+                let mut stmt = tx
+                    .prepare(
+                        "SELECT id FROM playlist_items WHERE playlist_id = ?1 ORDER BY position, id",
+                    )
+                    .map_err(to_store_error)?;
+                let rows = stmt
+                    .query_map(params![playlist_id], |row| row.get::<_, i64>(0))
+                    .map_err(to_store_error)?
+                    .collect::<Result<Vec<_>, _>>()
+                    .map_err(to_store_error)?;
+                rows
+            };
+            for (position, item_id) in item_ids.into_iter().enumerate() {
+                tx.execute(
+                    "UPDATE playlist_items SET position = ?2 WHERE id = ?1",
+                    params![item_id, saturating_i64_from_u64(position as u64)],
+                )
+                .map_err(to_store_error)?;
+            }
+            tx.execute(
+                "UPDATE playlists SET updated_at_unix_seconds = ?2 WHERE id = ?1",
+                params![playlist_id, now_unix_seconds()],
+            )
+            .map_err(to_store_error)?;
+        }
+
+        let queue_paths = {
+            let mut stmt = tx
+                .prepare("SELECT track_path FROM playback_queue_items ORDER BY position")
+                .map_err(to_store_error)?;
+            let rows = stmt
+                .query_map([], |row| row.get::<_, String>(0))
+                .map_err(to_store_error)?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(to_store_error)?;
+            rows
+        };
+        tx.execute("DELETE FROM playback_queue_items", [])
+            .map_err(to_store_error)?;
+        for (position, queue_path) in queue_paths.iter().enumerate() {
+            tx.execute(
+                "INSERT INTO playback_queue_items (position, track_path) VALUES (?1, ?2)",
+                params![saturating_i64_from_u64(position as u64), queue_path],
+            )
+            .map_err(to_store_error)?;
+        }
+        if !removed_queue_positions.is_empty() {
+            let current_index = tx
+                .query_row(
+                    "SELECT current_index FROM playback_queue_state WHERE singleton_id = 1",
+                    [],
+                    |row| row.get::<_, Option<i64>>(0),
+                )
+                .optional()
+                .map_err(to_store_error)?
+                .flatten();
+            let adjusted_index = current_index.and_then(|current| {
+                if queue_paths.is_empty() {
+                    return None;
+                }
+                let removed_before = removed_queue_positions
+                    .iter()
+                    .filter(|position| **position < current)
+                    .count() as i64;
+                let shifted = current.saturating_sub(removed_before).max(0);
+                Some(shifted.min(queue_paths.len().saturating_sub(1) as i64))
+            });
+            tx.execute(
+                r#"
+                UPDATE playback_queue_state
+                SET current_index = ?1,
+                    position_ms = 0,
+                    updated_at_unix_seconds = ?2
+                WHERE singleton_id = 1
+                "#,
+                params![adjusted_index, now_unix_seconds()],
+            )
+            .map_err(to_store_error)?;
+        }
+
+        tx.execute(
+            r#"
+            DELETE FROM artwork_assets
+            WHERE NOT EXISTS (
+                SELECT 1 FROM track_artwork_refs WHERE track_artwork_refs.asset_id = artwork_assets.asset_id
+                UNION ALL
+                SELECT 1 FROM album_artwork_refs WHERE album_artwork_refs.asset_id = artwork_assets.asset_id
+                UNION ALL
+                SELECT 1 FROM playlist_artwork_refs WHERE playlist_artwork_refs.asset_id = artwork_assets.asset_id
+            )
+            "#,
+            [],
+        )
+        .map_err(to_store_error)?;
+        tx.commit().map_err(to_store_error)?;
+        Ok(true)
+    }
+
     pub fn track_by_file_hash(&self, file_hash: &str) -> PlayerResult<Option<Track>> {
         self.track_by_hash_column("file_hash", file_hash)
     }
@@ -3374,6 +3509,71 @@ mod tests {
         assert!(store.playlist_tracks("Road").unwrap().is_empty());
         assert!(store.delete_playlist("Road").unwrap());
         assert!(store.playlists().unwrap().is_empty());
+    }
+
+    #[test]
+    fn deleting_track_cascades_references_and_normalizes_order() {
+        let mut store = LibraryStore::in_memory().unwrap();
+        let first = Track::from_path("/music/a.ogg".into());
+        let second = Track::from_path("/music/b.ogg".into());
+        let third = Track::from_path("/music/c.ogg".into());
+        store
+            .upsert_tracks(&[first.clone(), second.clone(), third.clone()])
+            .unwrap();
+        store.add_playlist_track("Road", &first.path).unwrap();
+        store.add_playlist_track("Road", &second.path).unwrap();
+        store.add_playlist_track("Road", &third.path).unwrap();
+        store.set_favorite(&second.path, true).unwrap();
+        store.record_playback(&second.path, 42, true).unwrap();
+        store
+            .save_playback_queue(
+                &[first.path.clone(), second.path.clone(), third.path.clone()],
+                Some(1),
+                12_345,
+                RepeatMode::All,
+                true,
+            )
+            .unwrap();
+        store
+            .set_track_artwork_reference(&second.path, &artwork_image(0, vec![1, 2, 3]))
+            .unwrap();
+
+        assert!(store.delete_track(&second.path).unwrap());
+        assert!(!store.delete_track(&second.path).unwrap());
+        assert!(store.track_by_path(&second.path).unwrap().is_none());
+        assert!(store.favorite_tracks().unwrap().is_empty());
+        assert!(store.play_history(10).unwrap().is_empty());
+
+        let playlist = store.playlist_tracks("Road").unwrap();
+        assert_eq!(
+            playlist
+                .iter()
+                .map(|entry| (&entry.track.path, entry.position))
+                .collect::<Vec<_>>(),
+            vec![(&first.path, 0), (&third.path, 1)]
+        );
+        let queue = store.load_playback_queue().unwrap();
+        assert_eq!(
+            queue
+                .tracks
+                .iter()
+                .map(|track| &track.path)
+                .collect::<Vec<_>>(),
+            vec![&first.path, &third.path]
+        );
+        assert_eq!(queue.current_index, Some(1));
+        assert_eq!(queue.position_ms, 0);
+        assert_eq!(queue.repeat_mode, RepeatMode::All);
+        assert!(queue.shuffle_enabled);
+        assert_eq!(
+            store
+                .conn
+                .query_row("SELECT COUNT(*) FROM artwork_assets", [], |row| {
+                    row.get::<_, i64>(0)
+                })
+                .unwrap(),
+            0
+        );
     }
 
     #[test]

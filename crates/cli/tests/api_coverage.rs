@@ -53,6 +53,10 @@ fn cli_contracts() -> BTreeMap<&'static str, &'static str> {
         ),
         ("player_app_zero_out_library", "silent --cli library zero"),
         (
+            "player_app_delete_from_library",
+            "silent --cli library delete",
+        ),
+        (
             "player_app_import_folder",
             "silent --cli library import <folder>",
         ),

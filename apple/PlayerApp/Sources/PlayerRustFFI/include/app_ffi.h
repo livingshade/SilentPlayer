@@ -14,6 +14,7 @@ void player_string_free(char *value);
 char *player_app_export_library(PlayerApp *app, const char *package_path);
 char *player_app_import_library(PlayerApp *app, const char *package_path);
 char *player_app_zero_out_library(PlayerApp *app);
+char *player_app_delete_from_library(PlayerApp *app, const char *path);
 
 char *player_app_import_folder(PlayerApp *app, const char *folder);
 char *player_app_import_files(PlayerApp *app, const char *paths_json);

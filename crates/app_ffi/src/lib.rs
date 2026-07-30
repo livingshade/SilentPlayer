@@ -97,6 +97,12 @@ struct ImportSummary {
     failures: usize,
 }
 
+#[derive(Serialize)]
+struct DeleteTrackSummary {
+    managed_files_deleted: usize,
+    cleanup_error: Option<String>,
+}
+
 #[derive(Deserialize, Serialize)]
 struct LibraryPackageManifest {
     format_version: u32,
@@ -404,6 +410,18 @@ pub unsafe extern "C" fn player_app_zero_out_library(app: *mut PlayerApp) -> *mu
 }
 
 #[no_mangle]
+pub unsafe extern "C" fn player_app_delete_from_library(
+    app: *mut PlayerApp,
+    path: *const c_char,
+) -> *mut c_char {
+    ffi_result(|| {
+        let app = app_mut(app)?;
+        let path = PathBuf::from(c_string(path)?);
+        app.service_delete_from_library(&path)
+    })
+}
+
+#[no_mangle]
 pub unsafe extern "C" fn player_app_import_folder(
     app: *mut PlayerApp,
     folder: *const c_char,
@@ -459,6 +477,13 @@ impl PlayerApp {
 
     pub(crate) fn service_zero_out_library(&mut self) -> PlayerResult<impl Serialize> {
         self.zero_out_library()
+    }
+
+    pub(crate) fn service_delete_from_library(
+        &mut self,
+        path: &Path,
+    ) -> PlayerResult<impl Serialize> {
+        self.delete_from_library(path)
     }
 
     pub(crate) fn service_import_folder(&mut self, folder: &Path) -> PlayerResult<impl Serialize> {
@@ -2053,6 +2078,40 @@ impl PlayerApp {
         Ok(Empty {})
     }
 
+    fn delete_from_library(&mut self, path: &Path) -> PlayerResult<DeleteTrackSummary> {
+        let track = self.store()?.track_by_path(path)?.ok_or_else(|| {
+            PlayerError::store(format!("track is not in library: {}", path.display()))
+        })?;
+
+        let queue_indexes = self
+            .queue_tracks
+            .iter()
+            .enumerate()
+            .filter_map(|(index, queued)| {
+                (Path::new(&queued.path) == track.path.as_path()).then_some(index)
+            })
+            .collect::<Vec<_>>();
+        for index in queue_indexes.into_iter().rev() {
+            self.remove_queue_item(index)?;
+        }
+
+        if !self.store()?.delete_track(&track.path)? {
+            return Err(PlayerError::store(format!(
+                "track disappeared while deleting: {}",
+                track.path.display()
+            )));
+        }
+        let (managed_files_deleted, cleanup_error) =
+            match delete_managed_track_files(&self.media_root, &track.path) {
+                Ok(deleted) => (deleted, None),
+                Err(error) => (0, Some(error.to_string())),
+            };
+        Ok(DeleteTrackSummary {
+            managed_files_deleted,
+            cleanup_error,
+        })
+    }
+
     fn reset_library_runtime_state(&mut self) {
         self.engine = None;
         self.active_session = None;
@@ -2735,6 +2794,39 @@ fn remove_library_storage(db_path: &Path, media_root: &Path) -> PlayerResult<()>
     match first_error {
         Some(error) => Err(error),
         None => Ok(()),
+    }
+}
+
+fn delete_managed_track_files(media_root: &Path, track_path: &Path) -> PlayerResult<usize> {
+    if !is_managed_track_path(media_root, track_path) {
+        return Ok(0);
+    }
+
+    let mut candidates = vec![track_path.to_path_buf()];
+    if let (Some(parent), Some(stem)) = (
+        track_path.parent(),
+        track_path.file_stem().and_then(|value| value.to_str()),
+    ) {
+        for extension in LYRICS_EXTENSIONS.iter().chain(ARTWORK_EXTENSIONS.iter()) {
+            candidates.push(parent.join(format!("{stem}.{extension}")));
+        }
+    }
+
+    let mut deleted = 0;
+    for candidate in candidates {
+        match fs::remove_file(&candidate) {
+            Ok(()) => deleted += 1,
+            Err(source) if source.kind() == std::io::ErrorKind::NotFound => {}
+            Err(source) => return Err(PlayerError::io(candidate, source)),
+        }
+    }
+    Ok(deleted)
+}
+
+fn is_managed_track_path(media_root: &Path, track_path: &Path) -> bool {
+    match (media_root.canonicalize(), track_path.canonicalize()) {
+        (Ok(root), Ok(track)) => track.starts_with(root),
+        _ => track_path.starts_with(media_root),
     }
 }
 
@@ -3984,6 +4076,97 @@ mod tests {
         fs::remove_dir_all(source_dir).ok();
         fs::remove_dir_all(db_dir).ok();
         fs::remove_dir_all(media_root).ok();
+    }
+
+    #[test]
+    fn app_deletes_track_from_library_and_managed_storage_via_ffi() {
+        let db_path = temp_db_path("delete_track");
+        let media_root = temp_dir("delete_track_media");
+        let album_root = media_root.join("Album");
+        fs::create_dir_all(&album_root).unwrap();
+        let deleted_path = album_root.join("song.ogg");
+        let kept_path = album_root.join("kept.ogg");
+        let lyrics_path = album_root.join("song.lrc");
+        let track_cover_path = album_root.join("song.jpg");
+        let album_cover_path = album_root.join("cover.jpg");
+        for path in [
+            &deleted_path,
+            &kept_path,
+            &lyrics_path,
+            &track_cover_path,
+            &album_cover_path,
+        ] {
+            fs::write(path, b"test").unwrap();
+        }
+
+        {
+            let deleted = Track::from_path(deleted_path.clone());
+            let kept = Track::from_path(kept_path.clone());
+            let mut store = LibraryStore::open(&db_path).unwrap();
+            store
+                .upsert_tracks(&[deleted.clone(), kept.clone()])
+                .unwrap();
+            store.add_playlist_track("Road", &deleted.path).unwrap();
+            store.add_playlist_track("Road", &kept.path).unwrap();
+            store.set_favorite(&deleted.path, true).unwrap();
+            store.record_playback(&deleted.path, 42, true).unwrap();
+            store
+                .save_playback_queue(
+                    &[deleted.path.clone(), kept.path.clone()],
+                    Some(0),
+                    500,
+                    RepeatMode::Off,
+                    false,
+                )
+                .unwrap();
+        }
+
+        let app = create_app(&db_path, &media_root);
+        let deleted = unsafe {
+            call_json(player_app_delete_from_library(
+                app,
+                c_string_arg(&deleted_path).as_ptr(),
+            ))
+        };
+        assert_ok(&deleted);
+        assert_eq!(deleted["data"]["managed_files_deleted"], 3);
+        assert!(deleted["data"]["cleanup_error"].is_null());
+
+        let store = LibraryStore::open(&db_path).unwrap();
+        assert!(store.track_by_path(&deleted_path).unwrap().is_none());
+        assert!(store.track_by_path(&kept_path).unwrap().is_some());
+        assert_eq!(
+            store
+                .playlist_tracks("Road")
+                .unwrap()
+                .into_iter()
+                .map(|entry| entry.track.path)
+                .collect::<Vec<_>>(),
+            vec![kept_path.clone()]
+        );
+        assert!(store.favorite_tracks().unwrap().is_empty());
+        assert!(store.play_history(10).unwrap().is_empty());
+        assert_eq!(
+            store
+                .load_playback_queue()
+                .unwrap()
+                .tracks
+                .into_iter()
+                .map(|track| track.path)
+                .collect::<Vec<_>>(),
+            vec![kept_path.clone()]
+        );
+        assert!(!deleted_path.exists());
+        assert!(!lyrics_path.exists());
+        assert!(!track_cover_path.exists());
+        assert!(album_cover_path.exists());
+        assert!(kept_path.exists());
+
+        unsafe { player_app_destroy(app) };
+        fs::remove_dir_all(media_root).ok();
+        for path in sqlite_database_files(&db_path) {
+            fs::remove_file(path).ok();
+        }
     }
 
     #[test]
