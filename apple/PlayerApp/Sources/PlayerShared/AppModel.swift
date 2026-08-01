@@ -104,7 +104,9 @@ public enum PlaybackRepeatMode: String, CaseIterable, Codable, Identifiable, Sen
 
     public var systemImage: String {
         switch self {
-        case .off, .all:
+        case .off:
+            return "list.number"
+        case .all:
             return "repeat"
         case .one:
             return "repeat.1"
@@ -1312,20 +1314,13 @@ public final class AppModel: ObservableObject {
             status = "Wait for the audio interruption to end"
             return
         }
-        guard let firstTrack = tracks.first else {
-            status = "Library is empty"
-            return
-        }
-        let trackPaths = tracks.map(\.path)
         await runBusy(nil) { [self] in
             let previousTrackID = nowPlaying?.id
             let previousPositionMS = playbackElapsedMS
             try playbackSystemIntegration?.prepareForPlayback()
-            let snapshot = try await invoke {
-                try $0.playQueue(paths: trackPaths, startPath: firstTrack.path)
-            }
+            let snapshot = try await invoke { try $0.playLibrary() }
             selectedTrack = snapshot.currentTrack
-            apply(snapshot: snapshot, fallbackTrack: firstTrack)
+            apply(snapshot: snapshot, fallbackTrack: snapshot.currentTrack)
             await refreshQueue()
             publishPlaybackPositionDiscontinuity(
                 previousTrackID: previousTrackID,

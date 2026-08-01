@@ -120,6 +120,7 @@ public struct ContentView: View {
             persistPresentation()
         }
         .onChange(of: model.nowPlaying?.id) { trackID in
+            pendingSeekProgress = nil
             if trackID == nil {
                 dismissExpandedNowPlaying()
             }
@@ -380,15 +381,18 @@ public struct ContentView: View {
                 }
             }
 
-            Button {
-                Task { await model.playAllVisible() }
-            } label: {
-                Label("Play All", systemImage: "play.fill")
-                    .labelStyle(.iconOnly)
+            if supportsCollectionPlayAll {
+                Button {
+                    Task { await playAllCurrentCollection() }
+                } label: {
+                    Label("Play All", systemImage: "play.fill")
+                        .font(.callout.weight(.semibold))
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.regular)
+                .disabled(!canPlayAllCurrentCollection || model.isBusy)
+                .help("Replace the queue with all songs in \(model.libraryScope.title) and start playing")
             }
-            .buttonStyle(.borderless)
-            .disabled(model.tracks.isEmpty)
-            .help("Play all songs in \(model.libraryScope.title)")
 
             Menu {
                 contentActionsMenu
@@ -578,6 +582,41 @@ public struct ContentView: View {
         }
     }
 
+    private var supportsCollectionPlayAll: Bool {
+        switch model.libraryScope {
+        case .library, .playlist:
+            return true
+        case .favorites, .history:
+            return false
+        }
+    }
+
+    private var canPlayAllCurrentCollection: Bool {
+        switch model.libraryScope {
+        case .library:
+            return !model.tracks.isEmpty || !model.query.isEmpty
+        case .playlist:
+            return (activePlaylist?.trackCount ?? 0) > 0
+        case .favorites, .history:
+            return false
+        }
+    }
+
+    @MainActor
+    private func playAllCurrentCollection() async {
+        switch model.libraryScope {
+        case .library:
+            await model.playEntireLibrary()
+        case .playlist:
+            guard let playlist = activePlaylist else {
+                return
+            }
+            await model.playPlaylist(playlist, shuffled: false)
+        case .favorites, .history:
+            return
+        }
+    }
+
     private var trackList: some View {
         List(selection: Binding(
             get: { model.selectedTrack?.id },
@@ -635,11 +674,14 @@ public struct ContentView: View {
                             Text(model.nowPlaying?.title ?? "Nothing playing")
                                 .font(.headline)
                                 .lineLimit(1)
+                                .truncationMode(.tail)
                             Text(model.nowPlaying?.subtitle ?? "Choose a song to start listening")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                                 .lineLimit(1)
+                                .truncationMode(.tail)
                         }
+                        .frame(maxWidth: .infinity, alignment: .leading)
 
                         if model.nowPlaying != nil {
                             Image(systemName: isNowPlayingExpanded ? "chevron.down" : "chevron.up")
@@ -651,17 +693,22 @@ public struct ContentView: View {
                 }
                 .buttonStyle(.plain)
                 .disabled(model.nowPlaying == nil)
-                .frame(maxWidth: .infinity, alignment: .leading)
+                .frame(width: 240, alignment: .leading)
                 .help(isNowPlayingExpanded ? "Close Now Playing" : "Open Now Playing")
 
-                HStack(spacing: 12) {
+                Spacer(minLength: 12)
+
+                HStack(spacing: 14) {
                     Button {
                         Task { await model.toggleShuffle() }
                     } label: {
                         Label("Shuffle", systemImage: "shuffle")
                             .labelStyle(.iconOnly)
+                            .font(.title3)
                             .foregroundStyle(model.isShuffleEnabled ? Color.accentColor : Color.secondary)
+                            .frame(width: 30, height: 30)
                     }
+                    .buttonStyle(.borderless)
                     .help(model.isShuffleEnabled ? "Shuffle on" : "Shuffle off")
 
                     Button {
@@ -669,7 +716,10 @@ public struct ContentView: View {
                     } label: {
                         Label("Previous", systemImage: "backward.fill")
                             .labelStyle(.iconOnly)
+                            .font(.title2)
+                            .frame(width: 34, height: 34)
                     }
+                    .buttonStyle(.borderless)
                     .help("Previous")
 
                     Button {
@@ -677,8 +727,12 @@ public struct ContentView: View {
                     } label: {
                         Label(model.isPlaying ? "Pause" : "Play", systemImage: model.isPlaying ? "pause.fill" : "play.fill")
                             .labelStyle(.iconOnly)
-                            .frame(width: 22)
+                            .font(.title2)
+                            .frame(width: 36, height: 36)
                     }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.large)
+                    .clipShape(Circle())
                     .keyboardShortcut(.space, modifiers: [])
                     .help(model.isPlaying ? "Pause" : "Play")
 
@@ -687,60 +741,46 @@ public struct ContentView: View {
                     } label: {
                         Label("Next", systemImage: "forward.fill")
                             .labelStyle(.iconOnly)
+                            .font(.title2)
+                            .frame(width: 34, height: 34)
                     }
+                    .buttonStyle(.borderless)
                     .help("Next")
-                }
-                .buttonStyle(.borderless)
 
-                Menu {
-                    ForEach(PlaybackRepeatMode.allCases) { mode in
-                        Button {
-                            Task { await model.setRepeatMode(mode) }
-                        } label: {
-                            Label(mode.label, systemImage: model.repeatMode == mode ? "checkmark" : mode.systemImage)
+                    Menu {
+                        ForEach(PlaybackRepeatMode.allCases) { mode in
+                            Button {
+                                Task { await model.setRepeatMode(mode) }
+                            } label: {
+                                Label(mode.label, systemImage: model.repeatMode == mode ? "checkmark" : mode.systemImage)
+                            }
                         }
+                    } label: {
+                        Label(model.repeatMode.label, systemImage: model.repeatMode.systemImage)
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(model.repeatMode == .off ? Color.secondary : Color.accentColor)
+                            .lineLimit(1)
+                            .frame(maxWidth: .infinity)
+                            .frame(height: 30)
                     }
-                } label: {
-                    Label(model.repeatMode.label, systemImage: model.repeatMode.systemImage)
-                        .foregroundStyle(model.repeatMode == .off ? Color.secondary : Color.accentColor)
+                    .menuStyle(.button)
+                    .controlSize(.regular)
+                    .frame(width: 118)
+                    .help("Repeat mode")
                 }
-                .menuStyle(.borderlessButton)
-                .help("Repeat mode")
-
-                Button {
-                    Task { await model.addSelectedToPlaylist() }
-                } label: {
-                    Label("Add to Playlist", systemImage: "text.badge.plus")
-                        .labelStyle(.iconOnly)
-                }
-                .buttonStyle(.borderless)
-                .disabled(model.selectedTrack == nil)
-                .help("Add to playlist")
 
                 Button {
                     isQueuePresented = true
                 } label: {
                     Label(model.queueStatusText, systemImage: "music.note.list")
                         .font(.callout.weight(.semibold))
-                        .padding(.horizontal, 3)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                        .frame(width: 120)
                 }
                 .buttonStyle(.bordered)
                 .controlSize(.regular)
                 .help("Show queue")
-
-                Button {
-                    toggleExpandedNowPlaying()
-                } label: {
-                    Label(
-                        isNowPlayingExpanded ? "Close Now Playing" : "Open Now Playing",
-                        systemImage: isNowPlayingExpanded ? "rectangle.compress.vertical" : "rectangle.expand.vertical"
-                    )
-                    .labelStyle(.iconOnly)
-                    .foregroundStyle(isNowPlayingExpanded ? Color.accentColor : Color.secondary)
-                }
-                .buttonStyle(.borderless)
-                .disabled(model.nowPlaying == nil)
-                .help(isNowPlayingExpanded ? "Close Now Playing" : "Open Now Playing")
 
                 if model.isBusy {
                     ProgressView()
@@ -749,7 +789,7 @@ public struct ContentView: View {
             }
 
             HStack(spacing: 10) {
-                Text(model.playbackTimeText)
+                Text(seekTimeText)
                     .font(.caption2.monospacedDigit())
                     .foregroundStyle(.secondary)
                     .frame(width: 92, alignment: .leading)
@@ -757,13 +797,10 @@ public struct ContentView: View {
                 Slider(
                     value: seekBinding,
                     in: 0...1,
-                    onEditingChanged: { editing in
-                        if !editing, let progress = pendingSeekProgress {
-                            pendingSeekProgress = nil
-                            Task { await model.seek(toProgress: progress) }
-                        }
-                    }
+                    onEditingChanged: handleSeekEditingChanged
                 )
+                .controlSize(.large)
+                .frame(height: 24)
                 .disabled(model.nowPlaying?.durationMS == nil)
             }
 
@@ -969,13 +1006,9 @@ public struct ContentView: View {
             Slider(
                 value: seekBinding,
                 in: 0...1,
-                onEditingChanged: { editing in
-                    if !editing, let progress = pendingSeekProgress {
-                        pendingSeekProgress = nil
-                        Task { await model.seek(toProgress: progress) }
-                    }
-                }
+                onEditingChanged: handleSeekEditingChanged
             )
+            .controlSize(.large)
             .disabled(track.durationMS == nil)
         }
     }
@@ -1430,6 +1463,34 @@ public struct ContentView: View {
             get: { pendingSeekProgress ?? model.playbackProgress ?? 0 },
             set: { pendingSeekProgress = $0 }
         )
+    }
+
+    private var seekTimeText: String {
+        guard let progress = pendingSeekProgress,
+              let track = model.nowPlaying,
+              let durationMS = track.durationMS else {
+            return model.playbackTimeText
+        }
+        let targetMS = Int(Double(durationMS) * min(max(progress, 0), 1))
+        return "\(playbackTimestamp(targetMS)) / \(track.durationText)"
+    }
+
+    private func handleSeekEditingChanged(_ editing: Bool) {
+        if editing {
+            if pendingSeekProgress == nil {
+                pendingSeekProgress = model.playbackProgress ?? 0
+            }
+            return
+        }
+        guard let progress = pendingSeekProgress else {
+            return
+        }
+        Task {
+            await model.seek(toProgress: progress)
+            if pendingSeekProgress == progress {
+                pendingSeekProgress = nil
+            }
+        }
     }
 
     private var emptyIcon: String {
