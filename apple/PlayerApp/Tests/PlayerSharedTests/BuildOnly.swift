@@ -16,6 +16,19 @@ private final class SendableArtworkBox: @unchecked Sendable {
 }
 #endif
 
+#if os(macOS)
+import AppKit
+import MediaPlayer
+
+private final class SendableMacArtworkBox: @unchecked Sendable {
+    let artwork: MPMediaItemArtwork
+
+    init(artwork: MPMediaItemArtwork) {
+        self.artwork = artwork
+    }
+}
+#endif
+
 let playerSharedTestsBuildAnchor = TrackItem(
     id: "audio:test-anchor",
     title: "Anchor",
@@ -201,6 +214,73 @@ final class IOSNowPlayingArtworkFactoryTests: XCTestCase {
         }.value
 
         XCTAssertTrue(returnedImage)
+    }
+}
+#endif
+
+#if os(macOS)
+@MainActor
+final class MacNowPlayingArtworkFactoryTests: XCTestCase {
+    func testRequestHandlerCanRunOutsideMainActor() async throws {
+        let image = NSImage(size: CGSize(width: 32, height: 32))
+        let artworkBox = SendableMacArtworkBox(
+            artwork: MacNowPlayingArtworkFactory.make(image: image)
+        )
+
+        let returnedImage = await Task.detached {
+            artworkBox.artwork.image(at: CGSize(width: 16, height: 16)) != nil
+        }.value
+
+        XCTAssertTrue(returnedImage)
+    }
+}
+
+@MainActor
+final class MacPlaybackSystemIntegrationTests: XCTestCase {
+    func testPublishesTrackAndExplicitPlaybackStateToSystemNowPlayingCenter() throws {
+        let model = AppModel(discoverClient: {
+            throw RustPlayerError.startupFailed("macOS Now Playing test")
+        })
+        model.nowPlaying = playerSharedTestsBuildAnchor
+        model.isPlaying = true
+        model.playbackElapsedMS = 1_250
+        model.queueCount = 3
+        model.queuePosition = 1
+
+        let integration = MacPlaybackSystemIntegration(model: model)
+        integration.start()
+        defer { integration.shutdown() }
+
+        let center = MPNowPlayingInfoCenter.default()
+        XCTAssertEqual(
+            center.nowPlayingInfo?[MPMediaItemPropertyTitle] as? String,
+            playerSharedTestsBuildAnchor.title
+        )
+        XCTAssertEqual(
+            center.nowPlayingInfo?[MPNowPlayingInfoPropertyElapsedPlaybackTime] as? Double,
+            1.25
+        )
+        XCTAssertEqual(
+            center.nowPlayingInfo?[MPNowPlayingInfoPropertyPlaybackQueueCount] as? Int,
+            3
+        )
+        XCTAssertEqual(
+            center.nowPlayingInfo?[MPNowPlayingInfoPropertyPlaybackQueueIndex] as? Int,
+            1
+        )
+        XCTAssertEqual(center.playbackState, .playing)
+
+        model.isPlaying = false
+        integration.playbackPositionDidChange()
+        XCTAssertEqual(
+            center.nowPlayingInfo?[MPNowPlayingInfoPropertyPlaybackRate] as? Double,
+            0
+        )
+        XCTAssertEqual(center.playbackState, .paused)
+
+        integration.playbackDidStop()
+        XCTAssertNil(center.nowPlayingInfo)
+        XCTAssertEqual(center.playbackState, .stopped)
     }
 }
 #endif

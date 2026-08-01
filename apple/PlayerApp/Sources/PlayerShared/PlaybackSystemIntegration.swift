@@ -483,3 +483,319 @@ public final class IOSPlaybackSystemIntegration: NSObject, PlaybackSystemIntegra
     }
 }
 #endif
+
+#if os(macOS)
+import AppKit
+import MediaPlayer
+
+private final class MacArtworkImageBox: @unchecked Sendable {
+    let image: NSImage
+
+    init(image: NSImage) {
+        self.image = image
+    }
+}
+
+enum MacNowPlayingArtworkFactory {
+    nonisolated static func make(image: NSImage) -> MPMediaItemArtwork {
+        let imageBox = MacArtworkImageBox(image: image)
+        return MPMediaItemArtwork(boundsSize: image.size) { @Sendable _ in
+            imageBox.image
+        }
+    }
+}
+
+@MainActor
+public final class MacPlaybackSystemIntegration: NSObject, PlaybackSystemIntegration {
+    private weak var model: AppModel?
+    private var cancellables = Set<AnyCancellable>()
+    private var remoteTargets: [(command: MPRemoteCommand, target: Any)] = []
+    private var artworkCache: (path: String, artwork: MPMediaItemArtwork)?
+    private var pendingNowPlayingUpdate: Task<Void, Never>?
+    private var isStarted = false
+
+    public init(model: AppModel) {
+        self.model = model
+        super.init()
+    }
+
+    public func start() {
+        guard !isStarted else {
+            return
+        }
+        isStarted = true
+
+        observePlaybackState()
+        registerRemoteCommands()
+        updateNowPlayingInfo()
+    }
+
+    public func prepareForPlayback() throws {}
+
+    public func playbackPositionDidChange() {
+        updateNowPlayingInfo()
+    }
+
+    public func playbackDidStop() {
+        clearNowPlayingInfo()
+        updateRemoteCommandAvailability()
+    }
+
+    public func shutdown() {
+        guard isStarted else {
+            return
+        }
+        isStarted = false
+
+        pendingNowPlayingUpdate?.cancel()
+        pendingNowPlayingUpdate = nil
+        cancellables.removeAll()
+        for remoteTarget in remoteTargets {
+            remoteTarget.command.removeTarget(remoteTarget.target)
+        }
+        remoteTargets.removeAll()
+        disableRemoteCommands()
+        clearNowPlayingInfo()
+    }
+
+    private func observePlaybackState() {
+        guard let model else {
+            return
+        }
+
+        PlaybackNowPlayingObservation.publisher(for: model)
+            .dropFirst()
+            .sink { [weak self] _ in
+                Task { @MainActor [weak self] in
+                    self?.scheduleNowPlayingUpdate()
+                }
+            }
+            .store(in: &cancellables)
+
+        Publishers.CombineLatest4(
+            model.$queueCount.removeDuplicates(),
+            model.$isAudioInterrupted.removeDuplicates(),
+            model.$repeatMode.removeDuplicates(),
+            model.$isShuffleEnabled.removeDuplicates()
+        )
+        .dropFirst()
+        .sink { [weak self] _, _, _, _ in
+            Task { @MainActor [weak self] in
+                self?.updateRemoteCommandAvailability()
+            }
+        }
+        .store(in: &cancellables)
+    }
+
+    private func scheduleNowPlayingUpdate() {
+        pendingNowPlayingUpdate?.cancel()
+        pendingNowPlayingUpdate = Task { @MainActor [weak self] in
+            await Task.yield()
+            guard !Task.isCancelled else {
+                return
+            }
+            self?.updateNowPlayingInfo()
+            self?.pendingNowPlayingUpdate = nil
+        }
+    }
+
+    private func registerRemoteCommands() {
+        let center = MPRemoteCommandCenter.shared()
+
+        register(center.playCommand) { model, _ in
+            guard !model.isPlaying else {
+                return
+            }
+            await model.pauseOrResume()
+        }
+        register(center.pauseCommand) { model, _ in
+            guard model.isPlaying else {
+                return
+            }
+            await model.pauseOrResume()
+        }
+        register(center.togglePlayPauseCommand) { model, _ in
+            await model.pauseOrResume()
+        }
+        register(center.nextTrackCommand) { model, _ in
+            await model.nextTrack()
+        }
+        register(center.previousTrackCommand) { model, _ in
+            await model.previousTrack()
+        }
+        register(
+            center.changePlaybackPositionCommand,
+            acceptsEvent: { $0 is MPChangePlaybackPositionCommandEvent }
+        ) { model, event in
+            guard let event = event as? MPChangePlaybackPositionCommandEvent else {
+                return
+            }
+            await model.seek(toMilliseconds: Int(event.positionTime * 1_000))
+        }
+        register(
+            center.changeRepeatModeCommand,
+            acceptsEvent: { $0 is MPChangeRepeatModeCommandEvent }
+        ) { model, event in
+            guard let event = event as? MPChangeRepeatModeCommandEvent else {
+                return
+            }
+            let mode: PlaybackRepeatMode
+            switch event.repeatType {
+            case .all:
+                mode = .all
+            case .one:
+                mode = .one
+            default:
+                mode = .off
+            }
+            await model.setRepeatMode(mode)
+        }
+        register(
+            center.changeShuffleModeCommand,
+            acceptsEvent: { $0 is MPChangeShuffleModeCommandEvent }
+        ) { model, event in
+            guard let event = event as? MPChangeShuffleModeCommandEvent else {
+                return
+            }
+            let shouldEnable = event.shuffleType == .items
+            if model.isShuffleEnabled != shouldEnable {
+                await model.toggleShuffle()
+            }
+        }
+    }
+
+    private func register(
+        _ command: MPRemoteCommand,
+        acceptsEvent: @escaping (MPRemoteCommandEvent) -> Bool = { _ in true },
+        operation: @escaping @MainActor (AppModel, MPRemoteCommandEvent) async -> Void
+    ) {
+        let target = command.addTarget { [weak model] event in
+            guard acceptsEvent(event) else {
+                return .commandFailed
+            }
+            guard model != nil else {
+                return .noActionableNowPlayingItem
+            }
+            Task { @MainActor [weak model] in
+                guard let model else {
+                    return
+                }
+                await operation(model, event)
+            }
+            return .success
+        }
+        remoteTargets.append((command, target))
+    }
+
+    private func updateRemoteCommandAvailability() {
+        guard let model else {
+            disableRemoteCommands()
+            return
+        }
+
+        let center = MPRemoteCommandCenter.shared()
+        let hasTrack = model.nowPlaying != nil
+        center.playCommand.isEnabled = PlaybackRemoteCommandPolicy.canPlay(
+            hasTrack: hasTrack,
+            isInterrupted: model.isAudioInterrupted
+        )
+        center.pauseCommand.isEnabled = PlaybackRemoteCommandPolicy.canPause(
+            hasTrack: hasTrack,
+            isInterrupted: model.isAudioInterrupted
+        )
+        center.togglePlayPauseCommand.isEnabled =
+            PlaybackRemoteCommandPolicy.canTogglePlayPause(
+                hasTrack: hasTrack,
+                isInterrupted: model.isAudioInterrupted
+            )
+        center.nextTrackCommand.isEnabled = model.queueCount > 1
+        center.previousTrackCommand.isEnabled = model.queueCount > 1
+        center.changePlaybackPositionCommand.isEnabled = model.nowPlaying?.durationMS != nil
+        center.changeRepeatModeCommand.isEnabled = hasTrack
+        center.changeRepeatModeCommand.currentRepeatType = switch model.repeatMode {
+        case .off: .off
+        case .all: .all
+        case .one: .one
+        }
+        center.changeShuffleModeCommand.isEnabled = model.queueCount > 1
+        center.changeShuffleModeCommand.currentShuffleType = model.isShuffleEnabled ? .items : .off
+    }
+
+    private func disableRemoteCommands() {
+        let center = MPRemoteCommandCenter.shared()
+        center.playCommand.isEnabled = false
+        center.pauseCommand.isEnabled = false
+        center.togglePlayPauseCommand.isEnabled = false
+        center.nextTrackCommand.isEnabled = false
+        center.previousTrackCommand.isEnabled = false
+        center.changePlaybackPositionCommand.isEnabled = false
+        center.changeRepeatModeCommand.isEnabled = false
+        center.changeShuffleModeCommand.isEnabled = false
+    }
+
+    private func updateNowPlayingInfo() {
+        guard let model, let track = model.nowPlaying else {
+            clearNowPlayingInfo()
+            updateRemoteCommandAvailability()
+            return
+        }
+
+        var info: [String: Any] = [
+            MPMediaItemPropertyTitle: track.title,
+            MPMediaItemPropertyArtist: track.artist,
+            MPMediaItemPropertyAlbumTitle: track.album,
+            MPNowPlayingInfoPropertyElapsedPlaybackTime: Double(model.playbackElapsedMS) / 1_000,
+            MPNowPlayingInfoPropertyPlaybackRate: PlaybackNowPlayingPolicy.playbackRate(
+                isPlaying: model.isPlaying
+            ),
+            MPNowPlayingInfoPropertyDefaultPlaybackRate: 1.0,
+            MPNowPlayingInfoPropertyMediaType: MPNowPlayingInfoMediaType.audio.rawValue
+        ]
+        if let durationMS = track.durationMS {
+            info[MPMediaItemPropertyPlaybackDuration] = Double(durationMS) / 1_000
+        }
+        if model.queueCount > 0 {
+            info[MPNowPlayingInfoPropertyPlaybackQueueCount] = model.queueCount
+        }
+        if let queuePosition = model.queuePosition {
+            info[MPNowPlayingInfoPropertyPlaybackQueueIndex] = queuePosition
+        }
+
+        let detailsArtworkURL = model.nowPlayingDetails.flatMap { details in
+            details.identity == track.identity ? details.artworkURL : nil
+        }
+        if let artwork = artwork(for: detailsArtworkURL ?? track.artworkURL) {
+            info[MPMediaItemPropertyArtwork] = artwork
+        }
+
+        let center = MPNowPlayingInfoCenter.default()
+        center.nowPlayingInfo = info
+        center.playbackState = model.isPlaying ? .playing : .paused
+        updateRemoteCommandAvailability()
+    }
+
+    private func clearNowPlayingInfo() {
+        let center = MPNowPlayingInfoCenter.default()
+        center.nowPlayingInfo = nil
+        center.playbackState = .stopped
+    }
+
+    private func artwork(for url: URL?) -> MPMediaItemArtwork? {
+        guard let url else {
+            artworkCache = nil
+            return nil
+        }
+        if artworkCache?.path == url.path {
+            return artworkCache?.artwork
+        }
+        guard let image = NSImage(contentsOfFile: url.path) else {
+            artworkCache = nil
+            return nil
+        }
+
+        let artwork = MacNowPlayingArtworkFactory.make(image: image)
+        artworkCache = (url.path, artwork)
+        return artwork
+    }
+}
+#endif

@@ -58,13 +58,16 @@ Normalize 增益由 Rodio 播放 backend 应用到渲染链路，不修改系统
 
 ## macOS
 
-macOS 版本建议使用：
+macOS 外壳通过 `MPNowPlayingInfoCenter` 发布标题、艺人、专辑、封面、时长、进度、队列位置和播放状态，并通过
+`MPRemoteCommandCenter` 接收播放/暂停、上一首、下一首、进度跳转、循环和随机播放命令。macOS 没有 iOS 的播放音频会话来替系统推断状态，因此开始、暂停和停止时会显式同步 `MPNowPlayingInfoCenter.playbackState`。
+
+macOS 界面使用：
 
 - SwiftUI sidebar。
 - `NSOpenPanel` 选择音乐目录。
 - security-scoped bookmark 保存目录授权。
 - 可选菜单栏 mini player。
-- 可选 media key 支持。
+- 系统 media key 和控制中心支持。
 
 ## iPhone
 

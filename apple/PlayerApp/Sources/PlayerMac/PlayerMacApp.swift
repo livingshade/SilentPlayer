@@ -7,6 +7,7 @@ import UniformTypeIdentifiers
 struct SilentApp: App {
     @NSApplicationDelegateAdaptor(SilentAppDelegate.self) private var appDelegate
     @StateObject private var model = AppModel()
+    @State private var isSystemPlaybackInstalled = false
 
     init() {
         NSApplication.shared.setActivationPolicy(.regular)
@@ -36,6 +37,13 @@ struct SilentApp: App {
             }
             .onAppear {
                 appDelegate.model = model
+                guard !isSystemPlaybackInstalled else {
+                    return
+                }
+                isSystemPlaybackInstalled = true
+                model.installPlaybackSystemIntegration(
+                    MacPlaybackSystemIntegration(model: model)
+                )
             }
         }
         .windowStyle(.titleBar)
