@@ -54,6 +54,8 @@ public enum PlaybackInterruptionPolicy {
 }
 
 public enum PlaybackRouteChangePolicy {
+    public static let prefersSystemInterruptionOnDisconnect = false
+
     public static func shouldPause(
         oldDeviceBecameUnavailable: Bool,
         previousRouteHadPrivateOutput: Bool
@@ -190,6 +192,11 @@ public final class IOSPlaybackSystemIntegration: NSObject, PlaybackSystemIntegra
             policy: .longFormAudio,
             options: []
         )
+        if #available(iOS 17.0, *) {
+            try audioSession.setPrefersInterruptionOnRouteDisconnect(
+                PlaybackRouteChangePolicy.prefersSystemInterruptionOnDisconnect
+            )
+        }
     }
 
     private func observePlaybackState() {

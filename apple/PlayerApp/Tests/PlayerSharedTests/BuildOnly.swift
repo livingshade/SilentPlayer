@@ -66,6 +66,14 @@ final class PlaybackPolicyTests: XCTestCase {
         ))
     }
 
+    func testRouteDisconnectUsesOnePausePathAndDoesNotCreateAStuckInterruption() {
+        XCTAssertFalse(PlaybackRouteChangePolicy.prefersSystemInterruptionOnDisconnect)
+        XCTAssertTrue(PlaybackRouteChangePolicy.shouldPause(
+            oldDeviceBecameUnavailable: true,
+            previousRouteHadPrivateOutput: true
+        ))
+    }
+
     func testRemotePlayCommandsAreDisabledDuringAnInterruption() {
         XCTAssertTrue(PlaybackRemoteCommandPolicy.canPlay(
             hasTrack: true,

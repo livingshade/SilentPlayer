@@ -205,4 +205,17 @@ mod tests {
             PlaybackLifecycleAction::None
         );
     }
+
+    #[test]
+    fn disconnecting_an_output_without_an_interruption_allows_manual_resume() {
+        let mut lifecycle = PlaybackLifecycle::default();
+
+        assert_eq!(
+            lifecycle.output_disconnected(true),
+            PlaybackLifecycleAction::Pause
+        );
+        assert!(!lifecycle.interruption_active());
+        assert!(!lifecycle.resume_after_interruption());
+        assert!(lifecycle.request_playback_start());
+    }
 }

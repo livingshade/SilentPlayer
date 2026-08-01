@@ -4509,6 +4509,45 @@ mod tests {
     }
 
     #[test]
+    fn app_output_disconnect_pauses_and_allows_manual_resume() {
+        let db_path = temp_db_path("output_disconnect_resume");
+        let media_root = temp_dir("output_disconnect_resume_media");
+        fs::create_dir_all(&media_root).unwrap();
+        let app = create_app(&db_path, &media_root);
+        let mut track = Track::from_path(media_root.join("driving.ogg"));
+        track.title = "Driving".to_owned();
+        track.set_primary_audio_hash("output-disconnect-resume");
+        LibraryStore::open(&db_path)
+            .unwrap()
+            .upsert_track(&track)
+            .unwrap();
+
+        let engine =
+            PlayerEngine::spawn(NormalizationSettings::default(), || Ok(LoadedBackend)).unwrap();
+        unsafe {
+            (*app).engine = Some(engine);
+            (*app).play_queue_tracks(vec![track], 0, false).unwrap();
+        }
+
+        let disconnected = unsafe { call_json(player_app_audio_output_disconnected(app)) };
+        assert_ok(&disconnected);
+        assert_eq!(disconnected["data"]["current_track"]["title"], "Driving");
+        assert_eq!(disconnected["data"]["is_playing"], false);
+        assert_eq!(disconnected["data"]["interruption_active"], false);
+        assert_eq!(disconnected["data"]["resume_after_interruption"], false);
+
+        let resumed = unsafe { call_json(player_app_resume(app)) };
+        assert_ok(&resumed);
+        assert_eq!(resumed["data"]["current_track"]["title"], "Driving");
+        assert_eq!(resumed["data"]["is_playing"], true);
+        assert_eq!(resumed["data"]["interruption_active"], false);
+
+        unsafe { player_app_destroy(app) };
+        fs::remove_file(db_path).ok();
+        fs::remove_dir_all(media_root).ok();
+    }
+
+    #[test]
     fn app_edits_primary_metadata_in_place() {
         let db_path = temp_db_path("metadata_edit");
         let media_root = temp_dir("metadata_edit_media");
