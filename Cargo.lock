@@ -598,6 +598,7 @@ dependencies = [
  "fingerprint",
  "library_fs",
  "metadata_lofty",
+ "serde",
  "store_sqlite",
 ]
 
@@ -1111,6 +1112,7 @@ dependencies = [
  "app_ffi",
  "errors",
  "library_fs",
+ "library_service",
  "serde_json",
 ]
 

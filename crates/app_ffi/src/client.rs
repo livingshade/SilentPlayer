@@ -210,6 +210,14 @@ impl SilentAppClient {
         self.call(|app| app.service_track_details(path.as_ref()))
     }
 
+    pub fn track_lyrics(&mut self, path: impl AsRef<Path>) -> ClientResult {
+        self.call(|app| app.service_track_lyrics(path.as_ref()))
+    }
+
+    pub fn track_lyrics_at(&mut self, path: impl AsRef<Path>, position_ms: u64) -> ClientResult {
+        self.call(|app| app.service_track_lyrics_at(path.as_ref(), position_ms))
+    }
+
     pub fn edit_track_view(&mut self, path: impl AsRef<Path>, edit: &Value) -> ClientResult {
         let request: TrackViewEditRequest =
             serde_json::from_value(edit.clone()).map_err(|error| {
@@ -258,6 +266,10 @@ impl SilentAppClient {
         lyrics_path: impl AsRef<Path>,
     ) -> ClientResult {
         self.call(|app| app.service_set_track_lyrics(path.as_ref(), lyrics_path.as_ref()))
+    }
+
+    pub fn remove_track_lyrics(&mut self, path: impl AsRef<Path>) -> ClientResult {
+        self.call(|app| app.service_remove_track_lyrics(path.as_ref()))
     }
 
     pub fn export_track_view(

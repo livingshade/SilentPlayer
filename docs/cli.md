@@ -71,13 +71,22 @@ silent --cli --db ./silent.sqlite3 --media-root ./Music track rate <selector> 8
 silent --cli --db ./silent.sqlite3 --media-root ./Music track rate <selector> clear
 silent --cli --db ./silent.sqlite3 --media-root ./Music track artwork set <selector> ./cover.png
 silent --cli --db ./silent.sqlite3 --media-root ./Music track album-artwork set <selector> ./album-cover.jpg
+silent --cli track lyrics validate ./song.lrc
+silent --cli --db ./silent.sqlite3 --media-root ./Music track lyrics show <selector>
+silent --cli --db ./silent.sqlite3 --media-root ./Music track lyrics at <selector> 01:23.450
 silent --cli --db ./silent.sqlite3 --media-root ./Music track lyrics set <selector> ./song.lrc
+silent --cli --db ./silent.sqlite3 --media-root ./Music --yes track lyrics remove <selector>
 silent --cli --db ./silent.sqlite3 --media-root ./Music track export <selector> ./Portable.flac
 silent --cli track analyze ./song.flac
 ```
 
 Metadata, notes, track artwork, lyrics, and combined `track edit` operations update the track's
 primary view in place. They do not copy the audio file or create a derived view.
+
+Synchronized lyrics use UTF-8 LRC files and are normalized to a managed `.lrc` sidecar. Plain
+UTF-8 lyrics are normalized to `.txt`. `track lyrics validate` parses a file without requiring a
+library, while `show` returns the normalized document and `at` returns the active line for a
+deterministic playback position. Removing lyrics requires `--yes`.
 
 Export/materialize creates a new independent primary view.
 

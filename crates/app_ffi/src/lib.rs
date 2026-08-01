@@ -27,8 +27,10 @@ use fingerprint::{audio_hash, file_hash};
 use library_fs::fingerprint_from_metadata;
 use library_service::{
     copy_into_media_library, copy_related_sidecars, import_files as import_files_service,
-    import_folder as import_folder_service, ALBUM_ARTWORK_STEMS, ARTWORK_EXTENSIONS,
-    LYRICS_EXTENSIONS,
+    import_folder as import_folder_service, load_lyrics_file, load_track_lyrics,
+    remove_track_lyrics as remove_track_lyrics_service,
+    set_track_lyrics as set_track_lyrics_service, LyricsContent, LyricsDocument, TimedLyricsLine,
+    ALBUM_ARTWORK_STEMS, ARTWORK_EXTENSIONS, LYRICS_EXTENSIONS,
 };
 use serde::{Deserialize, Serialize};
 use store_sqlite::{LibraryStore, PlaylistSort, PlaylistSummary};
@@ -181,6 +183,7 @@ struct TrackDetailsDto {
     artwork_source: Option<String>,
     lyrics_path: Option<String>,
     lyrics_text: Option<String>,
+    lyrics_document: Option<LyricsDocument>,
     notes: Option<String>,
     audio_hash: String,
     original_title: String,
@@ -189,6 +192,31 @@ struct TrackDetailsDto {
     display_title: String,
     display_artist: Option<String>,
     display_album: Option<String>,
+}
+
+#[derive(Serialize)]
+struct TrackLyricsDto {
+    view_id: String,
+    lyrics_path: Option<String>,
+    lyrics_text: Option<String>,
+    lyrics_document: Option<LyricsDocument>,
+}
+
+#[derive(Serialize)]
+struct TrackLyricsAtDto {
+    view_id: String,
+    position_ms: u64,
+    kind: String,
+    line_index: Option<usize>,
+    line: Option<TimedLyricsLine>,
+    previous_index: Option<usize>,
+    next_index: Option<usize>,
+}
+
+#[derive(Serialize)]
+struct TrackLyricsRemovalDto {
+    view_id: String,
+    files_removed: usize,
 }
 
 #[derive(Debug, Deserialize)]
@@ -831,6 +859,74 @@ impl PlayerApp {
         self.track_details(path)
     }
 
+    pub(crate) fn service_track_lyrics(&mut self, path: &Path) -> PlayerResult<impl Serialize> {
+        let track = self
+            .store()?
+            .track_by_path(path)?
+            .ok_or_else(|| PlayerError::store(format!("track not found: {}", path.display())))?;
+        let view_id = track_view_id(&track)?.to_owned();
+        let lyrics = load_track_lyrics(&track.path)?;
+        Ok(TrackLyricsDto {
+            view_id,
+            lyrics_path: lyrics
+                .as_ref()
+                .map(|asset| path_to_string_lossy(&asset.path)),
+            lyrics_text: lyrics.as_ref().map(|asset| asset.raw_text.clone()),
+            lyrics_document: lyrics.map(|asset| asset.document),
+        })
+    }
+
+    pub(crate) fn service_track_lyrics_at(
+        &mut self,
+        path: &Path,
+        position_ms: u64,
+    ) -> PlayerResult<impl Serialize> {
+        let track = self
+            .store()?
+            .track_by_path(path)?
+            .ok_or_else(|| PlayerError::store(format!("track not found: {}", path.display())))?;
+        let view_id = track_view_id(&track)?.to_owned();
+        let lyrics = load_track_lyrics(&track.path)?;
+        let Some(lyrics) = lyrics else {
+            return Ok(TrackLyricsAtDto {
+                view_id,
+                position_ms,
+                kind: "none".to_owned(),
+                line_index: None,
+                line: None,
+                previous_index: None,
+                next_index: None,
+            });
+        };
+        let LyricsContent::Timed { lines } = &lyrics.document.content else {
+            return Ok(TrackLyricsAtDto {
+                view_id,
+                position_ms,
+                kind: "plain".to_owned(),
+                line_index: None,
+                line: None,
+                previous_index: None,
+                next_index: None,
+            });
+        };
+        let line_index = lyrics.document.active_line_index(position_ms);
+        let previous_index = line_index.and_then(|index| index.checked_sub(1));
+        let next_index = line_index
+            .map(|index| index + 1)
+            .filter(|index| *index < lines.len())
+            .or_else(|| (!lines.is_empty() && line_index.is_none()).then_some(0));
+        let line = line_index.and_then(|index| lines.get(index)).cloned();
+        Ok(TrackLyricsAtDto {
+            view_id,
+            position_ms,
+            kind: "timed".to_owned(),
+            line_index,
+            line,
+            previous_index,
+            next_index,
+        })
+    }
+
     pub(crate) fn service_edit_track_view(
         &mut self,
         path: &Path,
@@ -853,6 +949,7 @@ impl PlayerApp {
                     lyrics_path.display()
                 )));
             }
+            load_lyrics_file(lyrics_path)?;
         }
 
         let primary = self.primary_track_for_edit(path)?;
@@ -872,7 +969,7 @@ impl PlayerApp {
             }
         }
         if let Some(lyrics_path) = lyrics_path {
-            copy_track_lyrics_file(&primary.path, &lyrics_path)?;
+            set_track_lyrics_service(&primary.path, &lyrics_path)?;
         }
 
         let primary = self
@@ -985,7 +1082,7 @@ impl PlayerApp {
         lyrics_path: &Path,
     ) -> PlayerResult<impl Serialize> {
         let primary = self.primary_track_for_edit(path)?;
-        copy_track_lyrics_file(&primary.path, lyrics_path)?;
+        set_track_lyrics_service(&primary.path, lyrics_path)?;
         let primary = self
             .store()?
             .track_by_path(&primary.path)?
@@ -993,6 +1090,18 @@ impl PlayerApp {
         let dto = self.track_to_dto_with_artwork(&primary)?;
         self.replace_cached_track(dto.clone());
         Ok(dto)
+    }
+
+    pub(crate) fn service_remove_track_lyrics(
+        &mut self,
+        path: &Path,
+    ) -> PlayerResult<impl Serialize> {
+        let primary = self.primary_track_for_edit(path)?;
+        let removal = remove_track_lyrics_service(&primary.path)?;
+        Ok(TrackLyricsRemovalDto {
+            view_id: track_view_id(&primary)?.to_owned(),
+            files_removed: removal.files_removed,
+        })
     }
 
     pub(crate) fn service_export_track_view(
@@ -2742,7 +2851,7 @@ impl PlayerApp {
     fn track_details(&self, path: &Path) -> PlayerResult<TrackDetailsDto> {
         let store = self.store()?;
         let artwork = resolved_artwork_path(&store, &self.db_path, path)?;
-        let lyrics = sidecar_lyrics(path)?;
+        let lyrics = load_track_lyrics(path)?;
         let notes = store.track_notes(path)?;
         let metadata = store
             .track_metadata(path)?
@@ -2761,8 +2870,11 @@ impl PlayerApp {
             format_name: metadata.format_name,
             artwork_path: artwork.as_ref().map(|(path, _)| path_to_string_lossy(path)),
             artwork_source: artwork.map(|(_, source)| source.to_owned()),
-            lyrics_path: lyrics.as_ref().map(|(path, _)| path_to_string_lossy(path)),
-            lyrics_text: lyrics.map(|(_, text)| text),
+            lyrics_path: lyrics
+                .as_ref()
+                .map(|asset| path_to_string_lossy(&asset.path)),
+            lyrics_text: lyrics.as_ref().map(|asset| asset.raw_text.clone()),
+            lyrics_document: lyrics.map(|asset| asset.document),
             notes,
             audio_hash,
             original_title: metadata.original_title,
@@ -3299,65 +3411,6 @@ fn sidecar_artwork_path(track_path: &Path) -> Option<PathBuf> {
         .chain(ALBUM_ARTWORK_STEMS.iter().copied())
         .collect::<Vec<_>>();
     find_sidecar_file(dir, &stems, ARTWORK_EXTENSIONS)
-}
-
-fn sidecar_lyrics(track_path: &Path) -> PlayerResult<Option<(PathBuf, String)>> {
-    let Some(dir) = track_path.parent() else {
-        return Ok(None);
-    };
-    let Some(stem) = track_path.file_stem().and_then(|value| value.to_str()) else {
-        return Ok(None);
-    };
-    let Some(path) = find_sidecar_file(dir, &[stem], LYRICS_EXTENSIONS) else {
-        return Ok(None);
-    };
-    let bytes = fs::read(&path).map_err(|source| PlayerError::io(path.clone(), source))?;
-    let text = String::from_utf8_lossy(&bytes).into_owned();
-    Ok(Some((path, text)))
-}
-
-fn copy_track_lyrics_file(track_path: &Path, lyrics_path: &Path) -> PlayerResult<PathBuf> {
-    let Some(dir) = track_path.parent() else {
-        return Err(PlayerError::metadata(format!(
-            "track has no parent directory: {}",
-            track_path.display()
-        )));
-    };
-    let stem = track_path
-        .file_stem()
-        .and_then(|value| value.to_str())
-        .ok_or_else(|| PlayerError::metadata("track has no file stem"))?;
-    let extension = lyrics_path
-        .extension()
-        .and_then(|value| value.to_str())
-        .filter(|extension| {
-            LYRICS_EXTENSIONS
-                .iter()
-                .any(|supported| extension.eq_ignore_ascii_case(supported))
-        })
-        .unwrap_or("lrc")
-        .to_ascii_lowercase();
-    let destination = dir.join(format!("{stem}.{extension}"));
-    let source_canonical = lyrics_path.canonicalize().ok();
-    let destination_canonical = destination.canonicalize().ok();
-
-    for old_extension in LYRICS_EXTENSIONS {
-        let candidate = dir.join(format!("{stem}.{old_extension}"));
-        if candidate == destination {
-            continue;
-        }
-        if source_canonical.is_some() && candidate.canonicalize().ok() == source_canonical {
-            continue;
-        }
-        fs::remove_file(candidate).ok();
-    }
-
-    if source_canonical.is_some() && source_canonical == destination_canonical {
-        return Ok(destination);
-    }
-    fs::copy(lyrics_path, &destination)
-        .map_err(|source| PlayerError::io(destination.clone(), source))?;
-    Ok(destination)
 }
 
 fn find_sidecar_file(dir: &Path, stems: &[&str], extensions: &[&str]) -> Option<PathBuf> {
@@ -4145,6 +4198,16 @@ mod tests {
             .as_str()
             .unwrap()
             .contains("hello normal player"));
+        assert_eq!(data["lyrics_document"]["format"], "lrc");
+        assert_eq!(data["lyrics_document"]["content"]["kind"], "timed");
+        assert_eq!(
+            data["lyrics_document"]["content"]["lines"][0]["start_ms"],
+            1_000
+        );
+        assert_eq!(
+            data["lyrics_document"]["content"]["lines"][0]["text"],
+            "hello normal player"
+        );
 
         let artwork_path = PathBuf::from(data["artwork_path"].as_str().unwrap());
         assert!(

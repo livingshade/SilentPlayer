@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 use analysis_ebur128::analyze_path;
 use app_ffi::SilentAppClient;
 use library_fs::{LibraryScanner, ScanOptions};
+use library_service::load_lyrics_file;
 use serde_json::{json, Value};
 
 use crate::error::{CliError, CliResult};
@@ -336,7 +337,7 @@ fn run_track(context: &CliContext, mut args: Vec<String>) -> CliResult<()> {
         "rate" => rate_track(context, args),
         "artwork" => run_track_artwork(context, args),
         "album-artwork" => set_album_artwork(context, args),
-        "lyrics" => set_track_lyrics(context, args),
+        "lyrics" => run_track_lyrics(context, args),
         "export" => export_track(context, args),
         "analyze" => analyze_track(context, args),
         _ => Err(CliError::usage(format!(
@@ -479,17 +480,106 @@ fn set_album_artwork(context: &CliContext, mut args: Vec<String>) -> CliResult<(
     context.emit(&client.set_album_artwork(&selected.path, PathBuf::from(&args[1]))?)
 }
 
-fn set_track_lyrics(context: &CliContext, mut args: Vec<String>) -> CliResult<()> {
-    let action =
-        take_first(&mut args).ok_or_else(|| CliError::usage("track lyrics requires `set`"))?;
-    if action != "set" || args.len() != 2 {
+fn run_track_lyrics(context: &CliContext, mut args: Vec<String>) -> CliResult<()> {
+    let action = take_first(&mut args).ok_or_else(|| {
+        CliError::usage("track lyrics requires show, validate, at, set, or remove")
+    })?;
+    match action.as_str() {
+        "validate" => {
+            let path = one_path(args, "track lyrics validate requires <lyrics-file>")?;
+            let asset = load_lyrics_file(&path)?;
+            context.emit(&serde_json::to_value(asset)?)
+        }
+        "show" => {
+            let selector = one_value(args, "track lyrics show requires <path-or-view-id>")?;
+            let mut client = context.open_client()?;
+            let selected = resolve_track(&mut client, &selector)?;
+            context.emit(&client.track_lyrics(&selected.path)?)
+        }
+        "at" => {
+            if args.len() != 2 {
+                return Err(CliError::usage(
+                    "track lyrics at requires <path-or-view-id> <milliseconds|mm:ss[.fff]>",
+                ));
+            }
+            let position_ms = parse_lyrics_position(&args[1])?;
+            let mut client = context.open_client()?;
+            let selected = resolve_track(&mut client, &args[0])?;
+            context.emit(&client.track_lyrics_at(&selected.path, position_ms)?)
+        }
+        "set" => {
+            if args.len() != 2 {
+                return Err(CliError::usage(
+                    "track lyrics set requires <path-or-view-id> <lyrics-file>",
+                ));
+            }
+            let mut client = context.open_client()?;
+            let selected = resolve_track(&mut client, &args[0])?;
+            context.emit(&client.set_track_lyrics(&selected.path, PathBuf::from(&args[1]))?)
+        }
+        "remove" => {
+            let selector = one_value(args, "track lyrics remove requires <path-or-view-id>")?;
+            require_confirmation(context, "track lyrics remove")?;
+            let mut client = context.open_client()?;
+            let selected = resolve_track(&mut client, &selector)?;
+            context.emit(&client.remove_track_lyrics(&selected.path)?)
+        }
+        _ => Err(CliError::usage(
+            "track lyrics requires show, validate, at, set, or remove",
+        )),
+    }
+}
+
+fn parse_lyrics_position(value: &str) -> CliResult<u64> {
+    let Some((minutes, seconds)) = value.split_once(':') else {
+        return value
+            .parse::<u64>()
+            .map_err(|_| CliError::usage("lyrics position must be milliseconds or mm:ss[.fff]"));
+    };
+    if minutes.is_empty()
+        || seconds.is_empty()
+        || seconds.matches('.').count() > 1
+        || value.matches(':').count() != 1
+    {
         return Err(CliError::usage(
-            "track lyrics set requires <path-or-view-id> <lyrics-file>",
+            "lyrics position must be milliseconds or mm:ss[.fff]",
         ));
     }
-    let mut client = context.open_client()?;
-    let selected = resolve_track(&mut client, &args[0])?;
-    context.emit(&client.set_track_lyrics(&selected.path, PathBuf::from(&args[1]))?)
+    let minutes = minutes
+        .parse::<u64>()
+        .map_err(|_| CliError::usage("lyrics position must be milliseconds or mm:ss[.fff]"))?;
+    let (seconds, fraction) = seconds
+        .split_once('.')
+        .map(|(seconds, fraction)| (seconds, Some(fraction)))
+        .unwrap_or((seconds, None));
+    let seconds = seconds
+        .parse::<u64>()
+        .map_err(|_| CliError::usage("lyrics position must be milliseconds or mm:ss[.fff]"))?;
+    if seconds >= 60 {
+        return Err(CliError::usage("lyrics position seconds must be below 60"));
+    }
+    let fraction_ms = match fraction {
+        None => 0,
+        Some(value)
+            if !value.is_empty()
+                && value.len() <= 3
+                && value.bytes().all(|byte| byte.is_ascii_digit()) =>
+        {
+            value.parse::<u64>().map_err(|_| {
+                CliError::usage("lyrics position must be milliseconds or mm:ss[.fff]")
+            })? * 10_u64.pow(3 - value.len() as u32)
+        }
+        Some(_) => {
+            return Err(CliError::usage(
+                "lyrics position must be milliseconds or mm:ss[.fff]",
+            ))
+        }
+    };
+    minutes
+        .checked_mul(60_000)
+        .and_then(|value| value.checked_add(seconds * 1_000))
+        .and_then(|value| value.checked_add(fraction_ms))
+        .ok_or_else(|| CliError::usage("lyrics position is too large"))
 }
 
 fn export_track(context: &CliContext, args: Vec<String>) -> CliResult<()> {
@@ -1059,9 +1149,15 @@ Usage:
   silent --cli [options] track rate <selector> <1..10|clear>
   silent --cli [options] track artwork set <selector> <image>
   silent --cli [options] track album-artwork set <selector> <image>
+  silent --cli [options] track lyrics validate <lyrics-file>
+  silent --cli [options] track lyrics show <selector>
+  silent --cli [options] track lyrics at <selector> <milliseconds|mm:ss[.fff]>
   silent --cli [options] track lyrics set <selector> <lyrics-file>
+  silent --cli [options] track lyrics remove <selector>
   silent --cli [options] track export <selector> <destination>
-  silent --cli [options] track analyze <audio-file>"
+  silent --cli [options] track analyze <audio-file>
+
+Lyrics removal requires global option --yes before `track`."
     );
 }
 
@@ -1153,5 +1249,16 @@ mod tests {
         assert!(parse_search_args(vec!["miles".to_owned()], "library search").is_err());
         assert!(parse_required_limit(Vec::new()).is_err());
         assert!(parse_required_limit(vec!["--limit".to_owned(), "0".to_owned()]).is_err());
+    }
+
+    #[test]
+    fn lyric_positions_accept_milliseconds_and_fractional_clock_values() {
+        assert_eq!(parse_lyrics_position("1234").unwrap(), 1_234);
+        assert_eq!(parse_lyrics_position("2:03").unwrap(), 123_000);
+        assert_eq!(parse_lyrics_position("2:03.4").unwrap(), 123_400);
+        assert_eq!(parse_lyrics_position("2:03.045").unwrap(), 123_045);
+        assert!(parse_lyrics_position("2:60").is_err());
+        assert!(parse_lyrics_position("1:02.1234").is_err());
+        assert!(parse_lyrics_position("1:2:03").is_err());
     }
 }

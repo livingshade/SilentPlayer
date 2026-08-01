@@ -466,6 +466,140 @@ fn artwork_lyrics_materialization_and_library_package_roundtrip() {
 }
 
 #[test]
+fn lyrics_validate_show_at_set_and_remove_share_the_rust_timeline() {
+    let root = make_temp_dir("lyrics_timeline");
+    let db_path = root.join("silent.sqlite3");
+    let media_root = root.join("Music");
+    let source = root.join("words.lyrics");
+    fs::write(
+        &source,
+        "\u{feff}[ar:CLI Artist]\r\n[offset:+100]\r\n[00:01.00]First\r\n[00:02.500]Second\r\n",
+    )
+    .unwrap();
+
+    let validate = silent()
+        .args(["--cli", "--output", "json", "track", "lyrics", "validate"])
+        .arg(&source)
+        .output()
+        .expect("validate lyrics without a database");
+    assert_command_ok(&validate);
+    let validated = json_output(&validate);
+    assert_eq!(validated["document"]["content"]["kind"], "timed");
+    assert_eq!(validated["document"]["metadata"]["artist"], "CLI Artist");
+    assert_eq!(
+        validated["document"]["content"]["lines"][0]["start_ms"],
+        1_100
+    );
+
+    import_one(
+        &db_path,
+        &media_root,
+        &fixture("into_the_oceans_chorus.ogg"),
+    );
+    let track = first_track(&db_path, &media_root);
+    let selector = track["view_id"].as_str().unwrap();
+    let track_path = PathBuf::from(track["path"].as_str().unwrap());
+
+    let set = silent_cli(&db_path, &media_root)
+        .args(["--output", "json", "track", "lyrics", "set", selector])
+        .arg(&source)
+        .output()
+        .expect("set structured lyrics");
+    assert_command_ok(&set);
+    assert_eq!(json_output(&set)["view_id"], selector);
+    assert!(track_path.with_extension("lrc").is_file());
+    assert!(!track_path.with_extension("lyrics").exists());
+
+    let show = silent_cli(&db_path, &media_root)
+        .args(["--output", "json", "track", "lyrics", "show", selector])
+        .output()
+        .expect("show structured lyrics");
+    assert_command_ok(&show);
+    let shown = json_output(&show);
+    assert_eq!(shown["view_id"], selector);
+    assert_eq!(shown["lyrics_document"]["content"]["kind"], "timed");
+    assert_eq!(
+        shown["lyrics_document"]["content"]["lines"][1]["text"],
+        "Second"
+    );
+
+    let before = silent_cli(&db_path, &media_root)
+        .args([
+            "--output",
+            "json",
+            "track",
+            "lyrics",
+            "at",
+            selector,
+            "00:01.000",
+        ])
+        .output()
+        .expect("query lyrics before first effective timestamp");
+    assert_command_ok(&before);
+    let before = json_output(&before);
+    assert!(before["line"].is_null());
+    assert_eq!(before["next_index"], 0);
+
+    let active = silent_cli(&db_path, &media_root)
+        .args([
+            "--output",
+            "json",
+            "track",
+            "lyrics",
+            "at",
+            selector,
+            "00:02.600",
+        ])
+        .output()
+        .expect("query active lyric");
+    assert_command_ok(&active);
+    let active = json_output(&active);
+    assert_eq!(active["kind"], "timed");
+    assert_eq!(active["position_ms"], 2_600);
+    assert_eq!(active["line_index"], 1);
+    assert_eq!(active["line"]["text"], "Second");
+    assert_eq!(active["previous_index"], 0);
+    assert!(active["next_index"].is_null());
+
+    let invalid = root.join("invalid.lrc");
+    fs::write(&invalid, "[00:60.00]Invalid").unwrap();
+    let rejected = silent_cli(&db_path, &media_root)
+        .args(["track", "lyrics", "set", selector])
+        .arg(&invalid)
+        .output()
+        .expect("reject invalid replacement lyrics");
+    assert_eq!(rejected.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&rejected.stderr).contains("seconds must be below 60"));
+    assert!(track_path.with_extension("lrc").is_file());
+
+    let refused = silent_cli(&db_path, &media_root)
+        .args(["track", "lyrics", "remove", selector])
+        .output()
+        .expect("require confirmation before removing lyrics");
+    assert_eq!(refused.status.code(), Some(2));
+
+    let removed = silent_cli(&db_path, &media_root)
+        .args([
+            "--yes", "--output", "json", "track", "lyrics", "remove", selector,
+        ])
+        .output()
+        .expect("remove lyrics");
+    assert_command_ok(&removed);
+    assert_eq!(json_output(&removed)["files_removed"], 1);
+    assert!(!track_path.with_extension("lrc").exists());
+
+    let empty = silent_cli(&db_path, &media_root)
+        .args(["--output", "json", "track", "lyrics", "show", selector])
+        .output()
+        .expect("show missing lyrics");
+    assert_command_ok(&empty);
+    let empty = json_output(&empty);
+    assert!(empty["lyrics_path"].is_null());
+    assert!(empty["lyrics_document"].is_null());
+    fs::remove_dir_all(root).ok();
+}
+
+#[test]
 fn playback_shell_supports_state_commands_without_opening_audio() {
     let root = make_temp_dir("shell");
     let db_path = root.join("silent.sqlite3");

@@ -1,3 +1,5 @@
+mod lyrics;
+
 use std::collections::HashSet;
 use std::ffi::OsStr;
 use std::fs;
@@ -11,6 +13,12 @@ use fingerprint::{audio_hash, file_hash};
 use library_fs::{fingerprint_from_metadata, is_supported_audio_file, LibraryScanner, ScanOptions};
 use metadata_lofty::{enrich_track, read_track_artwork};
 use store_sqlite::LibraryStore;
+
+pub use lyrics::{
+    load_lyrics_file, load_track_lyrics, parse_lyrics_text, remove_track_lyrics, set_track_lyrics,
+    LyricsAsset, LyricsContent, LyricsDiagnostic, LyricsDiagnosticSeverity, LyricsDocument,
+    LyricsFormat, LyricsMetadata, LyricsRemoval, TimedLyricsLine,
+};
 
 pub const LYRICS_EXTENSIONS: &[&str] = &["lrc", "txt", "lyrics"];
 pub const ARTWORK_EXTENSIONS: &[&str] = &["jpg", "jpeg", "png", "webp", "gif"];

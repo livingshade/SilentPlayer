@@ -11,4 +11,5 @@ errors = { path = "../errors" }
 fingerprint = { path = "../fingerprint" }
 library_fs = { path = "../library_fs" }
 metadata_lofty = { path = "../metadata_lofty" }
+serde = { version = "1.0.228", features = ["derive"] }
 store_sqlite = { path = "../store_sqlite" }
