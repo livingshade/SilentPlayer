@@ -122,6 +122,14 @@ pub struct PlayHistoryEntry {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PlaybackStats {
+    pub play_count: u64,
+    pub session_count: u64,
+    pub last_played_at_unix_seconds: Option<i64>,
+    pub last_completed_at_unix_seconds: Option<i64>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ArtworkSummary {
     pub path: PathBuf,
     pub image_count: usize,
@@ -1446,6 +1454,32 @@ impl LibraryStore {
             .collect::<Result<Vec<_>, _>>()
             .map_err(to_store_error)?;
         Ok(rows)
+    }
+
+    pub fn playback_stats(&self, path: impl AsRef<Path>) -> PlayerResult<PlaybackStats> {
+        self.conn
+            .query_row(
+                r#"
+                SELECT COUNT(*),
+                       COALESCE(SUM(CASE WHEN completed = 1 THEN 1 ELSE 0 END), 0),
+                       MAX(played_at_unix_seconds),
+                       MAX(CASE WHEN completed = 1 THEN played_at_unix_seconds END)
+                FROM play_history
+                WHERE track_path = ?1
+                "#,
+                params![path_to_string(path.as_ref())],
+                |row| {
+                    let session_count = row.get::<_, i64>(0)?;
+                    let play_count = row.get::<_, i64>(1)?;
+                    Ok(PlaybackStats {
+                        play_count: optional_u64(Some(play_count)).unwrap_or(0),
+                        session_count: optional_u64(Some(session_count)).unwrap_or(0),
+                        last_played_at_unix_seconds: row.get(2)?,
+                        last_completed_at_unix_seconds: row.get(3)?,
+                    })
+                },
+            )
+            .map_err(to_store_error)
     }
 
     pub fn save_artwork(
@@ -3883,6 +3917,21 @@ mod tests {
         assert_eq!(history.len(), 1);
         assert_eq!(history[0].position_ms, 42_000);
         assert!(history[0].completed);
+
+        store
+            .record_playback("/music/song.ogg", 5_000, false)
+            .unwrap();
+        let stats = store.playback_stats("/music/song.ogg").unwrap();
+        assert_eq!(stats.play_count, 1);
+        assert_eq!(stats.session_count, 2);
+        assert!(stats.last_played_at_unix_seconds.is_some());
+        assert!(stats.last_completed_at_unix_seconds.is_some());
+
+        let empty_stats = store.playback_stats("/music/other.ogg").unwrap();
+        assert_eq!(empty_stats.play_count, 0);
+        assert_eq!(empty_stats.session_count, 0);
+        assert_eq!(empty_stats.last_played_at_unix_seconds, None);
+        assert_eq!(empty_stats.last_completed_at_unix_seconds, None);
 
         store.set_favorite("/music/song.ogg", false).unwrap();
         assert_eq!(store.favorite_tracks().unwrap().len(), 0);

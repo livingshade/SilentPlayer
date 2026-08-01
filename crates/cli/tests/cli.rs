@@ -172,6 +172,9 @@ fn music_view_collections_and_playlist_commands_cover_app_mutations() {
     assert_command_ok(&details);
     let details = json_output(&details);
     assert_eq!(details["details"]["view_id"], primary_view);
+    assert_eq!(details["details"]["play_count"], 0);
+    assert_eq!(details["details"]["playback_session_count"], 0);
+    assert!(details["details"]["last_played_at_unix_seconds"].is_null());
     assert!(details["diagnostics"].is_array());
 
     let rejected_view_name = silent_cli(&db_path, &media_root)

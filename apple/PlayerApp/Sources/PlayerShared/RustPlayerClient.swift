@@ -85,6 +85,124 @@ public struct PlaybackQueue: Hashable, Sendable {
     public let shuffleEnabled: Bool
 }
 
+public enum LyricsFormat: String, Codable, Hashable, Sendable {
+    case lrc
+    case plainText = "plain_text"
+}
+
+public struct TimedLyricsLine: Identifiable, Hashable, Sendable {
+    public let id: Int
+    public let startMS: Int
+    public let text: String
+
+    public init(id: Int, startMS: Int, text: String) {
+        self.id = id
+        self.startMS = startMS
+        self.text = text
+    }
+}
+
+public enum LyricsContent: Hashable, Sendable {
+    case timed([TimedLyricsLine])
+    case plain(String)
+}
+
+public struct LyricsDocument: Hashable, Sendable {
+    public let format: LyricsFormat
+    public let content: LyricsContent
+
+    public init(format: LyricsFormat, content: LyricsContent) {
+        self.format = format
+        self.content = content
+    }
+
+    public var timedLines: [TimedLyricsLine]? {
+        guard case .timed(let lines) = content else {
+            return nil
+        }
+        return lines
+    }
+
+    public var hasDisplayableLyrics: Bool {
+        switch content {
+        case .timed(let lines):
+            return lines.contains {
+                !$0.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            }
+        case .plain(let text):
+            return !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }
+    }
+
+    public func compactLine(at positionMS: Int? = nil) -> String? {
+        switch content {
+        case .timed(let lines):
+            guard !lines.isEmpty else {
+                return nil
+            }
+            let preferredIndex = positionMS.flatMap(activeLineIndex(at:)) ?? 0
+            if let line = nonemptyLine(in: lines, startingAt: preferredIndex) {
+                return line
+            }
+            return nonemptyLine(in: lines, endingBefore: preferredIndex)
+        case .plain(let text):
+            return text
+                .components(separatedBy: .newlines)
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .first { !$0.isEmpty }
+        }
+    }
+
+    public func activeLineIndex(at positionMS: Int) -> Int? {
+        guard let lines = timedLines, !lines.isEmpty else {
+            return nil
+        }
+        var lowerBound = 0
+        var upperBound = lines.count
+        while lowerBound < upperBound {
+            let midpoint = lowerBound + (upperBound - lowerBound) / 2
+            if lines[midpoint].startMS <= positionMS {
+                lowerBound = midpoint + 1
+            } else {
+                upperBound = midpoint
+            }
+        }
+        return lowerBound > 0 ? lowerBound - 1 : nil
+    }
+
+    private func nonemptyLine(
+        in lines: [TimedLyricsLine],
+        startingAt index: Int
+    ) -> String? {
+        guard lines.indices.contains(index) else {
+            return nil
+        }
+        for line in lines[index...] {
+            let text = line.text.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !text.isEmpty {
+                return text
+            }
+        }
+        return nil
+    }
+
+    private func nonemptyLine(
+        in lines: [TimedLyricsLine],
+        endingBefore index: Int
+    ) -> String? {
+        guard index > 0 else {
+            return nil
+        }
+        for line in lines[..<min(index, lines.count)].reversed() {
+            let text = line.text.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !text.isEmpty {
+                return text
+            }
+        }
+        return nil
+    }
+}
+
 public struct TrackDetails: Hashable, Sendable {
     public let identity: String
     public let rating: Int?
@@ -94,6 +212,7 @@ public struct TrackDetails: Hashable, Sendable {
     public let artworkSource: String?
     public let lyricsURL: URL?
     public let lyricsText: String?
+    public let lyricsDocument: LyricsDocument?
     public let notes: String?
     public let audioHash: String
     public let originalTitle: String
@@ -102,6 +221,10 @@ public struct TrackDetails: Hashable, Sendable {
     public let displayTitle: String
     public let displayArtist: String
     public let displayAlbum: String
+    public let playCount: UInt64
+    public let playbackSessionCount: UInt64
+    public let lastPlayedAtUnixSeconds: Int64?
+    public let lastCompletedAtUnixSeconds: Int64?
 
     public static func placeholder(for track: TrackItem) -> TrackDetails {
         TrackDetails(
@@ -113,6 +236,7 @@ public struct TrackDetails: Hashable, Sendable {
             artworkSource: nil,
             lyricsURL: nil,
             lyricsText: nil,
+            lyricsDocument: nil,
             notes: nil,
             audioHash: track.id,
             originalTitle: track.title,
@@ -120,11 +244,18 @@ public struct TrackDetails: Hashable, Sendable {
             originalAlbum: track.album,
             displayTitle: track.title,
             displayArtist: track.artist,
-            displayAlbum: track.album
+            displayAlbum: track.album,
+            playCount: 0,
+            playbackSessionCount: 0,
+            lastPlayedAtUnixSeconds: nil,
+            lastCompletedAtUnixSeconds: nil
         )
     }
 
     public var hasLyrics: Bool {
+        if let lyricsDocument {
+            return lyricsDocument.hasDisplayableLyrics
+        }
         guard let lyricsText else {
             return false
         }
@@ -1121,6 +1252,7 @@ private struct TrackDetailsDTO: Decodable {
     let artworkSource: String?
     let lyricsPath: String?
     let lyricsText: String?
+    let lyricsDocument: LyricsDocumentDTO?
     let notes: String?
     let audioHash: String
     let originalTitle: String
@@ -1129,6 +1261,10 @@ private struct TrackDetailsDTO: Decodable {
     let displayTitle: String
     let displayArtist: String?
     let displayAlbum: String?
+    let playCount: UInt64
+    let playbackSessionCount: UInt64
+    let lastPlayedAtUnixSeconds: Int64?
+    let lastCompletedAtUnixSeconds: Int64?
 
     var model: TrackDetails {
         TrackDetails(
@@ -1140,6 +1276,7 @@ private struct TrackDetailsDTO: Decodable {
             artworkSource: artworkSource,
             lyricsURL: lyricsPath.map { URL(fileURLWithPath: $0) },
             lyricsText: lyricsText,
+            lyricsDocument: lyricsDocument?.model,
             notes: notes,
             audioHash: audioHash,
             originalTitle: MetadataDefaults.title(originalTitle),
@@ -1147,7 +1284,51 @@ private struct TrackDetailsDTO: Decodable {
             originalAlbum: MetadataDefaults.album(originalAlbum),
             displayTitle: MetadataDefaults.title(displayTitle),
             displayArtist: MetadataDefaults.artist(displayArtist),
-            displayAlbum: MetadataDefaults.album(displayAlbum)
+            displayAlbum: MetadataDefaults.album(displayAlbum),
+            playCount: playCount,
+            playbackSessionCount: playbackSessionCount,
+            lastPlayedAtUnixSeconds: lastPlayedAtUnixSeconds,
+            lastCompletedAtUnixSeconds: lastCompletedAtUnixSeconds
+        )
+    }
+}
+
+private struct LyricsDocumentDTO: Decodable {
+    let format: LyricsFormat
+    let content: LyricsContentDTO
+
+    var model: LyricsDocument {
+        LyricsDocument(format: format, content: content.model)
+    }
+}
+
+private struct LyricsContentDTO: Decodable {
+    let kind: String
+    let lines: [TimedLyricsLineDTO]?
+    let text: String?
+
+    var model: LyricsContent {
+        switch kind {
+        case "timed":
+            return .timed((lines ?? []).map(\.model))
+        case "plain":
+            return .plain(text ?? "")
+        default:
+            return .plain("")
+        }
+    }
+}
+
+private struct TimedLyricsLineDTO: Decodable {
+    let id: Int
+    let startMs: UInt64
+    let text: String
+
+    var model: TimedLyricsLine {
+        TimedLyricsLine(
+            id: id,
+            startMS: Int(clamping: startMs),
+            text: text
         )
     }
 }

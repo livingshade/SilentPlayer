@@ -14,6 +14,8 @@ public struct ContentView: View {
     @State private var isZeroOutConfirmationPresented = false
     @State private var isQueuePresented = false
     @State private var isLibraryInformationPresented = false
+    @State private var isNowPlayingExpanded = false
+    @State private var splitViewVisibility: NavigationSplitViewVisibility = .all
     @State private var pendingLibraryDeletion: TrackItem?
     @State private var isLibraryDeletionConfirmationPresented = false
     private let chooseFolder: () async -> URL?
@@ -117,6 +119,11 @@ public struct ContentView: View {
         .onChange(of: model.selectedTrack?.id) { _ in
             persistPresentation()
         }
+        .onChange(of: model.nowPlaying?.id) { trackID in
+            if trackID == nil {
+                dismissExpandedNowPlaying()
+            }
+        }
         .onChange(of: model.playlists) { _ in
             persistPresentation()
         }
@@ -131,7 +138,7 @@ public struct ContentView: View {
     }
 
     private var playerContent: some View {
-        NavigationSplitView {
+        NavigationSplitView(columnVisibility: $splitViewVisibility) {
             sidebar
                 .navigationSplitViewColumnWidth(min: 220, ideal: 270, max: 340)
         } detail: {
@@ -166,6 +173,28 @@ public struct ContentView: View {
         sceneSession = encoded
     }
 
+    private func toggleExpandedNowPlaying() {
+        if isNowPlayingExpanded {
+            dismissExpandedNowPlaying()
+        } else {
+            presentExpandedNowPlaying()
+        }
+    }
+
+    private func presentExpandedNowPlaying() {
+        guard model.nowPlaying != nil else {
+            return
+        }
+        isNowPlayingExpanded = true
+    }
+
+    private func dismissExpandedNowPlaying() {
+        guard isNowPlayingExpanded else {
+            return
+        }
+        isNowPlayingExpanded = false
+    }
+
     private var restorationPlaceholder: some View {
         VStack(spacing: 14) {
             ProgressView()
@@ -182,17 +211,25 @@ public struct ContentView: View {
     private func detailPane(layout: DetailPaneLayout) -> some View {
         ZStack {
             VStack(spacing: 0) {
-                contentHeader
-                Divider()
-                if let track = model.detailTrack {
-                    nowPlayingPanel(for: track, layout: layout)
+                if isNowPlayingExpanded, let track = model.nowPlaying {
+                    expandedNowPlaying(for: track)
+                        .layoutPriority(1)
                     Divider()
+                    playerBar
+                        .fixedSize(horizontal: false, vertical: true)
+                } else {
+                    contentHeader
+                    Divider()
+                    if let track = model.detailTrack {
+                        nowPlayingPanel(for: track, layout: layout)
+                        Divider()
+                    }
+                    trackList
+                        .layoutPriority(1)
+                    Divider()
+                    playerBar
+                        .fixedSize(horizontal: false, vertical: true)
                 }
-                trackList
-                    .layoutPriority(1)
-                Divider()
-                playerBar
-                    .fixedSize(horizontal: false, vertical: true)
             }
 
             if model.isBusy {
@@ -572,31 +609,50 @@ public struct ContentView: View {
     private var playerBar: some View {
         VStack(spacing: 9) {
             HStack(spacing: 12) {
-                if let track = model.nowPlaying {
-                    TrackArtworkThumbnail(
-                        artworkURL: track.artworkURL,
-                        isCurrent: true,
-                        isPlaying: model.isPlaying,
-                        hasArtworkHint: track.artworkCount > 0
-                    )
-                } else {
-                    Image(systemName: "music.note")
-                        .foregroundStyle(.secondary)
-                        .frame(width: 34, height: 34)
-                        .background(Color(nsColor: .separatorColor).opacity(0.18))
-                        .clipShape(RoundedRectangle(cornerRadius: 5))
-                }
+                Button {
+                    guard model.nowPlaying != nil else {
+                        return
+                    }
+                    toggleExpandedNowPlaying()
+                } label: {
+                    HStack(spacing: 12) {
+                        if let track = model.nowPlaying {
+                            TrackArtworkThumbnail(
+                                artworkURL: track.artworkURL,
+                                isCurrent: true,
+                                isPlaying: model.isPlaying,
+                                hasArtworkHint: track.artworkCount > 0
+                            )
+                        } else {
+                            Image(systemName: "music.note")
+                                .foregroundStyle(.secondary)
+                                .frame(width: 34, height: 34)
+                                .background(Color(nsColor: .separatorColor).opacity(0.18))
+                                .clipShape(RoundedRectangle(cornerRadius: 5))
+                        }
 
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(model.nowPlaying?.title ?? "Nothing playing")
-                        .font(.headline)
-                        .lineLimit(1)
-                    Text(model.nowPlaying?.subtitle ?? "Choose a song to start listening")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text(model.nowPlaying?.title ?? "Nothing playing")
+                                .font(.headline)
+                                .lineLimit(1)
+                            Text(model.nowPlaying?.subtitle ?? "Choose a song to start listening")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                        }
+
+                        if model.nowPlaying != nil {
+                            Image(systemName: isNowPlayingExpanded ? "chevron.down" : "chevron.up")
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    .contentShape(Rectangle())
                 }
+                .buttonStyle(.plain)
+                .disabled(model.nowPlaying == nil)
                 .frame(maxWidth: .infinity, alignment: .leading)
+                .help(isNowPlayingExpanded ? "Close Now Playing" : "Open Now Playing")
 
                 HStack(spacing: 12) {
                     Button {
@@ -671,6 +727,20 @@ public struct ContentView: View {
                 .buttonStyle(.bordered)
                 .controlSize(.regular)
                 .help("Show queue")
+
+                Button {
+                    toggleExpandedNowPlaying()
+                } label: {
+                    Label(
+                        isNowPlayingExpanded ? "Close Now Playing" : "Open Now Playing",
+                        systemImage: isNowPlayingExpanded ? "rectangle.compress.vertical" : "rectangle.expand.vertical"
+                    )
+                    .labelStyle(.iconOnly)
+                    .foregroundStyle(isNowPlayingExpanded ? Color.accentColor : Color.secondary)
+                }
+                .buttonStyle(.borderless)
+                .disabled(model.nowPlaying == nil)
+                .help(isNowPlayingExpanded ? "Close Now Playing" : "Open Now Playing")
 
                 if model.isBusy {
                     ProgressView()
@@ -764,6 +834,343 @@ public struct ContentView: View {
         .background(Color(nsColor: .controlBackgroundColor).opacity(0.55))
     }
 
+    private func expandedNowPlaying(for track: TrackItem) -> some View {
+        let details = playbackDetails(for: track)
+        let artworkURL = details?.artworkURL ?? track.artworkURL
+        return ZStack {
+            NowPlayingBackdrop(artworkURL: artworkURL)
+
+            GeometryReader { proxy in
+                let leftWidth = min(max(proxy.size.width * 0.41, 290), 430)
+                let notesHeight = min(max(proxy.size.height * 0.23, 118), 168)
+
+                HStack(alignment: .top, spacing: 22) {
+                    ViewThatFits(in: .vertical) {
+                        expandedDetailColumn(
+                            for: track,
+                            details: details,
+                            artworkSize: min(210, proxy.size.height * 0.29)
+                        )
+                        expandedDetailColumn(
+                            for: track,
+                            details: details,
+                            artworkSize: 132
+                        )
+                        expandedDetailColumn(
+                            for: track,
+                            details: details,
+                            artworkSize: 92
+                        )
+                    }
+                    .frame(width: leftWidth)
+                    .frame(maxHeight: .infinity, alignment: .top)
+
+                    Divider()
+
+                    VStack(alignment: .leading, spacing: 12) {
+                        HStack {
+                            Label("Lyrics", systemImage: "text.quote")
+                                .font(.headline)
+                            Spacer()
+                            if let format = details?.lyricsDocument?.format {
+                                Text(format == .lrc ? "Synced" : "Plain Text")
+                                    .font(.caption2.weight(.medium))
+                                    .foregroundStyle(.secondary)
+                            }
+                            Button {
+                                dismissExpandedNowPlaying()
+                            } label: {
+                                Label("Close Now Playing", systemImage: "xmark")
+                                    .labelStyle(.iconOnly)
+                                    .frame(width: 24, height: 24)
+                            }
+                            .buttonStyle(.bordered)
+                            .keyboardShortcut(.cancelAction)
+                            .help("Close Now Playing")
+                        }
+
+                        NowPlayingLyricsView(
+                            model: model,
+                            document: details?.lyricsDocument,
+                            fallbackText: details?.lyricsText,
+                            isLoading: model.isLoadingPlaybackDetails
+                        )
+                        .id(track.id)
+                        .layoutPriority(1)
+
+                        Divider()
+
+                        expandedNotes(for: track, details: details)
+                            .frame(height: notesHeight, alignment: .top)
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                }
+                .padding(.horizontal, 22)
+                .padding(.vertical, 18)
+            }
+        }
+    }
+
+    private func expandedDetailColumn(
+        for track: TrackItem,
+        details: TrackDetails?,
+        artworkSize: CGFloat
+    ) -> some View {
+        VStack(spacing: 10) {
+            ArtworkViewport(
+                artworkURL: details?.artworkURL ?? track.artworkURL,
+                size: artworkSize
+            )
+
+            VStack(spacing: 4) {
+                Text(track.title)
+                    .font(.title2.weight(.semibold))
+                    .multilineTextAlignment(.center)
+                    .fixedSize(horizontal: false, vertical: true)
+                Text(track.artist)
+                    .font(.title3.weight(.medium))
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    .fixedSize(horizontal: false, vertical: true)
+                Text(track.album)
+                    .font(.callout)
+                    .foregroundStyle(.tertiary)
+                    .multilineTextAlignment(.center)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .frame(maxWidth: .infinity)
+
+            HStack(spacing: 12) {
+                ratingPicker(for: track)
+                    .frame(maxWidth: 150)
+                Spacer(minLength: 4)
+                trackActionsMenu(for: track)
+            }
+
+            expandedTrackFacts(for: track, details: details)
+            expandedPlaybackHistory(details: details)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+    }
+
+    private func expandedPlaybackProgress(for track: TrackItem) -> some View {
+        VStack(spacing: 7) {
+            TimelineView(.periodic(from: .now, by: model.isPlaying ? 0.2 : 1)) { _ in
+                let positionMS = model.estimatedPlaybackPositionMS()
+                HStack {
+                    Text(playbackTimestamp(positionMS))
+                    Spacer()
+                    Text(track.durationText)
+                }
+                .font(.caption.monospacedDigit())
+                .foregroundStyle(.secondary)
+            }
+
+            Slider(
+                value: seekBinding,
+                in: 0...1,
+                onEditingChanged: { editing in
+                    if !editing, let progress = pendingSeekProgress {
+                        pendingSeekProgress = nil
+                        Task { await model.seek(toProgress: progress) }
+                    }
+                }
+            )
+            .disabled(track.durationMS == nil)
+        }
+    }
+
+    private var expandedPlaybackControls: some View {
+        HStack(spacing: 22) {
+            Button {
+                Task { await model.toggleShuffle() }
+            } label: {
+                Label("Shuffle", systemImage: "shuffle")
+                    .labelStyle(.iconOnly)
+                    .foregroundStyle(model.isShuffleEnabled ? Color.accentColor : Color.secondary)
+            }
+            .buttonStyle(.borderless)
+            .help(model.isShuffleEnabled ? "Shuffle on" : "Shuffle off")
+
+            Button {
+                Task { await model.previousTrack() }
+            } label: {
+                Label("Previous", systemImage: "backward.fill")
+                    .labelStyle(.iconOnly)
+                    .font(.title3)
+            }
+            .buttonStyle(.borderless)
+            .help("Previous")
+
+            Button {
+                Task { await model.pauseOrResume() }
+            } label: {
+                Label(
+                    model.isPlaying ? "Pause" : "Play",
+                    systemImage: model.isPlaying ? "pause.fill" : "play.fill"
+                )
+                .labelStyle(.iconOnly)
+                .font(.title2)
+                .frame(width: 30, height: 30)
+            }
+            .buttonStyle(.borderedProminent)
+            .controlSize(.large)
+            .clipShape(Circle())
+            .help(model.isPlaying ? "Pause" : "Play")
+
+            Button {
+                Task { await model.nextTrack() }
+            } label: {
+                Label("Next", systemImage: "forward.fill")
+                    .labelStyle(.iconOnly)
+                    .font(.title3)
+            }
+            .buttonStyle(.borderless)
+            .help("Next")
+
+            Menu {
+                ForEach(PlaybackRepeatMode.allCases) { mode in
+                    Button {
+                        Task { await model.setRepeatMode(mode) }
+                    } label: {
+                        Label(mode.label, systemImage: model.repeatMode == mode ? "checkmark" : mode.systemImage)
+                    }
+                }
+            } label: {
+                Label(model.repeatMode.label, systemImage: model.repeatMode.systemImage)
+                    .labelStyle(.iconOnly)
+                    .foregroundStyle(model.repeatMode == .off ? Color.secondary : Color.accentColor)
+            }
+            .menuStyle(.borderlessButton)
+            .help("Repeat mode")
+
+            Button {
+                isQueuePresented = true
+            } label: {
+                Label(model.queueStatusText, systemImage: "music.note.list")
+                    .labelStyle(.iconOnly)
+                    .foregroundStyle(.secondary)
+            }
+            .buttonStyle(.borderless)
+            .help(model.queueStatusText)
+        }
+    }
+
+    private func expandedTrackFacts(
+        for track: TrackItem,
+        details: TrackDetails?
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 9) {
+            Label("Track Details", systemImage: "info.circle")
+                .font(.headline)
+
+            Grid(alignment: .leading, horizontalSpacing: 16, verticalSpacing: 7) {
+                GridRow {
+                    Label(track.durationText, systemImage: "clock")
+                    Label(details?.formatName ?? track.formatName ?? "Unknown format", systemImage: "waveform")
+                }
+                GridRow {
+                    Label(details?.qualityProfile ?? track.qualityProfile ?? "Quality not set", systemImage: "hifispeaker")
+                    Label(track.gainText, systemImage: "speaker.wave.2")
+                }
+                GridRow {
+                    Label(track.ratingText, systemImage: track.rating == nil ? "star" : "star.fill")
+                    Label(model.isPlaying ? "Playing" : "Paused", systemImage: model.isPlaying ? "waveform" : "pause.circle")
+                }
+            }
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .lineLimit(1)
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color(nsColor: .textBackgroundColor).opacity(0.65))
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+    }
+
+    private func expandedPlaybackHistory(details: TrackDetails?) -> some View {
+        VStack(alignment: .leading, spacing: 9) {
+            Label("Listening History", systemImage: "clock.arrow.circlepath")
+                .font(.headline)
+
+            Grid(alignment: .leading, horizontalSpacing: 18, verticalSpacing: 7) {
+                GridRow {
+                    LabeledContent("Plays", value: "\(details?.playCount ?? 0)")
+                    LabeledContent("Sessions", value: "\(details?.playbackSessionCount ?? 0)")
+                }
+                GridRow {
+                    LabeledContent(
+                        "Last Played",
+                        value: playbackDateText(details?.lastPlayedAtUnixSeconds)
+                    )
+                    LabeledContent(
+                        "Last Completed",
+                        value: playbackDateText(details?.lastCompletedAtUnixSeconds)
+                    )
+                }
+            }
+            .font(.caption)
+            .foregroundStyle(.secondary)
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color(nsColor: .textBackgroundColor).opacity(0.65))
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+    }
+
+    private func expandedNotes(
+        for track: TrackItem,
+        details: TrackDetails?
+    ) -> some View {
+        let notes = details?.notes?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Label("Notes", systemImage: "note.text")
+                    .font(.headline)
+                Spacer()
+                Button {
+                    model.presentTrackEdit(for: track)
+                } label: {
+                    Label("Edit Notes", systemImage: "pencil")
+                }
+                .buttonStyle(.borderless)
+                .disabled(model.isLoadingPlaybackDetails)
+            }
+
+            Text(notes.isEmpty ? "No notes" : notes)
+                .font(.callout)
+                .foregroundStyle(notes.isEmpty ? Color.secondary : Color.primary)
+                .lineLimit(4)
+                .textSelection(.enabled)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color(nsColor: .textBackgroundColor).opacity(0.65))
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+    }
+
+    private func playbackDateText(_ unixSeconds: Int64?) -> String {
+        guard let unixSeconds else {
+            return "Never"
+        }
+        return Date(timeIntervalSince1970: TimeInterval(unixSeconds))
+            .formatted(date: .abbreviated, time: .shortened)
+    }
+
+    private func playbackTimestamp(_ milliseconds: Int) -> String {
+        let totalSeconds = max(0, milliseconds / 1_000)
+        return "\(totalSeconds / 60):\(String(format: "%02d", totalSeconds % 60))"
+    }
+
+    private func playbackDetails(for track: TrackItem) -> TrackDetails? {
+        guard let details = model.playbackDetails,
+              details.identity == track.identity else {
+            return nil
+        }
+        return details
+    }
+
     private func ratingPicker(for track: TrackItem) -> some View {
         Picker(
             selection: Binding(
@@ -824,11 +1231,8 @@ public struct ContentView: View {
 
     @ViewBuilder
     private var secondaryContentPanels: some View {
-        let hasLyrics = model.nowPlayingDetails?.hasLyrics ?? false
-        let notes = model.nowPlayingDetails?.notes?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        if hasLyrics {
-            lyricsPanel
-        }
+        let notes = model.detailDetails?.notes?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        lyricsPanel
         if !notes.isEmpty {
             notesPanel
         }
@@ -936,40 +1340,26 @@ public struct ContentView: View {
     }
 
     private var lyricsPanel: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        let details = model.detailDetails
+        return VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 8) {
                 Text("Lyrics")
                     .font(.headline)
                 Spacer()
-                if let lyricsURL = model.nowPlayingDetails?.lyricsURL {
-                    Text(lyricsURL.lastPathComponent)
-                        .font(.caption2.monospaced())
+                if let format = details?.lyricsDocument?.format {
+                    Text(format == .lrc ? "Synced" : "Plain Text")
+                        .font(.caption2.weight(.medium))
                         .foregroundStyle(.secondary)
-                        .lineLimit(1)
                 }
             }
 
-            if let lyricsText = model.nowPlayingDetails?.lyricsText,
-               !lyricsText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                ScrollView {
-                    Text(lyricsText)
-                        .font(.callout)
-                        .foregroundStyle(.primary)
-                        .textSelection(.enabled)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(12)
-                }
-                .frame(maxHeight: 154)
-                .background(Color(nsColor: .textBackgroundColor))
-                .clipShape(RoundedRectangle(cornerRadius: 6))
-            } else {
-                Text("No lyrics file")
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity, minHeight: 74, alignment: .center)
-                    .background(Color(nsColor: .textBackgroundColor))
-                    .clipShape(RoundedRectangle(cornerRadius: 6))
-            }
+            CompactLyricsView(
+                model: model,
+                track: model.detailTrack,
+                document: details?.lyricsDocument,
+                fallbackText: details?.lyricsText,
+                isLoading: model.isLoadingDetails
+            )
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }
@@ -1726,6 +2116,260 @@ private struct TrackRow: View {
     }
 }
 
+private struct CompactLyricsView: View {
+    @ObservedObject var model: AppModel
+    let track: TrackItem?
+    let document: LyricsDocument?
+    let fallbackText: String?
+    let isLoading: Bool
+
+    var body: some View {
+        Group {
+            if let document, document.hasDisplayableLyrics {
+                if document.timedLines != nil,
+                   let track,
+                   model.nowPlaying?.id == track.id {
+                    TimelineView(.periodic(from: .now, by: model.isPlaying ? 0.2 : 1)) { _ in
+                        lyricLine(document.compactLine(at: model.estimatedPlaybackPositionMS()))
+                    }
+                } else {
+                    lyricLine(document.compactLine())
+                }
+            } else if let fallbackLine {
+                lyricLine(fallbackLine)
+            } else if isLoading {
+                HStack(spacing: 8) {
+                    ProgressView()
+                        .controlSize(.small)
+                    Text("Loading lyrics…")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                }
+                .frame(maxWidth: .infinity, minHeight: 62)
+            } else {
+                NoLyricsState(compact: true)
+            }
+        }
+        .frame(maxWidth: .infinity, minHeight: 62)
+        .background(Color(nsColor: .textBackgroundColor))
+        .clipShape(RoundedRectangle(cornerRadius: 6))
+        .overlay {
+            RoundedRectangle(cornerRadius: 6)
+                .stroke(Color(nsColor: .separatorColor).opacity(0.28), lineWidth: 1)
+        }
+    }
+
+    private func lyricLine(_ line: String?) -> some View {
+        Text(line ?? "…")
+            .font(.callout.weight(.medium))
+            .lineLimit(1)
+            .minimumScaleFactor(0.82)
+            .frame(maxWidth: .infinity, minHeight: 62, alignment: .center)
+            .padding(.horizontal, 16)
+            .accessibilityLabel(line ?? "Waiting for lyrics")
+    }
+
+    private var fallbackLine: String? {
+        guard let fallbackText else {
+            return nil
+        }
+        return fallbackText
+            .components(separatedBy: .newlines)
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .first { !$0.isEmpty }
+    }
+}
+
+private struct NoLyricsState: View {
+    var compact = false
+
+    var body: some View {
+        if compact {
+            HStack(spacing: 8) {
+                Image(systemName: "text.quote")
+                    .foregroundStyle(.secondary)
+                Text("No Lyrics")
+                    .font(.callout.weight(.medium))
+            }
+            .frame(maxWidth: .infinity, minHeight: 62)
+        } else {
+            VStack(spacing: 8) {
+                Image(systemName: "text.quote")
+                    .font(.title2)
+                    .foregroundStyle(.secondary)
+                Text("No Lyrics")
+                    .font(.headline)
+                Text("Add an LRC or text file from Edit Song.")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+    }
+}
+
+private struct NowPlayingLyricsView: View {
+    @ObservedObject var model: AppModel
+    let document: LyricsDocument?
+    let fallbackText: String?
+    let isLoading: Bool
+
+    var body: some View {
+        Group {
+            if let document {
+                switch document.content {
+                case .timed(let lines):
+                    if lines.isEmpty {
+                        emptyLyrics
+                    } else {
+                        TimedLyricsView(model: model, document: document)
+                    }
+                case .plain(let text):
+                    plainLyrics(text)
+                }
+            } else if let fallbackText,
+                      !fallbackText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                plainLyrics(fallbackText)
+            } else if isLoading {
+                VStack(spacing: 8) {
+                    ProgressView()
+                        .controlSize(.small)
+                    Text("Loading lyrics…")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                emptyLyrics
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private func plainLyrics(_ text: String) -> some View {
+        ScrollView {
+            Text(text)
+                .font(.title3)
+                .lineSpacing(6)
+                .textSelection(.enabled)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 20)
+                .padding(.vertical, 42)
+        }
+    }
+
+    private var emptyLyrics: some View {
+        NoLyricsState()
+    }
+}
+
+private struct TimedLyricsView: View {
+    @ObservedObject var model: AppModel
+    let document: LyricsDocument
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var followsPlayback = true
+
+    private var lines: [TimedLyricsLine] {
+        document.timedLines ?? []
+    }
+
+    var body: some View {
+        TimelineView(.periodic(from: .now, by: 0.2)) { _ in
+            let positionMS = model.estimatedPlaybackPositionMS()
+            let activeIndex = document.activeLineIndex(at: positionMS)
+            lyricsScroller(activeIndex: activeIndex)
+        }
+    }
+
+    private func lyricsScroller(activeIndex: Int?) -> some View {
+        let activeID = activeIndex.map { lines[$0].id }
+        return ScrollViewReader { proxy in
+            ZStack(alignment: .bottomTrailing) {
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 20) {
+                        ForEach(lines) { line in
+                            lyricButton(
+                                line,
+                                isActive: line.id == activeID
+                            )
+                        }
+                    }
+                    .padding(.horizontal, 20)
+                    .padding(.vertical, 56)
+                }
+                .simultaneousGesture(
+                    DragGesture(minimumDistance: 3)
+                        .onChanged { _ in
+                            followsPlayback = false
+                        }
+                )
+
+                if !followsPlayback, let activeID {
+                    Button {
+                        followsPlayback = true
+                        scroll(to: activeID, using: proxy)
+                    } label: {
+                        Label("Follow Lyrics", systemImage: "location.fill")
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.small)
+                    .padding(10)
+                }
+            }
+            .onAppear {
+                guard followsPlayback, let activeID else {
+                    return
+                }
+                DispatchQueue.main.async {
+                    scroll(to: activeID, using: proxy)
+                }
+            }
+            .onChange(of: activeID) { newID in
+                guard followsPlayback, let newID else {
+                    return
+                }
+                scroll(to: newID, using: proxy)
+            }
+        }
+    }
+
+    private func lyricButton(
+        _ line: TimedLyricsLine,
+        isActive: Bool
+    ) -> some View {
+        Button {
+            followsPlayback = true
+            Task { await model.seek(toMilliseconds: line.startMS) }
+        } label: {
+            Text(line.text.isEmpty ? " " : line.text)
+                .font(.title3.weight(isActive ? .semibold : .regular))
+                .foregroundStyle(isActive ? Color.primary : Color.secondary)
+                .multilineTextAlignment(.leading)
+                .frame(maxWidth: .infinity, minHeight: 30, alignment: .leading)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(line.text.isEmpty ? "Instrumental" : line.text)
+        .accessibilityValue(isActive ? "Current lyric" : "")
+        .help("Seek to \(formatLyricsTime(line.startMS))")
+    }
+
+    private func scroll(to id: Int, using proxy: ScrollViewProxy) {
+        if reduceMotion {
+            proxy.scrollTo(id, anchor: .center)
+        } else {
+            withAnimation(.easeInOut(duration: 0.24)) {
+                proxy.scrollTo(id, anchor: .center)
+            }
+        }
+    }
+
+    private func formatLyricsTime(_ milliseconds: Int) -> String {
+        let totalSeconds = max(0, milliseconds) / 1_000
+        return String(format: "%d:%02d", totalSeconds / 60, totalSeconds % 60)
+    }
+}
+
 private struct TrackArtworkThumbnail: View {
     let artworkURL: URL?
     let isCurrent: Bool
@@ -1796,6 +2440,36 @@ private struct PlaylistArtworkThumbnail: View {
         .frame(width: 22, height: 22)
         .background(Color(nsColor: .separatorColor).opacity(0.18))
         .clipShape(RoundedRectangle(cornerRadius: 4))
+    }
+}
+
+private struct NowPlayingBackdrop: View {
+    let artworkURL: URL?
+
+    var body: some View {
+        ZStack {
+            Color(nsColor: .windowBackgroundColor)
+
+            if let artworkURL, let image = NSImage(contentsOf: artworkURL) {
+                GeometryReader { proxy in
+                    Image(nsImage: image)
+                        .resizable()
+                        .scaledToFill()
+                        .frame(width: proxy.size.width, height: proxy.size.height)
+                        .clipped()
+                        .blur(radius: 64)
+                        .scaleEffect(1.12)
+                        .opacity(0.24)
+                }
+            }
+
+            Rectangle()
+                .fill(.ultraThinMaterial)
+            Color(nsColor: .windowBackgroundColor)
+                .opacity(0.36)
+        }
+        .ignoresSafeArea()
+        .clipped()
     }
 }
 

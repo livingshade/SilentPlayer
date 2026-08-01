@@ -143,6 +143,33 @@ enum PlaybackPollingPolicy {
     }
 }
 
+enum PlaybackPresentationClock {
+    static func positionMS(
+        basePositionMS: Int,
+        baseUptime: TimeInterval,
+        currentUptime: TimeInterval,
+        isPlaying: Bool,
+        durationMS: Int?
+    ) -> Int {
+        guard isPlaying else {
+            return basePositionMS
+        }
+        let elapsedMS = max(0, Int((currentUptime - baseUptime) * 1_000))
+        let estimated = basePositionMS.saturatingAdd(elapsedMS)
+        guard let durationMS, durationMS > 0 else {
+            return estimated
+        }
+        return min(estimated, durationMS)
+    }
+}
+
+private extension Int {
+    func saturatingAdd(_ other: Int) -> Int {
+        let (value, overflow) = addingReportingOverflow(other)
+        return overflow ? .max : value
+    }
+}
+
 private struct LibraryPresentationCache {
     var tracks: [TrackItem]
     var selectedTrackID: String?
@@ -162,6 +189,8 @@ public final class AppModel: ObservableObject {
     @Published public var isAudioInterrupted: Bool = false
     @Published public var nowPlaying: TrackItem?
     @Published public var nowPlayingDetails: TrackDetails?
+    @Published public private(set) var playbackDetails: TrackDetails?
+    @Published public private(set) var isLoadingPlaybackDetails: Bool = false
     @Published public var isLoadingDetails: Bool = false
     @Published public var isTrackEditPresented: Bool = false
     @Published public var isTrackSaving: Bool = false
@@ -208,8 +237,12 @@ public final class AppModel: ObservableObject {
     private var libraryWorker: LibraryWorker?
     #endif
     private var detailsTask: Task<Void, Never>?
+    private var playbackDetailsTask: Task<Void, Never>?
+    private var trackEditTarget: TrackItem?
     private var detailsTrackID: String?
     private var loadingDetailsTrackID: String?
+    private var playbackDetailsTrackID: String?
+    private var playbackPositionReferenceUptime = ProcessInfo.processInfo.systemUptime
     private var loadedTracks: [TrackItem] = []
     private var libraryPresentationCache: LibraryPresentationCache?
     private var isPresentingCompleteLibrary = false
@@ -241,6 +274,7 @@ public final class AppModel: ObservableObject {
         libraryWorker?.stop()
         #endif
         detailsTask?.cancel()
+        playbackDetailsTask?.cancel()
     }
 
     public var dbPath: String {
@@ -268,6 +302,18 @@ public final class AppModel: ObservableObject {
 
     public var playbackTimeText: String {
         "\(formatTime(playbackElapsedMS)) / \(nowPlaying?.durationText ?? "--:--")"
+    }
+
+    public func estimatedPlaybackPositionMS(
+        atUptime uptime: TimeInterval = ProcessInfo.processInfo.systemUptime
+    ) -> Int {
+        PlaybackPresentationClock.positionMS(
+            basePositionMS: playbackElapsedMS,
+            baseUptime: playbackPositionReferenceUptime,
+            currentUptime: uptime,
+            isPlaying: isPlaying,
+            durationMS: nowPlaying?.durationMS
+        )
     }
 
     public var normalizeText: String {
@@ -320,7 +366,7 @@ public final class AppModel: ObservableObject {
     }
 
     public var trackEditChanged: Bool {
-        guard let track = detailTrack else {
+        guard let track = trackEditTarget ?? detailTrack else {
             return false
         }
         let details = matchingDetails(for: track)
@@ -1739,12 +1785,13 @@ public final class AppModel: ObservableObject {
         await setAlbumArtwork(for: track, imageURL: imageURL)
     }
 
-    public func presentTrackEdit() {
-        guard let track = detailTrack else {
+    public func presentTrackEdit(for requestedTrack: TrackItem? = nil) {
+        guard let track = requestedTrack ?? detailTrack else {
             status = "Select or play a track first"
             return
         }
         let details = matchingDetails(for: track)
+        trackEditTarget = track
         trackEditTitleDraft = details?.displayTitle ?? track.title
         trackEditArtistDraft = details?.displayArtist ?? track.artist
         trackEditAlbumDraft = details?.displayAlbum ?? track.album
@@ -1768,7 +1815,7 @@ public final class AppModel: ObservableObject {
     }
 
     public func saveTrackEdit() async {
-        guard let track = detailTrack else {
+        guard let track = trackEditTarget ?? detailTrack else {
             status = "Select or play a track first"
             return
         }
@@ -2167,6 +2214,7 @@ public final class AppModel: ObservableObject {
 
     private func apply(snapshot: PlaybackSnapshot, fallbackTrack: TrackItem? = nil) {
         let previousTrackID = nowPlaying?.id
+        playbackPositionReferenceUptime = ProcessInfo.processInfo.systemUptime
         let nextPlaybackError = snapshot.error ?? ""
         if playbackError != nextPlaybackError {
             playbackError = nextPlaybackError
@@ -2215,14 +2263,29 @@ public final class AppModel: ObservableObject {
                     selectedTrack = loadedTracks.first(where: { $0.id == track.id }) ?? track
                 }
             }
-            if detailTrack?.id == track.id
-                && (previousTrackID != track.id || (nowPlayingDetails == nil && !isLoadingDetails)) {
-                loadDetails(for: track)
+            if detailTrack?.id == track.id {
+                if detailsTrackID == track.id,
+                   let details = nowPlayingDetails,
+                   details.identity == track.identity {
+                    playbackDetailsTask?.cancel()
+                    playbackDetailsTask = nil
+                    playbackDetails = details
+                    playbackDetailsTrackID = track.id
+                    isLoadingPlaybackDetails = false
+                } else if previousTrackID != track.id
+                    || (nowPlayingDetails == nil && !isLoadingDetails) {
+                    loadDetails(for: track)
+                }
+            } else if previousTrackID != track.id
+                || playbackDetailsTrackID != track.id
+                || playbackDetails == nil {
+                loadPlaybackDetails(for: track)
             }
         } else if !snapshot.isPlaying {
             if nowPlaying != nil {
                 nowPlaying = nil
             }
+            clearPlaybackDetails()
             if let selectedTrack {
                 loadDetails(for: selectedTrack)
             } else {
@@ -2320,6 +2383,13 @@ public final class AppModel: ObservableObject {
                     self.loadingDetailsTrackID = nil
                     self.isLoadingDetails = false
                 }
+                if self.nowPlaying?.id == track.id {
+                    self.playbackDetailsTask?.cancel()
+                    self.playbackDetailsTask = nil
+                    self.playbackDetails = details
+                    self.playbackDetailsTrackID = track.id
+                    self.isLoadingPlaybackDetails = false
+                }
             } catch {
                 guard !Task.isCancelled else {
                     return
@@ -2329,8 +2399,61 @@ public final class AppModel: ObservableObject {
                     self.isLoadingDetails = false
                     self.playbackDetail = "Details unavailable: \(error.localizedDescription)"
                 }
+                if self.nowPlaying?.id == track.id {
+                    self.isLoadingPlaybackDetails = false
+                }
             }
         }
+    }
+
+    private func loadPlaybackDetails(for track: TrackItem, force: Bool = false) {
+        if !force,
+           playbackDetailsTrackID == track.id,
+           playbackDetails != nil {
+            return
+        }
+
+        playbackDetailsTask?.cancel()
+        if playbackDetailsTrackID != track.id {
+            playbackDetails = TrackDetails.placeholder(for: track)
+            playbackDetailsTrackID = track.id
+        }
+        isLoadingPlaybackDetails = true
+
+        playbackDetailsTask = Task { [weak self] in
+            guard let self else {
+                return
+            }
+            do {
+                let details = try await self.invoke { try $0.trackDetails(path: track.path) }
+                guard !Task.isCancelled else {
+                    return
+                }
+                if self.nowPlaying?.id == track.id {
+                    self.playbackDetails = details
+                    self.playbackDetailsTrackID = track.id
+                    self.playbackDetailsTask = nil
+                    self.isLoadingPlaybackDetails = false
+                }
+            } catch {
+                guard !Task.isCancelled else {
+                    return
+                }
+                if self.nowPlaying?.id == track.id {
+                    self.playbackDetailsTask = nil
+                    self.isLoadingPlaybackDetails = false
+                    self.playbackDetail = "Now Playing details unavailable: \(error.localizedDescription)"
+                }
+            }
+        }
+    }
+
+    private func clearPlaybackDetails() {
+        playbackDetailsTask?.cancel()
+        playbackDetailsTask = nil
+        playbackDetailsTrackID = nil
+        playbackDetails = nil
+        isLoadingPlaybackDetails = false
     }
 
     private func clearDetails() {
@@ -2341,9 +2464,13 @@ public final class AppModel: ObservableObject {
         nowPlayingDetails = nil
         resetTrackEditDrafts()
         isLoadingDetails = false
+        if nowPlaying == nil {
+            clearPlaybackDetails()
+        }
     }
 
     private func resetTrackEditDrafts() {
+        trackEditTarget = nil
         trackEditTitleDraft = ""
         trackEditArtistDraft = ""
         trackEditAlbumDraft = ""
@@ -2379,11 +2506,15 @@ public final class AppModel: ObservableObject {
     }
 
     private func matchingDetails(for track: TrackItem) -> TrackDetails? {
-        guard let details = nowPlayingDetails,
-              details.identity == track.identity else {
-            return nil
+        if let details = nowPlayingDetails,
+           details.identity == track.identity {
+            return details
         }
-        return details
+        if let details = playbackDetails,
+           details.identity == track.identity {
+            return details
+        }
+        return nil
     }
 
     private func defaultNewPlaylistName() -> String {

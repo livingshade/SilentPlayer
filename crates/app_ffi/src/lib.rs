@@ -192,6 +192,10 @@ struct TrackDetailsDto {
     display_title: String,
     display_artist: Option<String>,
     display_album: Option<String>,
+    play_count: u64,
+    playback_session_count: u64,
+    last_played_at_unix_seconds: Option<i64>,
+    last_completed_at_unix_seconds: Option<i64>,
 }
 
 #[derive(Serialize)]
@@ -2853,6 +2857,7 @@ impl PlayerApp {
         let artwork = resolved_artwork_path(&store, &self.db_path, path)?;
         let lyrics = load_track_lyrics(path)?;
         let notes = store.track_notes(path)?;
+        let playback_stats = store.playback_stats(path)?;
         let metadata = store
             .track_metadata(path)?
             .ok_or_else(|| PlayerError::store(format!("track not found: {}", path.display())))?;
@@ -2883,6 +2888,10 @@ impl PlayerApp {
             display_title: metadata.display_title,
             display_artist: metadata.display_artist,
             display_album: metadata.display_album,
+            play_count: playback_stats.play_count,
+            playback_session_count: playback_stats.session_count,
+            last_played_at_unix_seconds: playback_stats.last_played_at_unix_seconds,
+            last_completed_at_unix_seconds: playback_stats.last_completed_at_unix_seconds,
         })
     }
 
@@ -4688,6 +4697,10 @@ mod tests {
         assert_eq!(details["data"]["display_title"], "Display Title");
         assert_eq!(details["data"]["display_artist"], "Display Artist");
         assert_eq!(details["data"]["display_album"], "Display Album");
+        assert_eq!(details["data"]["play_count"], 0);
+        assert_eq!(details["data"]["playback_session_count"], 0);
+        assert!(details["data"]["last_played_at_unix_seconds"].is_null());
+        assert!(details["data"]["last_completed_at_unix_seconds"].is_null());
 
         unsafe { player_app_destroy(app) };
         fs::remove_file(db_path).ok();
