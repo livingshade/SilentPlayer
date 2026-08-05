@@ -2146,43 +2146,48 @@ private struct PhoneNowPlayingLyricsView: View {
 
     var body: some View {
         NavigationStack {
-            VStack(spacing: 0) {
-                if let track = model.nowPlaying {
-                    HStack(spacing: 12) {
-                        PhoneArtworkImage(
-                            artworkURL: details?.artworkURL ?? track.artworkURL,
-                            placeholderSystemImage: "music.note",
-                            size: 48,
-                            cornerRadius: 7
-                        )
+            ZStack {
+                PhoneLyricsBackdrop(artworkURL: artworkURL)
 
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(details?.displayTitle ?? track.phoneDisplayTitle)
-                                .font(.headline)
-                                .lineLimit(1)
-                            Text(details?.displayArtist ?? track.phoneDisplaySubtitle)
-                                .font(.subheadline)
-                                .foregroundStyle(.secondary)
-                                .lineLimit(1)
+                VStack(spacing: 0) {
+                    if let track = model.nowPlaying {
+                        HStack(spacing: 12) {
+                            PhoneArtworkImage(
+                                artworkURL: artworkURL,
+                                placeholderSystemImage: "music.note",
+                                size: 44,
+                                cornerRadius: 8
+                            )
+                            .shadow(color: .black.opacity(0.24), radius: 8, y: 4)
+
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text(details?.displayTitle ?? track.phoneDisplayTitle)
+                                    .font(.headline.weight(.semibold))
+                                    .foregroundStyle(.white)
+                                    .lineLimit(1)
+                                Text(details?.displayArtist ?? track.phoneDisplaySubtitle)
+                                    .font(.subheadline)
+                                    .foregroundStyle(.white.opacity(0.66))
+                                    .lineLimit(1)
+                            }
+                            Spacer(minLength: 0)
                         }
-                        Spacer(minLength: 0)
+                        .padding(.horizontal, 24)
+                        .padding(.top, 6)
+                        .padding(.bottom, 8)
                     }
-                    .padding(.horizontal, 20)
-                    .padding(.vertical, 10)
 
-                    Divider()
+                    PhoneLyricsContentView(
+                        model: model,
+                        document: details?.lyricsDocument,
+                        fallbackText: details?.lyricsText,
+                        isLoading: model.isLoadingPlaybackDetails
+                    )
+                    .id(model.nowPlaying?.id)
                 }
-
-                PhoneLyricsContentView(
-                    model: model,
-                    document: details?.lyricsDocument,
-                    fallbackText: details?.lyricsText,
-                    isLoading: model.isLoadingPlaybackDetails
-                )
-                .id(model.nowPlaying?.id)
             }
-            .navigationTitle("Lyrics")
-            .navigationBarTitleDisplayMode(.inline)
+            .toolbarBackground(.hidden, for: .navigationBar)
+            .toolbarColorScheme(.dark, for: .navigationBar)
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
                     Button(action: dismiss) {
@@ -2191,6 +2196,11 @@ private struct PhoneNowPlayingLyricsView: View {
                 }
             }
         }
+        .preferredColorScheme(.dark)
+    }
+
+    private var artworkURL: URL? {
+        details?.artworkURL ?? model.nowPlaying?.artworkURL
     }
 
     private var details: TrackDetails? {
@@ -2206,6 +2216,35 @@ private struct PhoneNowPlayingLyricsView: View {
             return details
         }
         return nil
+    }
+}
+
+private struct PhoneLyricsBackdrop: View {
+    let artworkURL: URL?
+
+    var body: some View {
+        ZStack {
+            Color.black
+
+            if let artworkURL,
+               let image = UIImage(contentsOfFile: artworkURL.path) {
+                GeometryReader { proxy in
+                    Image(uiImage: image)
+                        .resizable()
+                        .scaledToFill()
+                        .frame(width: proxy.size.width, height: proxy.size.height)
+                        .clipped()
+                        .scaleEffect(1.16)
+                        .blur(radius: 46)
+                        .saturation(0.82)
+                        .opacity(0.58)
+                }
+            }
+
+            Color.black.opacity(0.52)
+        }
+        .ignoresSafeArea()
+        .accessibilityHidden(true)
     }
 }
 
@@ -2229,13 +2268,13 @@ private struct PhoneLyricsContentView: View {
                 switch document.content {
                 case .timed(let lines):
                     if lines.isEmpty {
-                        instrumental(token: document.instrumentalToken)
+                        unavailableLyrics()
                     } else {
                         PhoneTimedLyricsView(model: model, document: document)
                     }
                 case .plain(let text):
                     if text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                        instrumental(token: document.instrumentalToken)
+                        unavailableLyrics()
                     } else {
                         plainLyrics(text)
                     }
@@ -2246,7 +2285,7 @@ private struct PhoneLyricsContentView: View {
                       !fallbackText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 plainLyrics(fallbackText)
             } else {
-                instrumental(token: LyricsDocument.defaultInstrumentalToken)
+                unavailableLyrics()
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -2255,21 +2294,54 @@ private struct PhoneLyricsContentView: View {
     private func plainLyrics(_ text: String) -> some View {
         ScrollView {
             Text(text)
-                .font(.title3)
-                .lineSpacing(7)
+                .font(.title3.weight(.medium))
+                .foregroundStyle(.white.opacity(0.92))
+                .lineSpacing(11)
                 .textSelection(.enabled)
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.horizontal, 24)
-                .padding(.vertical, 36)
+                .padding(.horizontal, 28)
+                .padding(.top, 28)
+                .padding(.bottom, 64)
         }
+        .scrollIndicators(.hidden)
     }
 
     private func instrumental(token: String) -> some View {
-        Text(token)
-            .font(.system(size: 48, weight: .medium))
-            .foregroundStyle(.secondary)
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .accessibilityLabel("Instrumental")
+        lyricsStatus(
+            token: token,
+            title: "Instrumental",
+            message: "This track has no lyrics."
+        )
+    }
+
+    private func unavailableLyrics() -> some View {
+        lyricsStatus(
+            token: LyricsDocument.defaultInstrumentalToken,
+            title: "No Lyrics",
+            message: "Lyrics aren't available for this song."
+        )
+    }
+
+    private func lyricsStatus(
+        token: String,
+        title: String,
+        message: String
+    ) -> some View {
+        VStack(spacing: 12) {
+            Text(token)
+                .font(.system(size: 46, weight: .semibold))
+                .foregroundStyle(.white.opacity(0.9))
+            Text(title)
+                .font(.title2.weight(.bold))
+                .foregroundStyle(.white)
+            Text(message)
+                .font(.callout)
+                .foregroundStyle(.white.opacity(0.58))
+                .multilineTextAlignment(.center)
+        }
+        .padding(32)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .accessibilityElement(children: .combine)
     }
 }
 
@@ -2277,6 +2349,8 @@ private struct PhoneTimedLyricsView: View {
     @ObservedObject var model: AppModel
     let document: LyricsDocument
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @ScaledMetric(relativeTo: .largeTitle) private var activeFontSize = 31
+    @ScaledMetric(relativeTo: .title2) private var inactiveFontSize = 23
     @State private var followsPlayback = true
 
     private var lines: [TimedLyricsLine] {
@@ -2304,49 +2378,64 @@ private struct PhoneTimedLyricsView: View {
             ?? (hasInstrumentalPrelude ? -1 : nil)
 
         return ScrollViewReader { proxy in
-            ZStack(alignment: .bottomTrailing) {
-                ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 22) {
-                        ForEach(presentationLines) { line in
-                            lyricButton(line, isActive: line.id == activeID)
-                                .id(line.id)
-                        }
-                    }
-                    .padding(.horizontal, 24)
-                    .padding(.vertical, 48)
-                }
-                .simultaneousGesture(
-                    DragGesture(minimumDistance: 3)
-                        .onChanged { _ in
-                            followsPlayback = false
-                        }
-                )
+            GeometryReader { geometry in
+                let edgeBreathingRoom = max(96, geometry.size.height * 0.46)
 
-                if !followsPlayback, let activeID {
-                    Button {
-                        followsPlayback = true
-                        scroll(to: activeID, using: proxy)
-                    } label: {
-                        Label("Follow Lyrics", systemImage: "location.fill")
+                ZStack(alignment: .bottomTrailing) {
+                    ScrollView {
+                        LazyVStack(alignment: .leading, spacing: 28) {
+                            ForEach(presentationLines) { line in
+                                lyricButton(line, isActive: line.id == activeID)
+                                    .id(line.id)
+                            }
+                        }
+                        .padding(.horizontal, 28)
+                        .padding(.vertical, edgeBreathingRoom)
                     }
-                    .buttonStyle(.borderedProminent)
-                    .controlSize(.small)
-                    .padding(12)
+                    .scrollIndicators(.hidden)
+                    .simultaneousGesture(
+                        DragGesture(minimumDistance: 3)
+                            .onChanged { _ in
+                                followsPlayback = false
+                            }
+                    )
+
+                    if !followsPlayback, let activeID {
+                        Button {
+                            followsPlayback = true
+                            scroll(to: activeID, using: proxy)
+                        } label: {
+                            Label("Follow Lyrics", systemImage: "location.fill")
+                                .labelStyle(.iconOnly)
+                                .font(.system(size: 16, weight: .semibold))
+                                .frame(width: 44, height: 44)
+                        }
+                        .buttonStyle(.plain)
+                        .foregroundStyle(.white)
+                        .background(.ultraThinMaterial, in: Circle())
+                        .overlay {
+                            Circle()
+                                .stroke(.white.opacity(0.14), lineWidth: 0.5)
+                        }
+                        .shadow(color: .black.opacity(0.2), radius: 8, y: 3)
+                        .padding(18)
+                        .accessibilityLabel("Follow Lyrics")
+                    }
                 }
-            }
-            .onAppear {
-                guard followsPlayback, let activeID else {
-                    return
+                .onAppear {
+                    guard followsPlayback, let activeID else {
+                        return
+                    }
+                    DispatchQueue.main.async {
+                        scroll(to: activeID, using: proxy)
+                    }
                 }
-                DispatchQueue.main.async {
-                    scroll(to: activeID, using: proxy)
+                .onChange(of: activeID) { newID in
+                    guard followsPlayback, let newID else {
+                        return
+                    }
+                    scroll(to: newID, using: proxy)
                 }
-            }
-            .onChange(of: activeID) { newID in
-                guard followsPlayback, let newID else {
-                    return
-                }
-                scroll(to: newID, using: proxy)
             }
         }
     }
@@ -2363,10 +2452,20 @@ private struct PhoneTimedLyricsView: View {
             Task { await model.seek(toMilliseconds: line.startMS) }
         } label: {
             Text(isInstrumental ? document.instrumentalToken : line.text)
-                .font(.title2.weight(isActive ? .semibold : .regular))
-                .foregroundStyle(isActive ? Color.primary : Color.secondary)
+                .font(
+                    .system(
+                        size: isActive ? activeFontSize : inactiveFontSize,
+                        weight: isActive ? .bold : .semibold
+                    )
+                )
+                .foregroundStyle(
+                    isActive
+                        ? Color.white
+                        : Color.white.opacity(0.44)
+                )
                 .multilineTextAlignment(.leading)
-                .frame(maxWidth: .infinity, minHeight: 34, alignment: .leading)
+                .lineSpacing(5)
+                .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
