@@ -39,6 +39,7 @@ public struct PhoneContentView: View {
     @State private var lastExportURL: URL?
     @State private var activeAlert: PhoneAppAlert?
     @State private var isNowPlayingPresented = false
+    @State private var isLyricsPresented = false
     @State private var isQueuePresented = false
     @State private var pendingLibraryDeletion: TrackItem?
     @State private var isLibraryDeletionConfirmationPresented = false
@@ -503,6 +504,11 @@ public struct PhoneContentView: View {
         .sheet(isPresented: $isQueuePresented) {
             PhonePlaybackQueueSheet(model: model)
         }
+        .fullScreenCover(isPresented: $isLyricsPresented) {
+            PhoneNowPlayingLyricsView(model: model) {
+                isLyricsPresented = false
+            }
+        }
     }
 
     private func nowPlayingContent(
@@ -537,17 +543,32 @@ public struct PhoneContentView: View {
             }
 
             playerControls(compact: usesCompactControls)
+
+            Button {
+                isLyricsPresented = true
+            } label: {
+                Label("Lyrics", systemImage: "text.quote")
+                    .frame(minWidth: 132)
+            }
+            .buttonStyle(.bordered)
+            .disabled(model.nowPlaying == nil)
         }
         .frame(maxWidth: .infinity)
     }
 
     private func details(for track: TrackItem?) -> TrackDetails? {
-        guard let track,
-              let details = model.nowPlayingDetails,
-              details.identity == track.identity else {
+        guard let track else {
             return nil
         }
-        return details
+        if let details = model.playbackDetails,
+           details.identity == track.identity {
+            return details
+        }
+        if let details = model.nowPlayingDetails,
+           details.identity == track.identity {
+            return details
+        }
+        return nil
     }
 
     private func trackList(scopeTitle: String) -> some View {
@@ -1553,6 +1574,13 @@ private struct PhoneTrackDetailView: View {
                         .font(.body)
                         .textSelection(.enabled)
                 }
+            } else if let currentDetails {
+                Section("Lyrics") {
+                    PhoneInstrumentalLyricsToken(
+                        token: currentDetails.lyricsDocument?.instrumentalToken
+                            ?? LyricsDocument.defaultInstrumentalToken
+                    )
+                }
             }
 
             if let notes = currentDetails?.notes?.trimmingCharacters(in: .whitespacesAndNewlines),
@@ -2086,6 +2114,15 @@ private struct PhoneLyricsNotesPanel: View {
                         .font(.callout)
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }
+            } else if let details {
+                VStack(alignment: .leading, spacing: 8) {
+                    Label("Lyrics", systemImage: "text.quote")
+                        .font(.headline)
+                    PhoneInstrumentalLyricsToken(
+                        token: details.lyricsDocument?.instrumentalToken
+                            ?? LyricsDocument.defaultInstrumentalToken
+                    )
+                }
             }
 
             if let notes = details?.notes,
@@ -2100,6 +2137,269 @@ private struct PhoneLyricsNotesPanel: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+private struct PhoneNowPlayingLyricsView: View {
+    @ObservedObject var model: AppModel
+    let dismiss: () -> Void
+
+    var body: some View {
+        NavigationStack {
+            VStack(spacing: 0) {
+                if let track = model.nowPlaying {
+                    HStack(spacing: 12) {
+                        PhoneArtworkImage(
+                            artworkURL: details?.artworkURL ?? track.artworkURL,
+                            placeholderSystemImage: "music.note",
+                            size: 48,
+                            cornerRadius: 7
+                        )
+
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(details?.displayTitle ?? track.phoneDisplayTitle)
+                                .font(.headline)
+                                .lineLimit(1)
+                            Text(details?.displayArtist ?? track.phoneDisplaySubtitle)
+                                .font(.subheadline)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                        }
+                        Spacer(minLength: 0)
+                    }
+                    .padding(.horizontal, 20)
+                    .padding(.vertical, 10)
+
+                    Divider()
+                }
+
+                PhoneLyricsContentView(
+                    model: model,
+                    document: details?.lyricsDocument,
+                    fallbackText: details?.lyricsText,
+                    isLoading: model.isLoadingPlaybackDetails
+                )
+                .id(model.nowPlaying?.id)
+            }
+            .navigationTitle("Lyrics")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button(action: dismiss) {
+                        Label("Close Lyrics", systemImage: "chevron.down")
+                    }
+                }
+            }
+        }
+    }
+
+    private var details: TrackDetails? {
+        guard let track = model.nowPlaying else {
+            return nil
+        }
+        if let details = model.playbackDetails,
+           details.identity == track.identity {
+            return details
+        }
+        if let details = model.nowPlayingDetails,
+           details.identity == track.identity {
+            return details
+        }
+        return nil
+    }
+}
+
+private struct PhoneLyricsContentView: View {
+    @ObservedObject var model: AppModel
+    let document: LyricsDocument?
+    let fallbackText: String?
+    let isLoading: Bool
+
+    var body: some View {
+        Group {
+            if isLoading {
+                VStack(spacing: 10) {
+                    ProgressView()
+                    Text("Loading lyrics…")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if let document {
+                switch document.content {
+                case .timed(let lines):
+                    if lines.isEmpty {
+                        instrumental(token: document.instrumentalToken)
+                    } else {
+                        PhoneTimedLyricsView(model: model, document: document)
+                    }
+                case .plain(let text):
+                    if text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        instrumental(token: document.instrumentalToken)
+                    } else {
+                        plainLyrics(text)
+                    }
+                case .instrumental:
+                    instrumental(token: document.instrumentalToken)
+                }
+            } else if let fallbackText,
+                      !fallbackText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                plainLyrics(fallbackText)
+            } else {
+                instrumental(token: LyricsDocument.defaultInstrumentalToken)
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private func plainLyrics(_ text: String) -> some View {
+        ScrollView {
+            Text(text)
+                .font(.title3)
+                .lineSpacing(7)
+                .textSelection(.enabled)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 24)
+                .padding(.vertical, 36)
+        }
+    }
+
+    private func instrumental(token: String) -> some View {
+        Text(token)
+            .font(.system(size: 48, weight: .medium))
+            .foregroundStyle(.secondary)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .accessibilityLabel("Instrumental")
+    }
+}
+
+private struct PhoneTimedLyricsView: View {
+    @ObservedObject var model: AppModel
+    let document: LyricsDocument
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var followsPlayback = true
+
+    private var lines: [TimedLyricsLine] {
+        document.timedLines ?? []
+    }
+
+    private var presentationLines: [TimedLyricsLine] {
+        guard let first = lines.first, first.startMS > 0 else {
+            return lines
+        }
+        return [TimedLyricsLine(id: -1, startMS: 0, text: "")] + lines
+    }
+
+    var body: some View {
+        TimelineView(.periodic(from: .now, by: 0.2)) { _ in
+            let positionMS = model.estimatedPlaybackPositionMS()
+            let activeIndex = document.activeLineIndex(at: positionMS)
+            lyricsScroller(activeIndex: activeIndex)
+        }
+    }
+
+    private func lyricsScroller(activeIndex: Int?) -> some View {
+        let hasInstrumentalPrelude = lines.first?.startMS ?? 0 > 0
+        let activeID = activeIndex.map { lines[$0].id }
+            ?? (hasInstrumentalPrelude ? -1 : nil)
+
+        return ScrollViewReader { proxy in
+            ZStack(alignment: .bottomTrailing) {
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 22) {
+                        ForEach(presentationLines) { line in
+                            lyricButton(line, isActive: line.id == activeID)
+                                .id(line.id)
+                        }
+                    }
+                    .padding(.horizontal, 24)
+                    .padding(.vertical, 48)
+                }
+                .simultaneousGesture(
+                    DragGesture(minimumDistance: 3)
+                        .onChanged { _ in
+                            followsPlayback = false
+                        }
+                )
+
+                if !followsPlayback, let activeID {
+                    Button {
+                        followsPlayback = true
+                        scroll(to: activeID, using: proxy)
+                    } label: {
+                        Label("Follow Lyrics", systemImage: "location.fill")
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.small)
+                    .padding(12)
+                }
+            }
+            .onAppear {
+                guard followsPlayback, let activeID else {
+                    return
+                }
+                DispatchQueue.main.async {
+                    scroll(to: activeID, using: proxy)
+                }
+            }
+            .onChange(of: activeID) { newID in
+                guard followsPlayback, let newID else {
+                    return
+                }
+                scroll(to: newID, using: proxy)
+            }
+        }
+    }
+
+    private func lyricButton(
+        _ line: TimedLyricsLine,
+        isActive: Bool
+    ) -> some View {
+        let text = line.text.trimmingCharacters(in: .whitespacesAndNewlines)
+        let isInstrumental = text.isEmpty
+
+        return Button {
+            followsPlayback = true
+            Task { await model.seek(toMilliseconds: line.startMS) }
+        } label: {
+            Text(isInstrumental ? document.instrumentalToken : line.text)
+                .font(.title2.weight(isActive ? .semibold : .regular))
+                .foregroundStyle(isActive ? Color.primary : Color.secondary)
+                .multilineTextAlignment(.leading)
+                .frame(maxWidth: .infinity, minHeight: 34, alignment: .leading)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(isInstrumental ? "Instrumental" : line.text)
+        .accessibilityValue(isActive ? "Current lyric" : "")
+        .accessibilityHint("Seek to \(formatTime(line.startMS))")
+    }
+
+    private func scroll(to id: Int, using proxy: ScrollViewProxy) {
+        if reduceMotion {
+            proxy.scrollTo(id, anchor: .center)
+        } else {
+            withAnimation(.easeInOut(duration: 0.24)) {
+                proxy.scrollTo(id, anchor: .center)
+            }
+        }
+    }
+
+    private func formatTime(_ milliseconds: Int) -> String {
+        let seconds = max(0, milliseconds) / 1_000
+        return String(format: "%d:%02d", seconds / 60, seconds % 60)
+    }
+}
+
+private struct PhoneInstrumentalLyricsToken: View {
+    let token: String
+
+    var body: some View {
+        Text(token)
+            .font(.title2)
+            .foregroundStyle(.secondary)
+            .frame(maxWidth: .infinity, alignment: .center)
+            .accessibilityLabel("Instrumental")
     }
 }
 

@@ -88,6 +88,7 @@ public struct PlaybackQueue: Hashable, Sendable {
 public enum LyricsFormat: String, Codable, Hashable, Sendable {
     case lrc
     case plainText = "plain_text"
+    case instrumental
 }
 
 public struct TimedLyricsLine: Identifiable, Hashable, Sendable {
@@ -105,15 +106,34 @@ public struct TimedLyricsLine: Identifiable, Hashable, Sendable {
 public enum LyricsContent: Hashable, Sendable {
     case timed([TimedLyricsLine])
     case plain(String)
+    case instrumental
 }
 
 public struct LyricsDocument: Hashable, Sendable {
+    public static let defaultInstrumentalToken = "♪"
+
     public let format: LyricsFormat
+    public let instrumentalToken: String
     public let content: LyricsContent
 
-    public init(format: LyricsFormat, content: LyricsContent) {
+    public init(
+        format: LyricsFormat,
+        instrumentalToken: String = Self.defaultInstrumentalToken,
+        content: LyricsContent
+    ) {
         self.format = format
+        self.instrumentalToken = instrumentalToken
         self.content = content
+    }
+
+    public static func instrumental(
+        token: String = Self.defaultInstrumentalToken
+    ) -> LyricsDocument {
+        LyricsDocument(
+            format: .instrumental,
+            instrumentalToken: token,
+            content: .instrumental
+        )
     }
 
     public var timedLines: [TimedLyricsLine]? {
@@ -131,6 +151,8 @@ public struct LyricsDocument: Hashable, Sendable {
             }
         case .plain(let text):
             return !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        case .instrumental:
+            return false
         }
     }
 
@@ -138,18 +160,30 @@ public struct LyricsDocument: Hashable, Sendable {
         switch content {
         case .timed(let lines):
             guard !lines.isEmpty else {
-                return nil
+                return instrumentalToken
             }
-            let preferredIndex = positionMS.flatMap(activeLineIndex(at:)) ?? 0
-            if let line = nonemptyLine(in: lines, startingAt: preferredIndex) {
-                return line
+            if let positionMS {
+                guard let activeIndex = activeLineIndex(at: positionMS) else {
+                    return instrumentalToken
+                }
+                let text = lines[activeIndex].text
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                return text.isEmpty ? instrumentalToken : text
             }
-            return nonemptyLine(in: lines, endingBefore: preferredIndex)
+            return lines
+                .lazy
+                .map { $0.text.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .first { !$0.isEmpty } ?? instrumentalToken
         case .plain(let text):
+            guard positionMS == nil else {
+                return instrumentalToken
+            }
             return text
                 .components(separatedBy: .newlines)
                 .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-                .first { !$0.isEmpty }
+                .first { !$0.isEmpty } ?? instrumentalToken
+        case .instrumental:
+            return instrumentalToken
         }
     }
 
@@ -170,37 +204,6 @@ public struct LyricsDocument: Hashable, Sendable {
         return lowerBound > 0 ? lowerBound - 1 : nil
     }
 
-    private func nonemptyLine(
-        in lines: [TimedLyricsLine],
-        startingAt index: Int
-    ) -> String? {
-        guard lines.indices.contains(index) else {
-            return nil
-        }
-        for line in lines[index...] {
-            let text = line.text.trimmingCharacters(in: .whitespacesAndNewlines)
-            if !text.isEmpty {
-                return text
-            }
-        }
-        return nil
-    }
-
-    private func nonemptyLine(
-        in lines: [TimedLyricsLine],
-        endingBefore index: Int
-    ) -> String? {
-        guard index > 0 else {
-            return nil
-        }
-        for line in lines[..<min(index, lines.count)].reversed() {
-            let text = line.text.trimmingCharacters(in: .whitespacesAndNewlines)
-            if !text.isEmpty {
-                return text
-            }
-        }
-        return nil
-    }
 }
 
 public struct TrackDetails: Hashable, Sendable {
@@ -236,7 +239,7 @@ public struct TrackDetails: Hashable, Sendable {
             artworkSource: nil,
             lyricsURL: nil,
             lyricsText: nil,
-            lyricsDocument: nil,
+            lyricsDocument: .instrumental(),
             notes: nil,
             audioHash: track.id,
             originalTitle: track.title,
@@ -1295,10 +1298,15 @@ private struct TrackDetailsDTO: Decodable {
 
 private struct LyricsDocumentDTO: Decodable {
     let format: LyricsFormat
+    let instrumentalToken: String
     let content: LyricsContentDTO
 
     var model: LyricsDocument {
-        LyricsDocument(format: format, content: content.model)
+        LyricsDocument(
+            format: format,
+            instrumentalToken: instrumentalToken,
+            content: content.model
+        )
     }
 }
 
@@ -1313,8 +1321,10 @@ private struct LyricsContentDTO: Decodable {
             return .timed((lines ?? []).map(\.model))
         case "plain":
             return .plain(text ?? "")
+        case "instrumental":
+            return .instrumental
         default:
-            return .plain("")
+            return .instrumental
         }
     }
 }

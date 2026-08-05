@@ -183,7 +183,7 @@ struct TrackDetailsDto {
     artwork_source: Option<String>,
     lyrics_path: Option<String>,
     lyrics_text: Option<String>,
-    lyrics_document: Option<LyricsDocument>,
+    lyrics_document: LyricsDocument,
     notes: Option<String>,
     audio_hash: String,
     original_title: String,
@@ -203,7 +203,7 @@ struct TrackLyricsDto {
     view_id: String,
     lyrics_path: Option<String>,
     lyrics_text: Option<String>,
-    lyrics_document: Option<LyricsDocument>,
+    lyrics_document: LyricsDocument,
 }
 
 #[derive(Serialize)]
@@ -215,6 +215,8 @@ struct TrackLyricsAtDto {
     line: Option<TimedLyricsLine>,
     previous_index: Option<usize>,
     next_index: Option<usize>,
+    display_text: String,
+    is_instrumental: bool,
 }
 
 #[derive(Serialize)]
@@ -870,13 +872,17 @@ impl PlayerApp {
             .ok_or_else(|| PlayerError::store(format!("track not found: {}", path.display())))?;
         let view_id = track_view_id(&track)?.to_owned();
         let lyrics = load_track_lyrics(&track.path)?;
+        let lyrics_document = lyrics
+            .as_ref()
+            .map(|asset| asset.document.clone())
+            .unwrap_or_else(LyricsDocument::instrumental);
         Ok(TrackLyricsDto {
             view_id,
             lyrics_path: lyrics
                 .as_ref()
                 .map(|asset| path_to_string_lossy(&asset.path)),
             lyrics_text: lyrics.as_ref().map(|asset| asset.raw_text.clone()),
-            lyrics_document: lyrics.map(|asset| asset.document),
+            lyrics_document,
         })
     }
 
@@ -892,25 +898,37 @@ impl PlayerApp {
         let view_id = track_view_id(&track)?.to_owned();
         let lyrics = load_track_lyrics(&track.path)?;
         let Some(lyrics) = lyrics else {
+            let document = LyricsDocument::instrumental();
+            let display = document.display_at(position_ms);
             return Ok(TrackLyricsAtDto {
                 view_id,
                 position_ms,
-                kind: "none".to_owned(),
+                kind: "instrumental".to_owned(),
                 line_index: None,
                 line: None,
                 previous_index: None,
                 next_index: None,
+                display_text: display.display_text().to_owned(),
+                is_instrumental: display.is_instrumental(),
             });
         };
         let LyricsContent::Timed { lines } = &lyrics.document.content else {
+            let display = lyrics.document.display_at(position_ms);
+            let kind = match &lyrics.document.content {
+                LyricsContent::Plain { .. } => "plain",
+                LyricsContent::Instrumental => "instrumental",
+                LyricsContent::Timed { .. } => unreachable!(),
+            };
             return Ok(TrackLyricsAtDto {
                 view_id,
                 position_ms,
-                kind: "plain".to_owned(),
+                kind: kind.to_owned(),
                 line_index: None,
                 line: None,
                 previous_index: None,
                 next_index: None,
+                display_text: display.display_text().to_owned(),
+                is_instrumental: display.is_instrumental(),
             });
         };
         let line_index = lyrics.document.active_line_index(position_ms);
@@ -920,6 +938,7 @@ impl PlayerApp {
             .filter(|index| *index < lines.len())
             .or_else(|| (!lines.is_empty() && line_index.is_none()).then_some(0));
         let line = line_index.and_then(|index| lines.get(index)).cloned();
+        let display = lyrics.document.display_at(position_ms);
         Ok(TrackLyricsAtDto {
             view_id,
             position_ms,
@@ -928,6 +947,8 @@ impl PlayerApp {
             line,
             previous_index,
             next_index,
+            display_text: display.display_text().to_owned(),
+            is_instrumental: display.is_instrumental(),
         })
     }
 
@@ -2856,6 +2877,10 @@ impl PlayerApp {
         let store = self.store()?;
         let artwork = resolved_artwork_path(&store, &self.db_path, path)?;
         let lyrics = load_track_lyrics(path)?;
+        let lyrics_document = lyrics
+            .as_ref()
+            .map(|asset| asset.document.clone())
+            .unwrap_or_else(LyricsDocument::instrumental);
         let notes = store.track_notes(path)?;
         let playback_stats = store.playback_stats(path)?;
         let metadata = store
@@ -2879,7 +2904,7 @@ impl PlayerApp {
                 .as_ref()
                 .map(|asset| path_to_string_lossy(&asset.path)),
             lyrics_text: lyrics.as_ref().map(|asset| asset.raw_text.clone()),
-            lyrics_document: lyrics.map(|asset| asset.document),
+            lyrics_document,
             notes,
             audio_hash,
             original_title: metadata.original_title,
@@ -5803,6 +5828,15 @@ mod tests {
         assert_eq!(fs::read(artwork_path).unwrap(), image_data);
         assert!(details["data"]["lyrics_path"].is_null());
         assert!(details["data"]["lyrics_text"].is_null());
+        assert_eq!(details["data"]["lyrics_document"]["format"], "instrumental");
+        assert_eq!(
+            details["data"]["lyrics_document"]["instrumental_token"],
+            "♪"
+        );
+        assert_eq!(
+            details["data"]["lyrics_document"]["content"]["kind"],
+            "instrumental"
+        );
         assert_eq!(details["data"]["audio_hash"], "artwork-audio-hash");
         assert_eq!(details["data"]["view_id"], "audio:artwork-audio-hash");
         assert_eq!(

@@ -197,12 +197,15 @@ final class LyricsTimelineTests: XCTestCase {
 
     func testCompactLineUsesOnlyTheCurrentTimedLyric() {
         XCTAssertEqual(document.compactLine(), "First")
-        XCTAssertEqual(document.compactLine(at: 999), "First")
+        XCTAssertEqual(
+            document.compactLine(at: 999),
+            LyricsDocument.defaultInstrumentalToken
+        )
         XCTAssertEqual(document.compactLine(at: 1_000), "First")
         XCTAssertEqual(document.compactLine(at: 2_500), "Second duplicate")
     }
 
-    func testCompactLineSkipsEmptyEntriesAndPlainTextUsesFirstLine() {
+    func testCompactLineUsesInstrumentalTokenForEmptyCoverage() {
         let timed = LyricsDocument(
             format: .lrc,
             content: .timed([
@@ -216,11 +219,25 @@ final class LyricsTimelineTests: XCTestCase {
         )
 
         XCTAssertTrue(timed.hasDisplayableLyrics)
-        XCTAssertEqual(timed.compactLine(at: 0), "Visible")
+        XCTAssertEqual(
+            timed.compactLine(at: 0),
+            LyricsDocument.defaultInstrumentalToken
+        )
+        XCTAssertEqual(timed.compactLine(at: 1_000), "Visible")
         XCTAssertEqual(plain.compactLine(), "First line")
-        XCTAssertFalse(
-            LyricsDocument(format: .plainText, content: .plain(" \n "))
-                .hasDisplayableLyrics
+        XCTAssertEqual(plain.compactLine(at: 1_000), "♪")
+        let emptyPlain = LyricsDocument(format: .plainText, content: .plain(" \n "))
+        XCTAssertFalse(emptyPlain.hasDisplayableLyrics)
+        XCTAssertEqual(
+            emptyPlain.compactLine(),
+            LyricsDocument.defaultInstrumentalToken
+        )
+
+        let instrumental = LyricsDocument.instrumental()
+        XCTAssertFalse(instrumental.hasDisplayableLyrics)
+        XCTAssertEqual(
+            instrumental.compactLine(at: Int.max),
+            LyricsDocument.defaultInstrumentalToken
         )
     }
 
@@ -289,6 +306,7 @@ final class LyricsTimelineTests: XCTestCase {
         let lines = try XCTUnwrap(lyrics.timedLines)
 
         XCTAssertEqual(lyrics.format, .lrc)
+        XCTAssertEqual(lyrics.instrumentalToken, "♪")
         XCTAssertEqual(lines.map(\.startMS), [1_100, 2_600])
         XCTAssertEqual(lines.map(\.text), ["First", "Second"])
         XCTAssertEqual(details.playCount, 0)

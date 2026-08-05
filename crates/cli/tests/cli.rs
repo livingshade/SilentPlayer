@@ -540,8 +540,11 @@ fn lyrics_validate_show_at_set_and_remove_share_the_rust_timeline() {
         .expect("query lyrics before first effective timestamp");
     assert_command_ok(&before);
     let before = json_output(&before);
+    assert_eq!(before["kind"], "timed");
     assert!(before["line"].is_null());
     assert_eq!(before["next_index"], 0);
+    assert_eq!(before["display_text"], "♪");
+    assert_eq!(before["is_instrumental"], true);
 
     let active = silent_cli(&db_path, &media_root)
         .args([
@@ -563,6 +566,8 @@ fn lyrics_validate_show_at_set_and_remove_share_the_rust_timeline() {
     assert_eq!(active["line"]["text"], "Second");
     assert_eq!(active["previous_index"], 0);
     assert!(active["next_index"].is_null());
+    assert_eq!(active["display_text"], "Second");
+    assert_eq!(active["is_instrumental"], false);
 
     let invalid = root.join("invalid.lrc");
     fs::write(&invalid, "[00:60.00]Invalid").unwrap();
@@ -574,6 +579,36 @@ fn lyrics_validate_show_at_set_and_remove_share_the_rust_timeline() {
     assert_eq!(rejected.status.code(), Some(1));
     assert!(String::from_utf8_lossy(&rejected.stderr).contains("seconds must be below 60"));
     assert!(track_path.with_extension("lrc").is_file());
+
+    let plain_source = root.join("plain.txt");
+    fs::write(&plain_source, "Static first line\nStatic second line\n").unwrap();
+    let set_plain = silent_cli(&db_path, &media_root)
+        .args(["--output", "json", "track", "lyrics", "set", selector])
+        .arg(&plain_source)
+        .output()
+        .expect("set plain lyrics");
+    assert_command_ok(&set_plain);
+    assert!(!track_path.with_extension("lrc").exists());
+    assert!(track_path.with_extension("txt").is_file());
+
+    let plain_at = silent_cli(&db_path, &media_root)
+        .args([
+            "--output",
+            "json",
+            "track",
+            "lyrics",
+            "at",
+            selector,
+            "00:30.000",
+        ])
+        .output()
+        .expect("query plain lyrics without timeline coverage");
+    assert_command_ok(&plain_at);
+    let plain_at = json_output(&plain_at);
+    assert_eq!(plain_at["kind"], "plain");
+    assert!(plain_at["line"].is_null());
+    assert_eq!(plain_at["display_text"], "♪");
+    assert_eq!(plain_at["is_instrumental"], true);
 
     let refused = silent_cli(&db_path, &media_root)
         .args(["track", "lyrics", "remove", selector])
@@ -590,6 +625,7 @@ fn lyrics_validate_show_at_set_and_remove_share_the_rust_timeline() {
     assert_command_ok(&removed);
     assert_eq!(json_output(&removed)["files_removed"], 1);
     assert!(!track_path.with_extension("lrc").exists());
+    assert!(!track_path.with_extension("txt").exists());
 
     let empty = silent_cli(&db_path, &media_root)
         .args(["--output", "json", "track", "lyrics", "show", selector])
@@ -598,7 +634,27 @@ fn lyrics_validate_show_at_set_and_remove_share_the_rust_timeline() {
     assert_command_ok(&empty);
     let empty = json_output(&empty);
     assert!(empty["lyrics_path"].is_null());
-    assert!(empty["lyrics_document"].is_null());
+    assert_eq!(empty["lyrics_document"]["format"], "instrumental");
+    assert_eq!(empty["lyrics_document"]["instrumental_token"], "♪");
+    assert_eq!(empty["lyrics_document"]["content"]["kind"], "instrumental");
+
+    let empty_at = silent_cli(&db_path, &media_root)
+        .args([
+            "--output",
+            "json",
+            "track",
+            "lyrics",
+            "at",
+            selector,
+            "00:01.000",
+        ])
+        .output()
+        .expect("query missing lyrics token");
+    assert_command_ok(&empty_at);
+    let empty_at = json_output(&empty_at);
+    assert_eq!(empty_at["kind"], "instrumental");
+    assert_eq!(empty_at["display_text"], "♪");
+    assert_eq!(empty_at["is_instrumental"], true);
     fs::remove_dir_all(root).ok();
 }
 

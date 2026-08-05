@@ -2208,7 +2208,11 @@ private struct CompactLyricsView: View {
                 }
                 .frame(maxWidth: .infinity, minHeight: 62)
             } else {
-                NoLyricsState(compact: true)
+                NoLyricsState(
+                    compact: true,
+                    token: document?.instrumentalToken
+                        ?? LyricsDocument.defaultInstrumentalToken
+                )
             }
         }
         .frame(maxWidth: .infinity, minHeight: 62)
@@ -2227,7 +2231,11 @@ private struct CompactLyricsView: View {
             .minimumScaleFactor(0.82)
             .frame(maxWidth: .infinity, minHeight: 62, alignment: .center)
             .padding(.horizontal, 16)
-            .accessibilityLabel(line ?? "Waiting for lyrics")
+            .accessibilityLabel(
+                line == document?.instrumentalToken
+                    ? "Instrumental"
+                    : (line ?? "Waiting for lyrics")
+            )
     }
 
     private var fallbackLine: String? {
@@ -2243,29 +2251,18 @@ private struct CompactLyricsView: View {
 
 private struct NoLyricsState: View {
     var compact = false
+    var token = LyricsDocument.defaultInstrumentalToken
 
     var body: some View {
-        if compact {
-            HStack(spacing: 8) {
-                Image(systemName: "text.quote")
-                    .foregroundStyle(.secondary)
-                Text("No Lyrics")
-                    .font(.callout.weight(.medium))
-            }
-            .frame(maxWidth: .infinity, minHeight: 62)
-        } else {
-            VStack(spacing: 8) {
-                Image(systemName: "text.quote")
-                    .font(.title2)
-                    .foregroundStyle(.secondary)
-                Text("No Lyrics")
-                    .font(.headline)
-                Text("Add an LRC or text file from Edit Song.")
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-        }
+        Text(token)
+            .font(compact ? .title2.weight(.medium) : .largeTitle)
+            .foregroundStyle(.secondary)
+            .frame(
+                maxWidth: .infinity,
+                minHeight: compact ? 62 : nil,
+                maxHeight: compact ? nil : .infinity
+            )
+            .accessibilityLabel("Instrumental")
     }
 }
 
@@ -2286,7 +2283,13 @@ private struct NowPlayingLyricsView: View {
                         TimedLyricsView(model: model, document: document)
                     }
                 case .plain(let text):
-                    plainLyrics(text)
+                    if text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        emptyLyrics
+                    } else {
+                        plainLyrics(text)
+                    }
+                case .instrumental:
+                    emptyLyrics
                 }
             } else if let fallbackText,
                       !fallbackText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
@@ -2320,7 +2323,10 @@ private struct NowPlayingLyricsView: View {
     }
 
     private var emptyLyrics: some View {
-        NoLyricsState()
+        NoLyricsState(
+            token: document?.instrumentalToken
+                ?? LyricsDocument.defaultInstrumentalToken
+        )
     }
 }
 
@@ -2334,6 +2340,13 @@ private struct TimedLyricsView: View {
         document.timedLines ?? []
     }
 
+    private var presentationLines: [TimedLyricsLine] {
+        guard let first = lines.first, first.startMS > 0 else {
+            return lines
+        }
+        return [TimedLyricsLine(id: -1, startMS: 0, text: "")] + lines
+    }
+
     var body: some View {
         TimelineView(.periodic(from: .now, by: 0.2)) { _ in
             let positionMS = model.estimatedPlaybackPositionMS()
@@ -2343,12 +2356,14 @@ private struct TimedLyricsView: View {
     }
 
     private func lyricsScroller(activeIndex: Int?) -> some View {
+        let hasInstrumentalPrelude = lines.first?.startMS ?? 0 > 0
         let activeID = activeIndex.map { lines[$0].id }
+            ?? (hasInstrumentalPrelude ? -1 : nil)
         return ScrollViewReader { proxy in
             ZStack(alignment: .bottomTrailing) {
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 20) {
-                        ForEach(lines) { line in
+                        ForEach(presentationLines) { line in
                             lyricButton(
                                 line,
                                 isActive: line.id == activeID
@@ -2398,11 +2413,13 @@ private struct TimedLyricsView: View {
         _ line: TimedLyricsLine,
         isActive: Bool
     ) -> some View {
-        Button {
+        let trimmedText = line.text.trimmingCharacters(in: .whitespacesAndNewlines)
+        let isInstrumental = trimmedText.isEmpty
+        return Button {
             followsPlayback = true
             Task { await model.seek(toMilliseconds: line.startMS) }
         } label: {
-            Text(line.text.isEmpty ? " " : line.text)
+            Text(isInstrumental ? document.instrumentalToken : line.text)
                 .font(.title3.weight(isActive ? .semibold : .regular))
                 .foregroundStyle(isActive ? Color.primary : Color.secondary)
                 .multilineTextAlignment(.leading)
@@ -2410,7 +2427,7 @@ private struct TimedLyricsView: View {
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .accessibilityLabel(line.text.isEmpty ? "Instrumental" : line.text)
+        .accessibilityLabel(isInstrumental ? "Instrumental" : line.text)
         .accessibilityValue(isActive ? "Current lyric" : "")
         .help("Seek to \(formatLyricsTime(line.startMS))")
     }

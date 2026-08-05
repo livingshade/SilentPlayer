@@ -7,26 +7,58 @@ use serde::Serialize;
 
 use crate::LYRICS_EXTENSIONS;
 
+pub const INSTRUMENTAL_LYRICS_TOKEN: &str = "♪";
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum LyricsFormat {
     Lrc,
     PlainText,
+    Instrumental,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct LyricsDocument {
     pub format: LyricsFormat,
+    pub instrumental_token: String,
     pub metadata: LyricsMetadata,
     pub content: LyricsContent,
     pub diagnostics: Vec<LyricsDiagnostic>,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum LyricsDisplay<'a> {
+    Lyric(&'a str),
+    Instrumental(&'a str),
+}
+
+impl<'a> LyricsDisplay<'a> {
+    pub fn display_text(self) -> &'a str {
+        match self {
+            Self::Lyric(text) | Self::Instrumental(text) => text,
+        }
+    }
+
+    pub fn is_instrumental(self) -> bool {
+        matches!(self, Self::Instrumental(_))
+    }
+}
+
 impl LyricsDocument {
+    pub fn instrumental() -> Self {
+        Self {
+            format: LyricsFormat::Instrumental,
+            instrumental_token: INSTRUMENTAL_LYRICS_TOKEN.to_owned(),
+            metadata: LyricsMetadata::default(),
+            content: LyricsContent::Instrumental,
+            diagnostics: Vec::new(),
+        }
+    }
+
     pub fn timed_lines(&self) -> Option<&[TimedLyricsLine]> {
         match &self.content {
             LyricsContent::Timed { lines } => Some(lines),
-            LyricsContent::Plain { .. } => None,
+            LyricsContent::Plain { .. } | LyricsContent::Instrumental => None,
         }
     }
 
@@ -40,6 +72,23 @@ impl LyricsDocument {
         self.active_line_index(position_ms)
             .and_then(|index| self.timed_lines()?.get(index))
     }
+
+    pub fn display_at(&self, position_ms: u64) -> LyricsDisplay<'_> {
+        let text = match &self.content {
+            LyricsContent::Timed { .. } => self
+                .active_line(position_ms)
+                .map(|line| line.text.trim())
+                .filter(|text| !text.is_empty()),
+            // Plain lyrics are useful in the full lyrics view, but they do not
+            // describe coverage for any playback position. Treat the compact
+            // playback display as instrumental until synchronized timestamps
+            // are available instead of pinning the first/static text forever.
+            LyricsContent::Plain { .. } => None,
+            LyricsContent::Instrumental => None,
+        };
+        text.map(LyricsDisplay::Lyric)
+            .unwrap_or_else(|| LyricsDisplay::Instrumental(&self.instrumental_token))
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
@@ -47,6 +96,7 @@ impl LyricsDocument {
 pub enum LyricsContent {
     Timed { lines: Vec<TimedLyricsLine> },
     Plain { text: String },
+    Instrumental,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
@@ -109,6 +159,7 @@ pub fn parse_lyrics_text(text: &str, format: LyricsFormat) -> PlayerResult<Lyric
             } else {
                 Ok(LyricsDocument {
                     format,
+                    instrumental_token: INSTRUMENTAL_LYRICS_TOKEN.to_owned(),
                     metadata: LyricsMetadata::default(),
                     content: LyricsContent::Plain {
                         text: text.to_owned(),
@@ -118,6 +169,9 @@ pub fn parse_lyrics_text(text: &str, format: LyricsFormat) -> PlayerResult<Lyric
             }
         }
         LyricsFormat::Lrc => parse_lrc(text),
+        LyricsFormat::Instrumental => Err(PlayerError::invalid_input(
+            "instrumental lyrics are a virtual display state, not a file format",
+        )),
     }
 }
 
@@ -154,6 +208,11 @@ pub fn set_track_lyrics(track_path: &Path, source_path: &Path) -> PlayerResult<L
     let destination_extension = match source.document.content {
         LyricsContent::Timed { .. } => "lrc",
         LyricsContent::Plain { .. } => "txt",
+        LyricsContent::Instrumental => {
+            return Err(PlayerError::invalid_input(
+                "instrumental lyrics cannot be stored as a lyrics file",
+            ));
+        }
     };
     let destination = track_sidecar_path(track_path, destination_extension)?;
     let source_canonical = source_path.canonicalize().ok();
@@ -260,6 +319,7 @@ fn parse_lrc(text: &str) -> PlayerResult<LyricsDocument> {
         }
         return Ok(LyricsDocument {
             format: LyricsFormat::Lrc,
+            instrumental_token: INSTRUMENTAL_LYRICS_TOKEN.to_owned(),
             metadata,
             content: LyricsContent::Plain {
                 text: untimed.join("\n"),
@@ -319,6 +379,7 @@ fn parse_lrc(text: &str) -> PlayerResult<LyricsDocument> {
 
     Ok(LyricsDocument {
         format: LyricsFormat::Lrc,
+        instrumental_token: INSTRUMENTAL_LYRICS_TOKEN.to_owned(),
         metadata,
         content: LyricsContent::Timed { lines },
         diagnostics,
@@ -602,6 +663,57 @@ mod tests {
         let document = parse_lyrics_text("[00:01.000]First", LyricsFormat::Lrc).unwrap();
         assert_eq!(document.active_line_index(999), None);
         assert_eq!(document.active_line(1_000).unwrap().text, "First");
+    }
+
+    #[test]
+    fn display_uses_instrumental_token_outside_lyric_coverage() {
+        let document = parse_lyrics_text(
+            "[00:01.000]First\n[00:02.000]\n[00:03.000]Third",
+            LyricsFormat::Lrc,
+        )
+        .unwrap();
+
+        let before = document.display_at(999);
+        assert!(before.is_instrumental());
+        assert_eq!(before.display_text(), INSTRUMENTAL_LYRICS_TOKEN);
+
+        let first = document.display_at(1_000);
+        assert!(!first.is_instrumental());
+        assert_eq!(first.display_text(), "First");
+
+        let gap = document.display_at(2_500);
+        assert!(gap.is_instrumental());
+        assert_eq!(gap.display_text(), INSTRUMENTAL_LYRICS_TOKEN);
+
+        let third = document.display_at(3_000);
+        assert!(!third.is_instrumental());
+        assert_eq!(third.display_text(), "Third");
+    }
+
+    #[test]
+    fn plain_lyrics_have_no_timeline_coverage() {
+        let document =
+            parse_lyrics_text("First plain line\nSecond plain line", LyricsFormat::PlainText)
+                .unwrap();
+
+        let display = document.display_at(30_000);
+        assert!(display.is_instrumental());
+        assert_eq!(display.display_text(), INSTRUMENTAL_LYRICS_TOKEN);
+        assert!(matches!(document.content, LyricsContent::Plain { .. }));
+    }
+
+    #[test]
+    fn virtual_instrumental_document_uses_the_shared_token() {
+        let document = LyricsDocument::instrumental();
+
+        assert_eq!(document.format, LyricsFormat::Instrumental);
+        assert_eq!(document.instrumental_token, INSTRUMENTAL_LYRICS_TOKEN);
+        assert!(matches!(document.content, LyricsContent::Instrumental));
+        assert!(document.display_at(0).is_instrumental());
+        assert_eq!(
+            document.display_at(u64::MAX).display_text(),
+            INSTRUMENTAL_LYRICS_TOKEN
+        );
     }
 
     #[test]
