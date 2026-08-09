@@ -56,11 +56,8 @@ public enum PlaybackInterruptionPolicy {
 public enum PlaybackRouteChangePolicy {
     public static let prefersSystemInterruptionOnDisconnect = false
 
-    public static func shouldPause(
-        oldDeviceBecameUnavailable: Bool,
-        previousRouteHadPrivateOutput: Bool
-    ) -> Bool {
-        oldDeviceBecameUnavailable && previousRouteHadPrivateOutput
+    public static func shouldPause(oldDeviceBecameUnavailable: Bool) -> Bool {
+        oldDeviceBecameUnavailable
     }
 }
 
@@ -286,19 +283,8 @@ public final class IOSPlaybackSystemIntegration: NSObject, PlaybackSystemIntegra
                     return
                 }
 
-                let previousRoute = notification.userInfo?[AVAudioSessionRouteChangePreviousRouteKey]
-                    as? AVAudioSessionRouteDescription
-                let previousRouteHadPrivateOutput = previousRoute?.outputs.contains {
-                    switch $0.portType {
-                    case .headphones, .bluetoothA2DP, .bluetoothHFP, .bluetoothLE:
-                        return true
-                    default:
-                        return false
-                    }
-                } ?? false
                 guard PlaybackRouteChangePolicy.shouldPause(
-                    oldDeviceBecameUnavailable: reason == .oldDeviceUnavailable,
-                    previousRouteHadPrivateOutput: previousRouteHadPrivateOutput
+                    oldDeviceBecameUnavailable: reason == .oldDeviceUnavailable
                 ) else {
                     return
                 }

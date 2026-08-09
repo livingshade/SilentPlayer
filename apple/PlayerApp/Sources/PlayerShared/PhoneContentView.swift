@@ -634,31 +634,31 @@ public struct PhoneContentView: View {
             VStack(spacing: 5) {
                 Text("Your Library Is Empty")
                     .font(.headline)
-                Text("Import music stored on this iPhone or in Files.")
+                Text("Import a Silent library, or add music stored on this iPhone or in Files.")
                     .font(.callout)
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
             }
 
             Button {
-                presentFileImporter(.musicFiles)
+                presentFileImporter(.emptyLibraryPrimaryAction)
             } label: {
-                Label("Import Music", systemImage: "square.and.arrow.down")
+                Label("Import Library", systemImage: "shippingbox")
                     .frame(minWidth: 150)
             }
             .buttonStyle(.borderedProminent)
 
             Menu {
                 Button {
-                    presentFileImporter(.musicFolder)
+                    presentFileImporter(.musicFiles)
                 } label: {
-                    Label("Import Folder", systemImage: "folder.badge.plus")
+                    Label("Import Music", systemImage: "square.and.arrow.down")
                 }
 
                 Button {
-                    presentFileImporter(.libraryPackage)
+                    presentFileImporter(.musicFolder)
                 } label: {
-                    Label("Import Silent Library", systemImage: "shippingbox")
+                    Label("Import Folder", systemImage: "folder.badge.plus")
                 }
             } label: {
                 Label("More Import Options", systemImage: "ellipsis.circle")
@@ -1432,7 +1432,7 @@ private struct PhoneDocumentExporterBridge: UIViewControllerRepresentable {
     }
 }
 
-private enum PhoneFileImportPurpose {
+enum PhoneFileImportPurpose: Equatable {
     case musicFiles
     case musicFolder
     case libraryPackage
@@ -1442,6 +1442,8 @@ private enum PhoneFileImportPurpose {
     case playlistSettingsArtwork
     case editArtwork
     case editLyrics
+
+    static let emptyLibraryPrimaryAction = PhoneFileImportPurpose.libraryPackage
 
     var allowedContentTypes: [UTType] {
         switch self {

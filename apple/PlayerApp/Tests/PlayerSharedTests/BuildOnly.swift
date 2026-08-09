@@ -64,26 +64,25 @@ final class PlaybackPolicyTests: XCTestCase {
         ))
     }
 
-    func testRouteChangeOnlyPausesForRemovedPrivateOutput() {
+    func testRouteChangePausesWheneverTheOldOutputBecomesUnavailable() {
         XCTAssertTrue(PlaybackRouteChangePolicy.shouldPause(
-            oldDeviceBecameUnavailable: true,
-            previousRouteHadPrivateOutput: true
+            oldDeviceBecameUnavailable: true
         ))
         XCTAssertFalse(PlaybackRouteChangePolicy.shouldPause(
-            oldDeviceBecameUnavailable: true,
-            previousRouteHadPrivateOutput: false
-        ))
-        XCTAssertFalse(PlaybackRouteChangePolicy.shouldPause(
-            oldDeviceBecameUnavailable: false,
-            previousRouteHadPrivateOutput: true
+            oldDeviceBecameUnavailable: false
         ))
     }
 
     func testRouteDisconnectUsesOnePausePathAndDoesNotCreateAStuckInterruption() {
         XCTAssertFalse(PlaybackRouteChangePolicy.prefersSystemInterruptionOnDisconnect)
         XCTAssertTrue(PlaybackRouteChangePolicy.shouldPause(
-            oldDeviceBecameUnavailable: true,
-            previousRouteHadPrivateOutput: true
+            oldDeviceBecameUnavailable: true
+        ))
+    }
+
+    func testCarPowerOffStillPausesWhenPreviousRouteDescriptionIsMissing() {
+        XCTAssertTrue(PlaybackRouteChangePolicy.shouldPause(
+            oldDeviceBecameUnavailable: true
         ))
     }
 
@@ -440,6 +439,12 @@ final class PhoneDisplayTextTests: XCTestCase {
 }
 
 final class PhonePresentationStateTests: XCTestCase {
+    #if os(iOS)
+    func testEmptyPhoneLibraryPrimaryActionImportsLibraryPackage() {
+        XCTAssertEqual(PhoneFileImportPurpose.emptyLibraryPrimaryAction, .libraryPackage)
+    }
+    #endif
+
     func testTabsRepresentOnlyStableTopLevelDestinations() {
         XCTAssertEqual(PhonePresentationTab.allCases, [.library, .playlists])
     }
