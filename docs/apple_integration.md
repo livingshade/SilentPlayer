@@ -28,6 +28,8 @@ Rust workspace 负责：
 Swift/Apple 层负责：
 
 - SwiftUI 视图。
+- `AppModel` 组合根、5 个独立 observable feature state，以及按曲库、播放、歌单、
+  歌曲详情、迁移、worker 和展示行为拆分的内部协调 extensions。
 - AVAudioSession。
 - AVAudioSession 激活和系统中断通知。
 - 锁屏封面和进度。
@@ -82,34 +84,31 @@ iPhone 版本建议使用：
 - `MPNowPlayingInfoCenter` 显示锁屏信息。
 - `MPRemoteCommandCenter` 接收播放/暂停/上一首/下一首。
 
+## Swift 代码边界
+
+- `AppModel.swift` 只装配依赖和 feature state、转发观察变化并清理资源；library、
+  playlist、playback、track detail 和 operation 的 `@Published` 状态由
+  `AppFeatureState.swift` 中各自唯一 owner 持有。
+- `AppModel+*.swift` 保存跨 feature 的内部协调行为。调用方直接读取对应 state，不通过
+  旧扁平 façade；跨文件 helper 使用 target-internal 可见性，不暴露为 package API。
+- analyzer 和 library worker 的 JSON 先转换成穷举事件 enum；协议缺字段或未知事件会
+  显式报告，不以零值或忽略分支继续。
+- macOS 根视图在 `ContentView.swift`，布局、歌曲列表、播放中、详情、操作、队列、
+  编辑 sheet、歌词和封面组件各自独立成 `Mac*.swift`。
+- iPhone 根导航和唯一根状态 owner 在 `PhoneRootView.swift`；队列、文件 bridge、歌曲
+  详情、歌单、歌词、编辑 sheet 和共享小视图分别位于 `Phone*.swift`。
+- macOS 与 iPhone 保留平台原生页面结构，不建立带大量条件分支的通用整页 View。
+- Swift tests 按播放策略、系统媒体集成、展示恢复、曲库迁移、曲库展示和歌词时间线
+  分文件；fixture 与跨域 helper 集中在 `TestSupport.swift`。
+
 ## Rust 到 Swift
 
-推荐 UniFFI：
+当前使用显式 C ABI。`RustPlayerClient` 负责 CString 生命周期、JSON envelope 解码和
+Swift 类型转换；SwiftUI 与 `AppModel` 不直接调用裸指针 API。C ABI 名称、参数和
+JSON contract 是稳定边界，内部 Rust 模块可以在同一变更中调整。
 
-- Rust 类型更容易暴露给 Swift。
-- 生成绑定后 Swift 调用接近原生 API。
-- 适合 `LibraryService`、`QueueService`、`NormalizeService` 这类接口。
-
-也可以先用 C ABI：
-
-- 上手更直接。
-- ABI 稳定性可控。
-- 但字符串、数组、错误处理会更繁琐。
-
-## 后续工程结构
-
-建议下一步增加：
-
-```text
-apple/
-  PlayerApple.xcodeproj
-  Shared/
-    RustBridge.swift
-    LibraryViewModel.swift
-    PlayerViewModel.swift
-  iOS/
-  macOS/
-```
+如果未来评估 UniFFI，必须先证明它能保留当前 macOS、iPhone 和 CLI 的共享行为与
+错误 contract；本次重构不同时迁移绑定技术。
 
 Rust 构建产物：
 

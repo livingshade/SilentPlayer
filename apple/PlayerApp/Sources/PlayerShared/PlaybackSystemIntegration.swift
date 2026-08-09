@@ -28,9 +28,9 @@ enum PlaybackNowPlayingObservation {
         for model: AppModel
     ) -> AnyPublisher<PlaybackNowPlayingObservedState, Never> {
         Publishers.CombineLatest3(
-            model.$nowPlaying.removeDuplicates(),
-            model.$nowPlayingDetails.removeDuplicates(),
-            model.$isPlaying.removeDuplicates()
+            model.playback.$nowPlaying.removeDuplicates(),
+            model.trackDetail.$details.removeDuplicates(),
+            model.playback.$isPlaying.removeDuplicates()
         )
         .map { nowPlaying, nowPlayingDetails, isPlaying in
             PlaybackNowPlayingObservedState(
@@ -147,7 +147,7 @@ public final class IOSPlaybackSystemIntegration: NSObject, PlaybackSystemIntegra
     }
 
     public func applicationDidEnterBackground() throws {
-        guard model?.isPlaying == true else {
+        guard model?.playback.isPlaying == true else {
             return
         }
         try prepareForPlayback()
@@ -211,10 +211,10 @@ public final class IOSPlaybackSystemIntegration: NSObject, PlaybackSystemIntegra
             .store(in: &cancellables)
 
         Publishers.CombineLatest4(
-            model.$queueCount.removeDuplicates(),
-            model.$isAudioInterrupted.removeDuplicates(),
-            model.$repeatMode.removeDuplicates(),
-            model.$isShuffleEnabled.removeDuplicates()
+            model.playback.$queueCount.removeDuplicates(),
+            model.playback.$isAudioInterrupted.removeDuplicates(),
+            model.playback.$repeatMode.removeDuplicates(),
+            model.playback.$isShuffleEnabled.removeDuplicates()
         )
         .dropFirst()
         .sink { [weak self] _, _, _, _ in
@@ -300,13 +300,13 @@ public final class IOSPlaybackSystemIntegration: NSObject, PlaybackSystemIntegra
         let center = MPRemoteCommandCenter.shared()
 
         register(center.playCommand) { model, _ in
-            guard !model.isPlaying else {
+            guard !model.playback.isPlaying else {
                 return
             }
             await model.pauseOrResume()
         }
         register(center.pauseCommand) { model, _ in
-            guard model.isPlaying else {
+            guard model.playback.isPlaying else {
                 return
             }
             await model.pauseOrResume()
@@ -355,7 +355,7 @@ public final class IOSPlaybackSystemIntegration: NSObject, PlaybackSystemIntegra
                 return
             }
             let shouldEnable = event.shuffleType == .items
-            if model.isShuffleEnabled != shouldEnable {
+            if model.playback.isShuffleEnabled != shouldEnable {
                 await model.toggleShuffle()
             }
         }
@@ -390,35 +390,35 @@ public final class IOSPlaybackSystemIntegration: NSObject, PlaybackSystemIntegra
         }
 
         let center = MPRemoteCommandCenter.shared()
-        let hasTrack = model.nowPlaying != nil
+        let hasTrack = model.playback.nowPlaying != nil
         center.playCommand.isEnabled = PlaybackRemoteCommandPolicy.canPlay(
             hasTrack: hasTrack,
-            isInterrupted: model.isAudioInterrupted
+            isInterrupted: model.playback.isAudioInterrupted
         )
         center.pauseCommand.isEnabled = PlaybackRemoteCommandPolicy.canPause(
             hasTrack: hasTrack,
-            isInterrupted: model.isAudioInterrupted
+            isInterrupted: model.playback.isAudioInterrupted
         )
         center.togglePlayPauseCommand.isEnabled =
             PlaybackRemoteCommandPolicy.canTogglePlayPause(
                 hasTrack: hasTrack,
-                isInterrupted: model.isAudioInterrupted
+                isInterrupted: model.playback.isAudioInterrupted
             )
-        center.nextTrackCommand.isEnabled = model.queueCount > 1
-        center.previousTrackCommand.isEnabled = model.queueCount > 1
-        center.changePlaybackPositionCommand.isEnabled = model.nowPlaying?.durationMS != nil
+        center.nextTrackCommand.isEnabled = model.playback.queueCount > 1
+        center.previousTrackCommand.isEnabled = model.playback.queueCount > 1
+        center.changePlaybackPositionCommand.isEnabled = model.playback.nowPlaying?.durationMS != nil
         center.changeRepeatModeCommand.isEnabled = hasTrack
-        center.changeRepeatModeCommand.currentRepeatType = switch model.repeatMode {
+        center.changeRepeatModeCommand.currentRepeatType = switch model.playback.repeatMode {
         case .off: .off
         case .all: .all
         case .one: .one
         }
-        center.changeShuffleModeCommand.isEnabled = model.queueCount > 1
-        center.changeShuffleModeCommand.currentShuffleType = model.isShuffleEnabled ? .items : .off
+        center.changeShuffleModeCommand.isEnabled = model.playback.queueCount > 1
+        center.changeShuffleModeCommand.currentShuffleType = model.playback.isShuffleEnabled ? .items : .off
     }
 
     private func updateNowPlayingInfo() {
-        guard let model, let track = model.nowPlaying else {
+        guard let model, let track = model.playback.nowPlaying else {
             playbackDidStop()
             updateRemoteCommandAvailability()
             return
@@ -428,9 +428,9 @@ public final class IOSPlaybackSystemIntegration: NSObject, PlaybackSystemIntegra
             MPMediaItemPropertyTitle: track.title,
             MPMediaItemPropertyArtist: track.artist,
             MPMediaItemPropertyAlbumTitle: track.album,
-            MPNowPlayingInfoPropertyElapsedPlaybackTime: Double(model.playbackElapsedMS) / 1_000,
+            MPNowPlayingInfoPropertyElapsedPlaybackTime: Double(model.playback.elapsedMS) / 1_000,
             MPNowPlayingInfoPropertyPlaybackRate: PlaybackNowPlayingPolicy.playbackRate(
-                isPlaying: model.isPlaying
+                isPlaying: model.playback.isPlaying
             ),
             MPNowPlayingInfoPropertyDefaultPlaybackRate: 1.0,
             MPNowPlayingInfoPropertyMediaType: MPNowPlayingInfoMediaType.audio.rawValue
@@ -439,7 +439,7 @@ public final class IOSPlaybackSystemIntegration: NSObject, PlaybackSystemIntegra
             info[MPMediaItemPropertyPlaybackDuration] = Double(durationMS) / 1_000
         }
 
-        let detailsArtworkURL = model.nowPlayingDetails.flatMap { details in
+        let detailsArtworkURL = model.trackDetail.details.flatMap { details in
             details.identity == track.identity ? details.artworkURL : nil
         }
         if let artwork = artwork(for: detailsArtworkURL ?? track.artworkURL) {
@@ -559,10 +559,10 @@ public final class MacPlaybackSystemIntegration: NSObject, PlaybackSystemIntegra
             .store(in: &cancellables)
 
         Publishers.CombineLatest4(
-            model.$queueCount.removeDuplicates(),
-            model.$isAudioInterrupted.removeDuplicates(),
-            model.$repeatMode.removeDuplicates(),
-            model.$isShuffleEnabled.removeDuplicates()
+            model.playback.$queueCount.removeDuplicates(),
+            model.playback.$isAudioInterrupted.removeDuplicates(),
+            model.playback.$repeatMode.removeDuplicates(),
+            model.playback.$isShuffleEnabled.removeDuplicates()
         )
         .dropFirst()
         .sink { [weak self] _, _, _, _ in
@@ -589,13 +589,13 @@ public final class MacPlaybackSystemIntegration: NSObject, PlaybackSystemIntegra
         let center = MPRemoteCommandCenter.shared()
 
         register(center.playCommand) { model, _ in
-            guard !model.isPlaying else {
+            guard !model.playback.isPlaying else {
                 return
             }
             await model.pauseOrResume()
         }
         register(center.pauseCommand) { model, _ in
-            guard model.isPlaying else {
+            guard model.playback.isPlaying else {
                 return
             }
             await model.pauseOrResume()
@@ -644,7 +644,7 @@ public final class MacPlaybackSystemIntegration: NSObject, PlaybackSystemIntegra
                 return
             }
             let shouldEnable = event.shuffleType == .items
-            if model.isShuffleEnabled != shouldEnable {
+            if model.playback.isShuffleEnabled != shouldEnable {
                 await model.toggleShuffle()
             }
         }
@@ -680,31 +680,31 @@ public final class MacPlaybackSystemIntegration: NSObject, PlaybackSystemIntegra
         }
 
         let center = MPRemoteCommandCenter.shared()
-        let hasTrack = model.nowPlaying != nil
+        let hasTrack = model.playback.nowPlaying != nil
         center.playCommand.isEnabled = PlaybackRemoteCommandPolicy.canPlay(
             hasTrack: hasTrack,
-            isInterrupted: model.isAudioInterrupted
+            isInterrupted: model.playback.isAudioInterrupted
         )
         center.pauseCommand.isEnabled = PlaybackRemoteCommandPolicy.canPause(
             hasTrack: hasTrack,
-            isInterrupted: model.isAudioInterrupted
+            isInterrupted: model.playback.isAudioInterrupted
         )
         center.togglePlayPauseCommand.isEnabled =
             PlaybackRemoteCommandPolicy.canTogglePlayPause(
                 hasTrack: hasTrack,
-                isInterrupted: model.isAudioInterrupted
+                isInterrupted: model.playback.isAudioInterrupted
             )
-        center.nextTrackCommand.isEnabled = model.queueCount > 1
-        center.previousTrackCommand.isEnabled = model.queueCount > 1
-        center.changePlaybackPositionCommand.isEnabled = model.nowPlaying?.durationMS != nil
+        center.nextTrackCommand.isEnabled = model.playback.queueCount > 1
+        center.previousTrackCommand.isEnabled = model.playback.queueCount > 1
+        center.changePlaybackPositionCommand.isEnabled = model.playback.nowPlaying?.durationMS != nil
         center.changeRepeatModeCommand.isEnabled = hasTrack
-        center.changeRepeatModeCommand.currentRepeatType = switch model.repeatMode {
+        center.changeRepeatModeCommand.currentRepeatType = switch model.playback.repeatMode {
         case .off: .off
         case .all: .all
         case .one: .one
         }
-        center.changeShuffleModeCommand.isEnabled = model.queueCount > 1
-        center.changeShuffleModeCommand.currentShuffleType = model.isShuffleEnabled ? .items : .off
+        center.changeShuffleModeCommand.isEnabled = model.playback.queueCount > 1
+        center.changeShuffleModeCommand.currentShuffleType = model.playback.isShuffleEnabled ? .items : .off
     }
 
     private func disableRemoteCommands() {
@@ -720,7 +720,7 @@ public final class MacPlaybackSystemIntegration: NSObject, PlaybackSystemIntegra
     }
 
     private func updateNowPlayingInfo() {
-        guard let model, let track = model.nowPlaying else {
+        guard let model, let track = model.playback.nowPlaying else {
             clearNowPlayingInfo()
             updateRemoteCommandAvailability()
             return
@@ -730,9 +730,9 @@ public final class MacPlaybackSystemIntegration: NSObject, PlaybackSystemIntegra
             MPMediaItemPropertyTitle: track.title,
             MPMediaItemPropertyArtist: track.artist,
             MPMediaItemPropertyAlbumTitle: track.album,
-            MPNowPlayingInfoPropertyElapsedPlaybackTime: Double(model.playbackElapsedMS) / 1_000,
+            MPNowPlayingInfoPropertyElapsedPlaybackTime: Double(model.playback.elapsedMS) / 1_000,
             MPNowPlayingInfoPropertyPlaybackRate: PlaybackNowPlayingPolicy.playbackRate(
-                isPlaying: model.isPlaying
+                isPlaying: model.playback.isPlaying
             ),
             MPNowPlayingInfoPropertyDefaultPlaybackRate: 1.0,
             MPNowPlayingInfoPropertyMediaType: MPNowPlayingInfoMediaType.audio.rawValue
@@ -740,14 +740,14 @@ public final class MacPlaybackSystemIntegration: NSObject, PlaybackSystemIntegra
         if let durationMS = track.durationMS {
             info[MPMediaItemPropertyPlaybackDuration] = Double(durationMS) / 1_000
         }
-        if model.queueCount > 0 {
-            info[MPNowPlayingInfoPropertyPlaybackQueueCount] = model.queueCount
+        if model.playback.queueCount > 0 {
+            info[MPNowPlayingInfoPropertyPlaybackQueueCount] = model.playback.queueCount
         }
-        if let queuePosition = model.queuePosition {
+        if let queuePosition = model.playback.queuePosition {
             info[MPNowPlayingInfoPropertyPlaybackQueueIndex] = queuePosition
         }
 
-        let detailsArtworkURL = model.nowPlayingDetails.flatMap { details in
+        let detailsArtworkURL = model.trackDetail.details.flatMap { details in
             details.identity == track.identity ? details.artworkURL : nil
         }
         if let artwork = artwork(for: detailsArtworkURL ?? track.artworkURL) {
@@ -756,7 +756,7 @@ public final class MacPlaybackSystemIntegration: NSObject, PlaybackSystemIntegra
 
         let center = MPNowPlayingInfoCenter.default()
         center.nowPlayingInfo = info
-        center.playbackState = model.isPlaying ? .playing : .paused
+        center.playbackState = model.playback.isPlaying ? .playing : .paused
         updateRemoteCommandAvailability()
     }
 

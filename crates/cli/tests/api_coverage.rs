@@ -1,10 +1,12 @@
 use std::collections::{BTreeMap, BTreeSet};
+use std::fs;
+use std::path::Path;
 
 /// Every shared product operation exported to the Apple targets must have an explicit CLI
 /// decision. Platform/bootstrap plumbing is listed separately.
 #[test]
 fn every_shared_app_operation_has_a_cli_contract() {
-    let source = include_str!("../../app_ffi/src/lib.rs");
+    let source = rust_sources(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../app_ffi/src"));
     let exported = source
         .lines()
         .filter_map(|line| {
@@ -39,6 +41,28 @@ fn every_shared_app_operation_has_a_cli_contract() {
             .all(|command| command.starts_with("silent --cli ")),
         "all shared product commands must cross the explicit --cli boundary"
     );
+}
+
+fn rust_sources(root: &Path) -> String {
+    let mut entries = fs::read_dir(root)
+        .unwrap_or_else(|error| panic!("failed to read {}: {error}", root.display()))
+        .map(|entry| entry.expect("failed to read app_ffi source entry").path())
+        .collect::<Vec<_>>();
+    entries.sort();
+
+    let mut source = String::new();
+    for path in entries {
+        if path.is_dir() {
+            source.push_str(&rust_sources(&path));
+        } else if path.extension().and_then(|value| value.to_str()) == Some("rs") {
+            source.push_str(
+                &fs::read_to_string(&path)
+                    .unwrap_or_else(|error| panic!("failed to read {}: {error}", path.display())),
+            );
+            source.push('\n');
+        }
+    }
+    source
 }
 
 fn cli_contracts() -> BTreeMap<&'static str, &'static str> {

@@ -6,7 +6,8 @@ use errors::{PlayerError, PlayerResult};
 use serde::Serialize;
 use serde_json::Value;
 
-use crate::{PlayerApp, TrackViewEditRequest};
+use crate::dto::TrackViewEditRequest;
+use crate::PlayerApp;
 
 /// Safe Rust access to the application service shared by the CLI and Apple FFI.
 ///

@@ -692,9 +692,11 @@ mod tests {
 
     #[test]
     fn plain_lyrics_have_no_timeline_coverage() {
-        let document =
-            parse_lyrics_text("First plain line\nSecond plain line", LyricsFormat::PlainText)
-                .unwrap();
+        let document = parse_lyrics_text(
+            "First plain line\nSecond plain line",
+            LyricsFormat::PlainText,
+        )
+        .unwrap();
 
         let display = document.display_at(30_000);
         assert!(display.is_instrumental());

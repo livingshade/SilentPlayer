@@ -1,18 +1,15 @@
 #if os(macOS)
 import Foundation
 
-public struct AnalyzerWorkerEvent: Hashable, Sendable {
-    public let name: String
-    public let index: Int?
-    public let total: Int?
-    public let analyzed: Int?
-    public let failed: Int?
-    public let title: String?
-    public let path: String?
-    public let error: String?
-    public let albumsAnalyzed: Int?
-    public let albumTracksUpdated: Int?
-    public let albumSkipped: Int?
+public enum AnalyzerWorkerEvent: Hashable, Sendable {
+    case started(total: Int)
+    case trackFinished(index: Int, total: Int, title: String, analyzed: Int, failed: Int)
+    case trackFailed(index: Int, total: Int, title: String, error: String)
+    case albumFinished(albumsAnalyzed: Int, tracksUpdated: Int)
+    case finished(analyzed: Int, failed: Int, albumsAnalyzed: Int)
+    case fatal(String)
+    case stderr(String)
+    case protocolError(String)
 }
 
 public enum AnalyzerWorkerError: LocalizedError, Sendable {
@@ -141,19 +138,7 @@ public final class AnalyzerWorker: @unchecked Sendable {
         guard !trimmed.isEmpty else {
             return
         }
-        onEvent(AnalyzerWorkerEvent(
-            name: "stderr",
-            index: nil,
-            total: nil,
-            analyzed: nil,
-            failed: nil,
-            title: nil,
-            path: nil,
-            error: trimmed,
-            albumsAnalyzed: nil,
-            albumTracksUpdated: nil,
-            albumSkipped: nil
-        ))
+        onEvent(.stderr(trimmed))
     }
 
     private func decodeLine(_ line: String) {
@@ -163,21 +148,9 @@ public final class AnalyzerWorker: @unchecked Sendable {
 
         do {
             let event = try decoder.decode(AnalyzerWorkerEventDTO.self, from: Data(line.utf8))
-            onEvent(event.model)
+            onEvent(try event.model())
         } catch {
-            onEvent(AnalyzerWorkerEvent(
-                name: "decode_error",
-                index: nil,
-                total: nil,
-                analyzed: nil,
-                failed: nil,
-                title: nil,
-                path: nil,
-                error: "\(error.localizedDescription): \(line)",
-                albumsAnalyzed: nil,
-                albumTracksUpdated: nil,
-                albumSkipped: nil
-            ))
+            onEvent(.protocolError("\(error.localizedDescription): \(line)"))
         }
     }
 
@@ -197,7 +170,7 @@ public final class AnalyzerWorker: @unchecked Sendable {
     }
 }
 
-private struct AnalyzerWorkerEventDTO: Decodable {
+struct AnalyzerWorkerEventDTO: Decodable {
     let event: String
     let index: Int?
     let total: Int?
@@ -210,20 +183,64 @@ private struct AnalyzerWorkerEventDTO: Decodable {
     let albumTracksUpdated: Int?
     let albumSkipped: Int?
 
-    var model: AnalyzerWorkerEvent {
-        AnalyzerWorkerEvent(
-            name: event,
-            index: index,
-            total: total,
-            analyzed: analyzed,
-            failed: failed,
-            title: title,
-            path: path,
-            error: error,
-            albumsAnalyzed: albumsAnalyzed,
-            albumTracksUpdated: albumTracksUpdated,
-            albumSkipped: albumSkipped
-        )
+    func model() throws -> AnalyzerWorkerEvent {
+        switch event {
+        case "started":
+            return .started(total: try required(total, "total"))
+        case "track_finished":
+            return .trackFinished(
+                index: try required(index, "index"),
+                total: try required(total, "total"),
+                title: try required(title, "title"),
+                analyzed: try required(analyzed, "analyzed"),
+                failed: try required(failed, "failed")
+            )
+        case "track_failed":
+            return .trackFailed(
+                index: try required(index, "index"),
+                total: try required(total, "total"),
+                title: try required(title, "title"),
+                error: try required(error, "error")
+            )
+        case "album_finished":
+            return .albumFinished(
+                albumsAnalyzed: try required(albumsAnalyzed, "albums_analyzed"),
+                tracksUpdated: try required(albumTracksUpdated, "album_tracks_updated")
+            )
+        case "finished":
+            return .finished(
+                analyzed: try required(analyzed, "analyzed"),
+                failed: try required(failed, "failed"),
+                albumsAnalyzed: try required(albumsAnalyzed, "albums_analyzed")
+            )
+        case "fatal":
+            return .fatal(try required(error, "error"))
+        default:
+            throw WorkerProtocolError.unknownEvent(event)
+        }
+    }
+}
+
+private enum WorkerProtocolError: LocalizedError {
+    case missingField(event: String, field: String)
+    case unknownEvent(String)
+
+    var errorDescription: String? {
+        switch self {
+        case .missingField(let event, let field):
+            return "Analyzer event '\(event)' is missing '\(field)'"
+        case .unknownEvent(let event):
+            return "Unknown analyzer event '\(event)'"
+        }
+    }
+}
+
+private extension AnalyzerWorkerEventDTO {
+    func required<T>(_ value: T?, _ field: String) throws -> T {
+        guard let value else {
+            throw WorkerProtocolError.missingField(event: event, field: field)
+        }
+        return value
     }
 }
 #endif

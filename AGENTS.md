@@ -1,5 +1,13 @@
 # Silent Agent Instructions
 
+## Project Storage and iCloud Policy
+
+- iCloud Drive sync is disabled for this project. The project is local-only.
+- The canonical project root and normal user entry point are both the real directory `/Users/lbr/Project/Player`; it must not be moved into iCloud Drive or replaced with an iCloud-backed symbolic link unless the user explicitly changes this policy later.
+- No project content is intentionally synchronized through iCloud Drive. Source code and other important content are protected through the configured Git remote and any backups the user chooses separately.
+- Regenerable, machine-local content stays under this local project root and remains excluded from Git as appropriate: Rust build output in `target/`, SwiftPM/build intermediates in `apple/PlayerApp/.build*`, Xcode derived data, packaged output in `dist/`, and local recovery or personal-library data.
+- Restore/regeneration commands include `cargo build`, `cargo test`, Swift package builds from `apple/PlayerApp`, and `scripts/package_mac_app.sh` for a distributable macOS app.
+
 ## Required Development Order
 
 When adding or changing product functionality, especially anything that touches both playback/library behavior and the app UI, follow this order:

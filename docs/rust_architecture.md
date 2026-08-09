@@ -28,13 +28,31 @@ macOS adapter / iPhone adapter / silent CLI / workers
 - `errors` 负责 I/O、audio、metadata、store、engine 和输入错误。
 - `engine` 定义 `AudioBackend` port，串行执行命令并在 backend 完成后确认结果。
 - `audio_rodio` 实现 backend。
-- `store_sqlite` 实现本地持久化。
-- `app_ffi` 当前承载共享 `PlayerApp` composition root，并提供两个薄入口：
+- `store_sqlite` 实现本地持久化。`lib.rs` 只保留公开类型、schema/连接生命周期和
+  共享 row helper；歌曲、歌单、播放持久化、metadata/artwork 与分析缓存分别位于
+  `tracks.rs`、`playlists.rs`、`playback.rs`、`metadata_artwork.rs` 和 `analysis.rs`。
+- `app_ffi` 承载共享 `PlayerApp` composition root，并提供两个薄入口：
   Apple target 使用 C ABI，`silent` CLI target 使用安全 Rust client。两者调用同一个
   托管导入、歌曲原地编辑与独立导出、曲库迁移、播放列表、用户活动和播放会话实现。
+  `service_*` 模块按曲库、歌曲、歌单和播放行为组织安全 Rust application methods；
+  `ffi.rs` 只暴露稳定 C ABI；DTO、FFI ownership/error boundary、文件操作与运行时状态
+  分别由独立模块维护。`lib.rs` 只负责模块装配和 `PlayerApp` 状态所有权；不把
+  `ffi::*` 重导出成 Rust API。生产模块使用显式依赖，`use super::*` 只允许留在测试根。
 - `silent_cli` 生成公开的 `silent` executable。根层只处理 `--version`/`--help`，
   共享产品命令必须经过 `silent --cli`。
 - `analyzer` 与 `library_worker` 是 Apple app 的内部进度 worker，不是公开
   CLI target。
 
 workspace 内部 API 可以破坏性演进。调用方必须在同一变更中迁移；不增加 deprecated wrapper、旧 re-export、类型别名或双轨实现。
+
+application/store 查询的 `limit == 0` 是无效输入，不自动改成 1。队列恢复、播放会话历史、
+文件 metadata 和 sidecar 目录读取失败会被传播或写入可见的 nonfatal error；只在关闭阶段
+允许记录错误后继续释放资源。
+
+## 测试边界
+
+- `store_sqlite/src/tests/` 按 schema、歌曲、歌单、播放、封面和分析域组织。
+- `app_ffi/src/tests/` 按曲库 package、歌曲、歌单、播放和用户活动组织。
+- C ABI 导出集中在 `app_ffi/src/ffi.rs`，重构时用导出符号快照核对兼容性。
+- CLI `api_coverage` 递归检查 `app_ffi/src`，确保拆分文件后共享 application operation
+  仍有对应 CLI contract。
