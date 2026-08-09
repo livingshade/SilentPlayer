@@ -59,20 +59,32 @@ struct PlaybackQueueSheet: View {
 
     private func queueRow(_ track: TrackItem, at index: Int) -> some View {
         HStack(spacing: 10) {
-            Image(systemName: model.playback.queuePosition == index ? "speaker.wave.2.fill" : "line.3.horizontal")
-                .foregroundStyle(model.playback.queuePosition == index ? Color.accentColor : Color.secondary)
-                .frame(width: 20)
+            Button {
+                Task { await model.playQueueItem(at: index) }
+            } label: {
+                HStack(spacing: 10) {
+                    Image(systemName: model.playback.queuePosition == index ? "speaker.wave.2.fill" : "play.fill")
+                        .foregroundStyle(model.playback.queuePosition == index ? Color.accentColor : Color.secondary)
+                        .frame(width: 20)
 
-            VStack(alignment: .leading, spacing: 2) {
-                Text(track.title)
-                    .lineLimit(1)
-                Text(track.subtitle)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(track.title)
+                            .lineLimit(1)
+                        Text(track.subtitle)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
+
+                    Spacer(minLength: 0)
+                }
+                .contentShape(Rectangle())
             }
-
-            Spacer()
+            .buttonStyle(.plain)
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel("Play \(track.title)")
+            .accessibilityHint("Jumps to this song in the queue")
+            .accessibilityValue(model.playback.queuePosition == index ? "Currently selected" : "")
 
             Button {
                 Task { await model.moveQueueItem(from: index, to: index - 1) }
