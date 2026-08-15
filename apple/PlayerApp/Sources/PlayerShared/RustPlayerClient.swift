@@ -914,11 +914,15 @@ public final class RustPlayerClient: @unchecked Sendable {
         }
     }
 
-    public func addToPlaylist(name: String, path: String) throws {
+    @discardableResult
+    public func addToPlaylist(name: String, path: String) throws -> Bool {
         try sync {
             try name.withCString { nameValue in
                 try path.withCString { pathValue in
-                    _ = try decode(player_app_add_to_playlist(app, nameValue, pathValue), as: EmptyDTO.self)
+                    try decode(
+                        player_app_add_to_playlist(app, nameValue, pathValue),
+                        as: PlaylistAddSummaryDTO.self
+                    ).added
                 }
             }
         }
@@ -1013,6 +1017,10 @@ private struct ResponseDTO<T: Decodable>: Decodable {
 }
 
 private struct EmptyDTO: Decodable {}
+
+private struct PlaylistAddSummaryDTO: Decodable {
+    let added: Bool
+}
 
 private struct LibraryPageDTO: Decodable {
     let total: Int

@@ -112,6 +112,16 @@ fn app_import_search_collections_and_history_roundtrip() {
         ))
     };
     assert_ok(&add);
+    assert_eq!(add["data"]["added"], true);
+    let duplicate_add = unsafe {
+        call_json(player_app_add_to_playlist(
+            app,
+            playlist_name.as_ptr(),
+            c_string_arg(&managed_fixture).as_ptr(),
+        ))
+    };
+    assert_ok(&duplicate_add);
+    assert_eq!(duplicate_add["data"]["added"], false);
     let playlists = unsafe { call_json(player_app_playlists(app)) };
     assert_ok(&playlists);
     assert_eq!(playlists["data"][0]["name"], "Mix");

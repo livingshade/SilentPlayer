@@ -120,7 +120,7 @@ extension ContentView {
 
         Button {
             selectTrackImmediately(track)
-            Task { await model.addSelectedToPlaylist() }
+            model.presentPlaylistPicker(for: track)
         } label: {
             Label("Add to Playlist", systemImage: "text.badge.plus")
         }

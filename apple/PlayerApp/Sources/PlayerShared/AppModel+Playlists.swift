@@ -2,14 +2,17 @@ import Foundation
 
 @MainActor
 extension AppModel {
-    public func presentCreatePlaylist() {
-        playlists.isPickerPresented = false
+    public func presentCreatePlaylist(addingPickerTrack: Bool = false) {
+        playlists.addsPickerTrackAfterCreate = addingPickerTrack && playlists.pickerTrack != nil
+        if !playlists.addsPickerTrackAfterCreate {
+            playlists.pickerTrack = nil
+        }
         playlists.newNameDraft = defaultNewPlaylistName()
-        playlists.isCreatePresented = true
+        playlists.presentedSheet = .create
     }
 
     public func cancelCreatePlaylist() {
-        playlists.isCreatePresented = false
+        dismissPlaylistSheet()
     }
 
     public func createPlaylist() async {
@@ -19,14 +22,26 @@ extension AppModel {
             return
         }
 
+        let pickerTrack = playlists.addsPickerTrackAfterCreate ? playlists.pickerTrack : nil
         await runBusy("Creating \(name)") { [self] in
-            try await invoke { try $0.createPlaylist(name: name) }
+            let completionStatus: String
+            if let pickerTrack {
+                let added = try await invoke {
+                    try $0.addToPlaylist(name: name, path: pickerTrack.path)
+                }
+                completionStatus = added
+                    ? "Created \(name) and added \(pickerTrack.title)"
+                    : "\(pickerTrack.title) is already in \(name)"
+            } else {
+                try await invoke { try $0.createPlaylist(name: name) }
+                completionStatus = "Created \(name)"
+            }
             library.scope = .playlist(name)
             playlists.sortMode = .defaultOrder
-            operations.status = "Created \(name)"
-            playlists.isCreatePresented = false
             await refreshPlaylists()
             await reloadActiveScope(quiet: true)
+            operations.status = completionStatus
+            dismissPlaylistSheet()
         }
     }
 
@@ -35,12 +50,13 @@ extension AppModel {
         playlists.settingsNameDraft = playlist.name
         playlists.settingsArtworkURL = nil
         playlists.settingsCurrentArtworkURL = playlist.artworkURL
-        playlists.isSettingsPresented = true
+        playlists.pickerTrack = nil
+        playlists.addsPickerTrackAfterCreate = false
+        playlists.presentedSheet = .settings
     }
 
     public func cancelPlaylistSettings() {
-        playlists.isSettingsPresented = false
-        clearPlaylistSettingsDraft()
+        dismissPlaylistSheet()
     }
 
     public func setPlaylistSettingsArtworkURL(_ imageURL: URL) {
@@ -90,7 +106,7 @@ extension AppModel {
             } else {
                 operations.status = "Playlist unchanged"
             }
-            playlists.isSettingsPresented = false
+            playlists.presentedSheet = nil
             clearPlaylistSettingsDraft()
             await refreshPlaylists()
             if library.scope == .playlist(currentName) {
@@ -127,7 +143,7 @@ extension AppModel {
             return
         }
 
-        await add(track, toPlaylistNamed: name)
+        _ = await add(track, toPlaylistNamed: name)
     }
 
     public func presentPlaylistPicker(for track: TrackItem? = nil) {
@@ -136,34 +152,47 @@ extension AppModel {
             return
         }
         playlists.pickerTrack = target
-        playlists.isPickerPresented = true
+        playlists.addsPickerTrackAfterCreate = false
+        playlists.presentedSheet = .picker
     }
 
     public func cancelPlaylistPicker() {
-        playlists.isPickerPresented = false
+        dismissPlaylistSheet()
+    }
+
+    public func dismissPlaylistSheet() {
+        if playlists.presentedSheet == .settings {
+            clearPlaylistSettingsDraft()
+        }
+        playlists.presentedSheet = nil
         playlists.pickerTrack = nil
+        playlists.addsPickerTrackAfterCreate = false
     }
 
     public func addPlaylistPickerTrack(to playlist: PlaylistItem) async {
-        guard let track = playlists.pickerTrack ?? detailTrack else {
+        guard let track = playlists.pickerTrack else {
             operations.status = "Select or play a track first"
             return
         }
 
-        await add(track, toPlaylistNamed: playlist.name)
-        playlists.isPickerPresented = false
-        playlists.pickerTrack = nil
+        if await add(track, toPlaylistNamed: playlist.name) != nil {
+            dismissPlaylistSheet()
+        }
     }
 
-    internal func add(_ track: TrackItem, toPlaylistNamed name: String) async {
+    internal func add(_ track: TrackItem, toPlaylistNamed name: String) async -> Bool? {
+        var added: Bool?
         await runBusy("Adding to \(name)") { [self] in
-            try await invoke { try $0.addToPlaylist(name: name, path: track.path) }
-            operations.status = "Added \(track.title) to \(name)"
+            added = try await invoke { try $0.addToPlaylist(name: name, path: track.path) }
             await refreshPlaylists()
             if library.scope == .playlist(name) {
                 await reloadActiveScope(quiet: true)
             }
+            operations.status = added == true
+                ? "Added \(track.title) to \(name)"
+                : "\(track.title) is already in \(name)"
         }
+        return added
     }
 
     public func removeSelectedFromActivePlaylist() async {

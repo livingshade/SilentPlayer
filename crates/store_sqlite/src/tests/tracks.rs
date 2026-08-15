@@ -258,6 +258,7 @@ fn stores_track_notes_and_merges_duplicate_track_references() {
         .upsert_tracks(&[canonical.clone(), duplicate.clone()])
         .unwrap();
     store.create_playlist("Mix").unwrap();
+    store.add_playlist_track("Mix", &canonical.path).unwrap();
     store.add_playlist_track("Mix", &duplicate.path).unwrap();
     store.set_favorite(&duplicate.path, true).unwrap();
     store.record_playback(&duplicate.path, 99, true).unwrap();
@@ -280,10 +281,10 @@ fn stores_track_notes_and_merges_duplicate_track_references() {
         .unwrap());
 
     assert!(store.track_by_path(&duplicate.path).unwrap().is_none());
-    assert_eq!(
-        store.playlist_tracks("Mix").unwrap()[0].track.path,
-        canonical.path
-    );
+    let playlist_tracks = store.playlist_tracks("Mix").unwrap();
+    assert_eq!(playlist_tracks.len(), 1);
+    assert_eq!(playlist_tracks[0].position, 0);
+    assert_eq!(playlist_tracks[0].track.path, canonical.path);
     assert_eq!(store.favorite_tracks().unwrap()[0].path, canonical.path);
     assert_eq!(
         store.play_history(10).unwrap()[0].track.path,
@@ -362,8 +363,10 @@ fn deterministic_random_user_workflow_preserves_store_invariants() {
             }
             1 => {
                 let name = playlist_names[rng.usize(playlist_names.len())].to_owned();
-                store.add_playlist_track(&name, &path).unwrap();
-                *expected_playlist_counts.entry(name).or_default() += 1;
+                let added = store.add_playlist_track(&name, &path).unwrap();
+                if added {
+                    *expected_playlist_counts.entry(name).or_default() += 1;
+                }
             }
             2 => {
                 let enabled = rng.bool();

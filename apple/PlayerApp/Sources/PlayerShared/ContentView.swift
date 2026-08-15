@@ -58,11 +58,15 @@ public struct ContentView: View {
                 chooseLyricsFile: chooseLyricsFile
             )
         }
-        .sheet(isPresented: featureBinding(model.playlists, \.isCreatePresented)) {
-            PlaylistCreateSheet(model: model)
-        }
-        .sheet(isPresented: featureBinding(model.playlists, \.isSettingsPresented)) {
-            PlaylistSettingsSheet(
+        .sheet(isPresented: Binding(
+            get: { model.playlists.presentedSheet != nil },
+            set: { isPresented in
+                if !isPresented {
+                    model.dismissPlaylistSheet()
+                }
+            }
+        )) {
+            MacPlaylistSheetHost(
                 model: model,
                 chooseArtworkFile: chooseArtworkFile
             )

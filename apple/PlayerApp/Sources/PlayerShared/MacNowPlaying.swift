@@ -411,6 +411,20 @@ extension ContentView {
     internal func trackActionsMenu(for track: TrackItem) -> some View {
         Menu {
             Button {
+                Task { await model.addToQueue(track) }
+            } label: {
+                Label("Add to Queue", systemImage: "text.line.last.and.arrowtriangle.forward")
+            }
+
+            Button {
+                model.presentPlaylistPicker(for: track)
+            } label: {
+                Label("Add to Playlist…", systemImage: "text.badge.plus")
+            }
+
+            Divider()
+
+            Button {
                 setTrackCover(for: track)
             } label: {
                 Label("Set Track Cover", systemImage: "photo")

@@ -11,14 +11,14 @@ fn manages_playlists_in_order() {
         .unwrap();
 
     let playlist_id = store.create_playlist("Road").unwrap();
-    let item_a = store.add_playlist_track("Road", "/music/a.ogg").unwrap();
-    let item_b = store.add_playlist_track("Road", "/music/b.ogg").unwrap();
-    store.add_playlist_track("Road", "/music/c.ogg").unwrap();
+    assert!(store.add_playlist_track("Road", "/music/a.ogg").unwrap());
+    assert!(store.add_playlist_track("Road", "/music/b.ogg").unwrap());
+    assert!(store.add_playlist_track("Road", "/music/c.ogg").unwrap());
+    assert!(!store.add_playlist_track("Road", "/music/a.ogg").unwrap());
     let summaries = store.playlists().unwrap();
     let entries = store.playlist_tracks("Road").unwrap();
 
     assert!(playlist_id > 0);
-    assert!(item_b > item_a);
     assert_eq!(summaries.len(), 1);
     assert_eq!(summaries[0].name, "Road");
     assert_eq!(summaries[0].track_count, 3);
@@ -48,6 +48,38 @@ fn manages_playlists_in_order() {
     assert!(store.playlist_tracks("Road").unwrap().is_empty());
     assert!(store.delete_playlist("Road").unwrap());
     assert!(store.playlists().unwrap().is_empty());
+}
+
+#[test]
+fn schema_initialization_migrates_duplicate_playlist_memberships() {
+    let mut store = LibraryStore::in_memory().unwrap();
+    let track = Track::from_path("/music/a.ogg".into());
+    store.upsert_track(&track).unwrap();
+    let playlist_id = store.create_playlist("Road").unwrap();
+    assert!(store.add_playlist_track("Road", &track.path).unwrap());
+
+    store
+        .conn
+        .execute("DROP INDEX playlist_items_membership_idx", [])
+        .unwrap();
+    store
+        .conn
+        .execute(
+            r#"
+            INSERT INTO playlist_items
+                (playlist_id, position, track_path, added_at_unix_seconds)
+            VALUES (?1, 4, ?2, 1)
+            "#,
+            params![playlist_id, track.path.to_string_lossy().as_ref()],
+        )
+        .unwrap();
+
+    store.initialize_schema().unwrap();
+
+    let entries = store.playlist_tracks("Road").unwrap();
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].position, 0);
+    assert!(!store.add_playlist_track("Road", &track.path).unwrap());
 }
 
 #[test]

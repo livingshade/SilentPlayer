@@ -2,6 +2,28 @@
 import Foundation
 import SwiftUI
 
+struct MacPlaylistSheetHost: View {
+    @ObservedObject var model: AppModel
+    let chooseArtworkFile: () async -> URL?
+
+    @ViewBuilder
+    var body: some View {
+        switch model.playlists.presentedSheet {
+        case .create:
+            PlaylistCreateSheet(model: model)
+        case .picker:
+            PlaylistPickerSheet(model: model)
+        case .settings:
+            PlaylistSettingsSheet(
+                model: model,
+                chooseArtworkFile: chooseArtworkFile
+            )
+        case nil:
+            EmptyView()
+        }
+    }
+}
+
 struct TrackEditSheet: View {
     @ObservedObject var model: AppModel
     let chooseArtworkFile: () async -> URL?
@@ -142,6 +164,77 @@ struct PlaylistCreateSheet: View {
 
     private var canCreate: Bool {
         !model.operations.isBusy && !model.playlists.newNameDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+}
+
+struct PlaylistPickerSheet: View {
+    @ObservedObject var model: AppModel
+
+    var body: some View {
+        NavigationStack {
+            List {
+                if model.playlists.items.isEmpty {
+                    VStack(spacing: 10) {
+                        Image(systemName: "music.note.house")
+                            .font(.system(size: 36))
+                            .foregroundStyle(.secondary)
+                        Text("No Playlists")
+                            .font(.headline)
+                        Text("Create a playlist, then add this song to it.")
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
+                    }
+                    .frame(maxWidth: .infinity, minHeight: 220)
+                    .listRowSeparator(.hidden)
+                } else {
+                    ForEach(model.playlists.items) { playlist in
+                        Button {
+                            Task { await model.addPlaylistPickerTrack(to: playlist) }
+                        } label: {
+                            HStack(spacing: 10) {
+                                PlaylistArtworkThumbnail(artworkURL: playlist.artworkURL)
+
+                                Text(playlist.name)
+                                    .lineLimit(1)
+
+                                Spacer(minLength: 0)
+
+                                Text("\(playlist.trackCount) songs")
+                                    .font(.caption.monospacedDigit())
+                                    .foregroundStyle(.secondary)
+                            }
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(model.operations.isBusy)
+                        .accessibilityLabel("Add to \(playlist.name)")
+                        .accessibilityHint("Adds the selected song to this playlist")
+                    }
+                }
+            }
+            .navigationTitle("Add to Playlist")
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel", role: .cancel) {
+                        model.cancelPlaylistPicker()
+                    }
+                    .disabled(model.operations.isBusy)
+                }
+                ToolbarItem(placement: .primaryAction) {
+                    Button {
+                        model.presentCreatePlaylist(addingPickerTrack: true)
+                    } label: {
+                        Label("New Playlist", systemImage: "plus")
+                    }
+                    .disabled(model.operations.isBusy)
+                }
+            }
+        }
+        .frame(minWidth: 420, idealWidth: 480, maxWidth: 620, minHeight: 340, idealHeight: 420, maxHeight: 620)
+        .interactiveDismissDisabled(model.operations.isBusy)
+        .task {
+            await model.refreshPlaylists()
+        }
     }
 }
 

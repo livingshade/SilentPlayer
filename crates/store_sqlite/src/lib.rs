@@ -420,6 +420,30 @@ impl LibraryStore {
                 CREATE INDEX IF NOT EXISTS playlist_items_playlist_idx
                     ON playlist_items(playlist_id, position);
 
+                DELETE FROM playlist_items
+                WHERE id NOT IN (
+                    SELECT MIN(id)
+                    FROM playlist_items
+                    GROUP BY playlist_id, track_path
+                );
+
+                UPDATE playlist_items AS item
+                SET position = (
+                    SELECT COUNT(*) - 1
+                    FROM playlist_items AS preceding
+                    WHERE preceding.playlist_id = item.playlist_id
+                      AND (
+                          preceding.position < item.position
+                          OR (
+                              preceding.position = item.position
+                              AND preceding.id <= item.id
+                          )
+                      )
+                );
+
+                CREATE UNIQUE INDEX IF NOT EXISTS playlist_items_membership_idx
+                    ON playlist_items(playlist_id, track_path);
+
                 CREATE TABLE IF NOT EXISTS playback_queue_state (
                     singleton_id INTEGER PRIMARY KEY CHECK(singleton_id = 1),
                     current_index INTEGER,

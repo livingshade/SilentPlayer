@@ -1,6 +1,12 @@
 import Combine
 import Foundation
 
+public enum PlaylistSheetDestination: Hashable, Sendable {
+    case create
+    case picker
+    case settings
+}
+
 @MainActor
 public final class LibraryFeatureState: ObservableObject {
     @Published public internal(set) var tracks: [TrackItem] = []
@@ -13,16 +19,15 @@ public final class LibraryFeatureState: ObservableObject {
 public final class PlaylistFeatureState: ObservableObject {
     @Published public internal(set) var items: [PlaylistItem] = []
     @Published public internal(set) var recentItems: [PlaylistItem] = []
-    @Published public internal(set) var isCreatePresented = false
+    @Published public internal(set) var presentedSheet: PlaylistSheetDestination?
     @Published public internal(set) var newNameDraft = "New Playlist"
-    @Published public internal(set) var isSettingsPresented = false
     @Published public internal(set) var settingsOriginalName: String?
     @Published public internal(set) var settingsNameDraft = ""
     @Published public internal(set) var settingsArtworkURL: URL?
     @Published public internal(set) var settingsCurrentArtworkURL: URL?
     @Published public internal(set) var sortMode: PlaylistSortMode = .defaultOrder
-    @Published public internal(set) var isPickerPresented = false
     @Published public internal(set) var pickerTrack: TrackItem?
+    internal var addsPickerTrackAfterCreate = false
 }
 
 @MainActor

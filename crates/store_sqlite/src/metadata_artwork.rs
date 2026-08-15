@@ -605,8 +605,45 @@ impl LibraryStore {
         )
         .map_err(to_store_error)?;
         tx.execute(
+            r#"
+            DELETE FROM playlist_items
+            WHERE track_path = ?2
+              AND playlist_id IN (
+                  SELECT playlist_id
+                  FROM playlist_items
+                  WHERE track_path = ?1
+              )
+            "#,
+            params![canonical_path.as_str(), duplicate_path.as_str()],
+        )
+        .map_err(to_store_error)?;
+        tx.execute(
             "UPDATE playlist_items SET track_path = ?1 WHERE track_path = ?2",
             params![canonical_path.as_str(), duplicate_path.as_str()],
+        )
+        .map_err(to_store_error)?;
+        tx.execute(
+            r#"
+            UPDATE playlist_items AS item
+            SET position = (
+                SELECT COUNT(*) - 1
+                FROM playlist_items AS preceding
+                WHERE preceding.playlist_id = item.playlist_id
+                  AND (
+                      preceding.position < item.position
+                      OR (
+                          preceding.position = item.position
+                          AND preceding.id <= item.id
+                      )
+                  )
+            )
+            WHERE item.playlist_id IN (
+                SELECT playlist_id
+                FROM playlist_items
+                WHERE track_path = ?1
+            )
+            "#,
+            params![canonical_path.as_str()],
         )
         .map_err(to_store_error)?;
         tx.execute(

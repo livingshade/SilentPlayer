@@ -272,28 +272,32 @@ impl LibraryStore {
         &mut self,
         playlist_name: &str,
         path: impl AsRef<Path>,
-    ) -> PlayerResult<i64> {
+    ) -> PlayerResult<bool> {
         let playlist_id = self.create_playlist(playlist_name)?;
         let path = path_to_string(path.as_ref());
         let position = self.next_playlist_position(playlist_id)?;
         let now = now_unix_seconds();
-        self.conn
+        let inserted = self
+            .conn
             .execute(
                 r#"
-                INSERT INTO playlist_items
+                INSERT OR IGNORE INTO playlist_items
                     (playlist_id, position, track_path, added_at_unix_seconds)
                 VALUES (?1, ?2, ?3, ?4)
                 "#,
-                params![playlist_id, i64::from(position), path, now],
+                params![playlist_id, i64::from(position), path.as_str(), now],
             )
             .map_err(to_store_error)?;
+        if inserted == 0 {
+            return Ok(false);
+        }
         self.conn
             .execute(
                 "UPDATE playlists SET updated_at_unix_seconds = ?2 WHERE id = ?1",
                 params![playlist_id, now],
             )
             .map_err(to_store_error)?;
-        Ok(self.conn.last_insert_rowid())
+        Ok(true)
     }
 
     pub fn remove_playlist_track(

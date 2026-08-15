@@ -42,6 +42,116 @@ final class LibraryPresentationCacheTests: XCTestCase {
 
 @MainActor
 final class SinglePrimaryPresentationTests: XCTestCase {
+    func testPlaylistPickerAddsExplicitTrackToChosenPlaylist() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let client = try RustPlayerClient(
+            dbURL: root.appendingPathComponent("library.sqlite3"),
+            mediaRootURL: root.appendingPathComponent("Music", isDirectory: true),
+            repoRoot: root
+        )
+        _ = try client.importFiles([
+            repositoryRoot
+                .appendingPathComponent("test-assets/audio/into_the_oceans_chorus.ogg")
+        ])
+        try client.createPlaylist(name: "Road")
+        let playlist = try XCTUnwrap(client.playlists().first)
+        let track = try XCTUnwrap(client.library().first)
+        let model = AppModel(client: client)
+
+        await model.bootstrap()
+        model.presentPlaylistPicker(for: track)
+
+        XCTAssertEqual(model.playlists.presentedSheet, .picker)
+        XCTAssertEqual(model.playlists.pickerTrack?.id, track.id)
+
+        await model.addPlaylistPickerTrack(to: playlist)
+
+        XCTAssertNil(model.playlists.presentedSheet)
+        XCTAssertNil(model.playlists.pickerTrack)
+        XCTAssertEqual(try client.playlistTracks(name: playlist.name).map(\.id), [track.id])
+        XCTAssertEqual(model.operations.status, "Added \(track.title) to \(playlist.name)")
+
+        model.presentPlaylistPicker(for: track)
+        await model.addPlaylistPickerTrack(to: playlist)
+
+        XCTAssertNil(model.playlists.presentedSheet)
+        XCTAssertNil(model.playlists.pickerTrack)
+        XCTAssertEqual(try client.playlistTracks(name: playlist.name).map(\.id), [track.id])
+        XCTAssertEqual(model.operations.status, "\(track.title) is already in \(playlist.name)")
+    }
+
+    func testCreatingPlaylistFromPickerAddsOriginalTrack() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let client = try RustPlayerClient(
+            dbURL: root.appendingPathComponent("library.sqlite3"),
+            mediaRootURL: root.appendingPathComponent("Music", isDirectory: true),
+            repoRoot: root
+        )
+        _ = try client.importFiles([
+            repositoryRoot
+                .appendingPathComponent("test-assets/audio/into_the_oceans_chorus.ogg")
+        ])
+        let track = try XCTUnwrap(client.library().first)
+        let model = AppModel(client: client)
+
+        await model.bootstrap()
+        model.presentPlaylistPicker(for: track)
+        model.presentCreatePlaylist(addingPickerTrack: true)
+        model.playlists.newNameDraft = "New Road"
+
+        XCTAssertEqual(model.playlists.presentedSheet, .create)
+        XCTAssertEqual(model.playlists.pickerTrack?.id, track.id)
+
+        await model.createPlaylist()
+
+        XCTAssertNil(model.playlists.presentedSheet)
+        XCTAssertNil(model.playlists.pickerTrack)
+        XCTAssertEqual(model.library.scope, .playlist("New Road"))
+        XCTAssertEqual(try client.playlistTracks(name: "New Road").map(\.id), [track.id])
+        XCTAssertEqual(model.operations.status, "Created New Road and added \(track.title)")
+    }
+
+    func testFailedPlaylistAddKeepsPickerAndTargetAvailableForRetry() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let client = try RustPlayerClient(
+            dbURL: root.appendingPathComponent("library.sqlite3"),
+            mediaRootURL: root.appendingPathComponent("Music", isDirectory: true),
+            repoRoot: root
+        )
+        try client.createPlaylist(name: "Road")
+        let playlist = try XCTUnwrap(client.playlists().first)
+        let missingTrack = TrackItem(
+            id: "audio:missing",
+            title: "Missing",
+            artist: "",
+            durationMS: nil,
+            path: root.appendingPathComponent("missing.flac").path
+        )
+        let model = AppModel(client: client)
+
+        await model.bootstrap()
+        model.presentPlaylistPicker(for: missingTrack)
+        await model.addPlaylistPickerTrack(to: playlist)
+
+        XCTAssertEqual(model.playlists.presentedSheet, .picker)
+        XCTAssertEqual(model.playlists.pickerTrack?.id, missingTrack.id)
+        XCTAssertEqual(model.operations.status, "Error")
+        XCTAssertTrue(try client.playlistTracks(name: playlist.name).isEmpty)
+
+        model.dismissPlaylistSheet()
+        XCTAssertNil(model.playlists.presentedSheet)
+        XCTAssertNil(model.playlists.pickerTrack)
+    }
+
     func testLibraryDisplaysEveryTrackReturnedByRustWithoutClientSideCollapse() async throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)

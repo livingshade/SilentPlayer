@@ -114,14 +114,15 @@ public struct PhoneContentView: View {
         .fullScreenCover(isPresented: $isNowPlayingPresented) {
             nowPlayingView
         }
-        .sheet(isPresented: featureBinding(model.playlists, \.isCreatePresented)) {
-            PhonePlaylistCreateSheet(model: model)
-        }
-        .sheet(isPresented: featureBinding(model.playlists, \.isPickerPresented)) {
-            PhonePlaylistPickerSheet(model: model)
-        }
-        .sheet(isPresented: featureBinding(model.playlists, \.isSettingsPresented)) {
-            PhonePlaylistSettingsSheet(model: model) {
+        .sheet(isPresented: Binding(
+            get: { model.playlists.presentedSheet != nil },
+            set: { isPresented in
+                if !isPresented {
+                    model.dismissPlaylistSheet()
+                }
+            }
+        )) {
+            PhonePlaylistSheetHost(model: model) {
                 presentFileImporter(.playlistSettingsArtwork)
             }
         }

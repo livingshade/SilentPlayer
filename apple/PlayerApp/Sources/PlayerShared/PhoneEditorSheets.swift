@@ -2,6 +2,25 @@
 import Foundation
 import SwiftUI
 
+struct PhonePlaylistSheetHost: View {
+    @ObservedObject var model: AppModel
+    let chooseArtwork: () -> Void
+
+    @ViewBuilder
+    var body: some View {
+        switch model.playlists.presentedSheet {
+        case .create:
+            PhonePlaylistCreateSheet(model: model)
+        case .picker:
+            PhonePlaylistPickerSheet(model: model)
+        case .settings:
+            PhonePlaylistSettingsSheet(model: model, chooseArtwork: chooseArtwork)
+        case nil:
+            EmptyView()
+        }
+    }
+}
+
 struct PhoneTrackEditSheet: View {
     @ObservedObject var model: AppModel
     let chooseArtwork: () -> Void
@@ -154,7 +173,7 @@ struct PhonePlaylistPickerSheet: View {
 
                 ToolbarItem(placement: .topBarTrailing) {
                     Button {
-                        model.presentCreatePlaylist()
+                        model.presentCreatePlaylist(addingPickerTrack: true)
                     } label: {
                         Label("New Playlist", systemImage: "plus")
                     }

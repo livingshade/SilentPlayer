@@ -230,12 +230,32 @@ fn music_view_collections_and_playlist_commands_cover_app_mutations() {
             .output()
             .expect("create playlist"),
     );
-    assert_command_ok(
-        &silent_cli(&db_path, &media_root)
-            .args(["playlist", "add", "CLI Mix", &edited_view])
-            .output()
-            .expect("add playlist track"),
-    );
+    let add_playlist_track = silent_cli(&db_path, &media_root)
+        .args([
+            "--output",
+            "json",
+            "playlist",
+            "add",
+            "CLI Mix",
+            &edited_view,
+        ])
+        .output()
+        .expect("add playlist track");
+    assert_command_ok(&add_playlist_track);
+    assert_eq!(json_output(&add_playlist_track)["added"], true);
+    let add_playlist_track_again = silent_cli(&db_path, &media_root)
+        .args([
+            "--output",
+            "json",
+            "playlist",
+            "add",
+            "CLI Mix",
+            &edited_view,
+        ])
+        .output()
+        .expect("add playlist track again");
+    assert_command_ok(&add_playlist_track_again);
+    assert_eq!(json_output(&add_playlist_track_again)["added"], false);
     assert_command_ok(
         &silent_cli(&db_path, &media_root)
             .args(["playlist", "rename", "CLI Mix", "Renamed Mix"])

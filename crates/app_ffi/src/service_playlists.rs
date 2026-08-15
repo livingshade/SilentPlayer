@@ -8,6 +8,11 @@ use crate::dto::{track_dtos_with_artwork, Empty};
 use crate::file_support::read_artwork_image;
 use crate::PlayerApp;
 
+#[derive(Serialize)]
+struct PlaylistAddSummary {
+    added: bool,
+}
+
 impl PlayerApp {
     pub(crate) fn service_playlists(&mut self) -> PlayerResult<impl Serialize> {
         let store = self.store()?;
@@ -69,9 +74,10 @@ impl PlayerApp {
         name: &str,
         path: &Path,
     ) -> PlayerResult<impl Serialize> {
-        self.store()?
+        let added = self
+            .store()?
             .add_playlist_track(name, path.to_string_lossy().into_owned())?;
-        Ok(Empty {})
+        Ok(PlaylistAddSummary { added })
     }
 
     pub(crate) fn service_remove_from_playlist(
