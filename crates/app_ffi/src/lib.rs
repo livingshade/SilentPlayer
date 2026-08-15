@@ -21,13 +21,14 @@ pub use client::{SilentAppClient, SilentAppClientError};
 
 use std::path::PathBuf;
 
-use domain::{PlaybackLifecycle, RepeatMode};
+use domain::{GlobalQueueSnapshot, PlaybackLifecycle, PlaybackMode, QueueItemId, RepeatMode};
 use engine::PlayerEngine;
 
 use dto::{ActivePlaybackSession, LocalUserProfile, TrackDto, UserActivityStore};
 
 pub struct PlayerApp {
     db_path: PathBuf,
+    playback_state_path: PathBuf,
     media_root: PathBuf,
     activity_store: UserActivityStore,
     local_user: Option<LocalUserProfile>,
@@ -36,9 +37,12 @@ pub struct PlayerApp {
     engine: Option<PlayerEngine>,
     current_track: Option<TrackDto>,
     queue_tracks: Vec<TrackDto>,
+    queue_item_ids: Vec<QueueItemId>,
     queue_current_index: Option<usize>,
     queue_playback_order: Vec<usize>,
     queue_playback_position: Option<usize>,
+    queue_state: Option<GlobalQueueSnapshot>,
+    playback_mode: PlaybackMode,
     repeat_mode: RepeatMode,
     shuffle_enabled: bool,
     is_playing: bool,

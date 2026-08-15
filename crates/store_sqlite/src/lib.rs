@@ -2,8 +2,7 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use domain::{
-    ArtworkImage, FileFingerprint, LoudnessInfo, RepeatMode, Track, TrackId, TrackViewId,
-    TrackViewKind,
+    ArtworkImage, FileFingerprint, LoudnessInfo, Track, TrackId, TrackViewId, TrackViewKind,
 };
 use errors::{PlayerError, PlayerResult};
 use rusqlite::{params, Connection, OptionalExtension};
@@ -38,15 +37,6 @@ pub struct PlaylistEntry {
     pub item_id: i64,
     pub position: u32,
     pub track: Track,
-}
-
-#[derive(Clone, Debug)]
-pub struct StoredPlaybackQueue {
-    pub tracks: Vec<Track>,
-    pub current_index: Option<usize>,
-    pub position_ms: u64,
-    pub repeat_mode: RepeatMode,
-    pub shuffle_enabled: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -444,20 +434,6 @@ impl LibraryStore {
                 CREATE UNIQUE INDEX IF NOT EXISTS playlist_items_membership_idx
                     ON playlist_items(playlist_id, track_path);
 
-                CREATE TABLE IF NOT EXISTS playback_queue_state (
-                    singleton_id INTEGER PRIMARY KEY CHECK(singleton_id = 1),
-                    current_index INTEGER,
-                    position_ms INTEGER NOT NULL DEFAULT 0,
-                    repeat_mode TEXT NOT NULL DEFAULT 'off',
-                    shuffle_enabled INTEGER NOT NULL DEFAULT 0,
-                    updated_at_unix_seconds INTEGER NOT NULL
-                );
-
-                CREATE TABLE IF NOT EXISTS playback_queue_items (
-                    position INTEGER PRIMARY KEY,
-                    track_path TEXT NOT NULL REFERENCES tracks(path) ON DELETE CASCADE
-                );
-
                 CREATE TABLE IF NOT EXISTS favorite_tracks (
                     track_path TEXT PRIMARY KEY REFERENCES tracks(path) ON DELETE CASCADE,
                     created_at_unix_seconds INTEGER NOT NULL
@@ -675,25 +651,6 @@ fn row_to_playlist_summary(row: &rusqlite::Row<'_>) -> rusqlite::Result<Playlist
         updated_at_unix_seconds: row.get(5)?,
         last_used_at_unix_seconds: row.get(6)?,
     })
-}
-
-fn repeat_mode_to_store_value(mode: RepeatMode) -> &'static str {
-    match mode {
-        RepeatMode::Off => "off",
-        RepeatMode::One => "one",
-        RepeatMode::All => "all",
-    }
-}
-
-fn repeat_mode_from_store_value(value: &str) -> PlayerResult<RepeatMode> {
-    match value {
-        "off" => Ok(RepeatMode::Off),
-        "one" => Ok(RepeatMode::One),
-        "all" => Ok(RepeatMode::All),
-        _ => Err(PlayerError::store(format!(
-            "invalid persisted repeat mode: {value}"
-        ))),
-    }
 }
 
 fn row_to_artwork(row: &rusqlite::Row<'_>) -> rusqlite::Result<ArtworkImage> {

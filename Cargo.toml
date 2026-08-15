@@ -11,6 +11,7 @@ members = [
     "crates/library_worker",
     "crates/metadata_lofty",
     "crates/store_sqlite",
+    "crates/playback_store_sqlite",
     "crates/engine",
     "crates/errors",
     "crates/app_ffi",

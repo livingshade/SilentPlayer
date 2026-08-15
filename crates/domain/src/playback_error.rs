@@ -5,6 +5,7 @@ pub type PlaybackResult<T> = Result<T, PlaybackError>;
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum PlaybackError {
     InvalidQueueIndex { index: usize, len: usize },
+    InvalidQueueState(String),
     EmptyQueue,
 }
 
@@ -14,6 +15,7 @@ impl fmt::Display for PlaybackError {
             Self::InvalidQueueIndex { index, len } => {
                 write!(f, "invalid queue index {index} for queue length {len}")
             }
+            Self::InvalidQueueState(message) => f.write_str(message),
             Self::EmptyQueue => write!(f, "queue is empty"),
         }
     }

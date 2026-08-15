@@ -3,19 +3,37 @@ use std::path::{Path, PathBuf};
 use errors::{PlayerError, PlayerResult};
 use serde::Serialize;
 
-use crate::dto::PlaybackQueueDto;
-use crate::playback_helpers::{library_playback_plan, parse_repeat_mode, repeat_mode_name};
+use crate::dto::{PlaybackQueueDto, PlaybackSnapshot};
+use crate::playback_helpers::{
+    library_playback_plan, parse_playback_mode, parse_repeat_mode, repeat_mode_name,
+};
 use crate::PlayerApp;
 
 impl PlayerApp {
     pub(crate) fn service_play_library(&mut self) -> PlayerResult<impl Serialize> {
         let (tracks, start_index) = library_playback_plan(&self.store()?, None)?;
-        self.play_queue_tracks(tracks, start_index, false)
+        self.play_queue_tracks(tracks, start_index, self.shuffle_enabled)
     }
 
     pub(crate) fn service_play_path(&mut self, path: &Path) -> PlayerResult<impl Serialize> {
-        let (tracks, start_index) = library_playback_plan(&self.store()?, Some(path))?;
-        self.play_queue_tracks(tracks, start_index, false)
+        self.ensure_playback_can_start()?;
+        self.add_path_to_queue(path, false)?;
+        let source_index = self
+            .queue_tracks
+            .iter()
+            .position(|queued| Path::new(&queued.path) == path)
+            .ok_or_else(|| {
+                PlayerError::store(format!(
+                    "queued track disappeared before playback: {}",
+                    path.display()
+                ))
+            })?;
+        let displayed_index = self
+            .valid_queue_playback_order()
+            .iter()
+            .position(|candidate| *candidate == source_index)
+            .ok_or_else(|| PlayerError::store("queued track is missing from playback order"))?;
+        self.play_queue_item(displayed_index)
     }
 
     pub(crate) fn service_play_queue(
@@ -144,7 +162,9 @@ impl PlayerApp {
         self.position_ms = 0;
         self.current_track = None;
         self.queue_tracks.clear();
+        self.queue_item_ids.clear();
         self.queue_current_index = None;
+        self.queue_state = None;
         self.last_error = None;
         self.persist_queue_state()?;
         Ok(self.snapshot())
@@ -195,20 +215,40 @@ impl PlayerApp {
         repeat_mode: &str,
     ) -> PlayerResult<impl Serialize> {
         let repeat_mode = parse_repeat_mode(repeat_mode)?;
-        self.repeat_mode = repeat_mode;
-        if let Some(engine) = self.engine.as_ref() {
-            engine.set_repeat_mode(repeat_mode)?;
-            self.poll_events();
-        }
-        self.persist_queue_state()?;
-        Ok(self.snapshot())
+        let mode = if repeat_mode == domain::RepeatMode::One {
+            domain::PlaybackMode::RepeatOne
+        } else {
+            domain::PlaybackMode::Sequential
+        };
+        self.set_playback_mode(mode)
     }
 
     pub(crate) fn service_set_shuffle(&mut self, enabled: bool) -> PlayerResult<impl Serialize> {
-        self.shuffle_enabled = enabled;
+        let mode = if enabled {
+            domain::PlaybackMode::Shuffle
+        } else {
+            domain::PlaybackMode::Sequential
+        };
+        self.set_playback_mode(mode)
+    }
+
+    pub(crate) fn service_set_playback_mode(&mut self, mode: &str) -> PlayerResult<impl Serialize> {
+        self.set_playback_mode(parse_playback_mode(mode)?)
+    }
+
+    fn set_playback_mode(&mut self, mode: domain::PlaybackMode) -> PlayerResult<PlaybackSnapshot> {
+        self.playback_mode = mode;
+        self.repeat_mode = if mode == domain::PlaybackMode::RepeatOne {
+            domain::RepeatMode::One
+        } else {
+            domain::RepeatMode::All
+        };
+        self.shuffle_enabled = mode == domain::PlaybackMode::Shuffle;
         if let Some(engine) = self.engine.as_ref() {
-            engine.set_shuffle(enabled)?;
+            engine.set_playback_mode(mode)?;
             self.poll_events();
+        } else {
+            self.reconcile_cached_queue_structure();
         }
         self.persist_queue_state()?;
         Ok(self.snapshot())
@@ -225,6 +265,7 @@ impl PlayerApp {
             current_index: self
                 .queue_playback_position
                 .filter(|position| *position < order.len()),
+            playback_mode: self.playback_mode.as_str().to_owned(),
             repeat_mode: repeat_mode_name(self.repeat_mode).to_owned(),
             shuffle_enabled: self.shuffle_enabled,
         })

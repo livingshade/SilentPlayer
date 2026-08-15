@@ -58,6 +58,20 @@ impl SilentAppClient {
         })
     }
 
+    pub fn open_with_playback_state(
+        db_path: impl AsRef<Path>,
+        playback_state_path: impl AsRef<Path>,
+        media_root: impl AsRef<Path>,
+    ) -> Result<Self, SilentAppClientError> {
+        Ok(Self {
+            app: Box::new(PlayerApp::new_with_playback_state(
+                db_path.as_ref().to_path_buf(),
+                playback_state_path.as_ref().to_path_buf(),
+                media_root.as_ref().to_path_buf(),
+            )),
+        })
+    }
+
     pub fn export_library(&mut self, path: impl AsRef<Path>) -> ClientResult {
         self.call(|app| app.service_export_library(path.as_ref()))
     }
@@ -173,6 +187,10 @@ impl SilentAppClient {
 
     pub fn set_repeat_mode(&mut self, mode: &str) -> ClientResult {
         self.call(|app| app.service_set_repeat_mode(mode))
+    }
+
+    pub fn set_playback_mode(&mut self, mode: &str) -> ClientResult {
+        self.call(|app| app.service_set_playback_mode(mode))
     }
 
     pub fn set_shuffle(&mut self, enabled: bool) -> ClientResult {

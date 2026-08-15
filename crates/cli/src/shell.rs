@@ -124,6 +124,15 @@ fn run_shell_command(
             let enabled = parse_on_off(&exactly_one(args, "shuffle requires <on|off>")?)?;
             context.emit(&client.set_shuffle(enabled)?)
         }
+        "mode" => {
+            let mode = exactly_one(args, "mode requires <repeat_one|sequential|shuffle>")?;
+            if !matches!(mode.as_str(), "repeat_one" | "sequential" | "shuffle") {
+                return Err(CliError::usage(
+                    "mode requires <repeat_one|sequential|shuffle>",
+                ));
+            }
+            context.emit(&client.set_playback_mode(&mode)?)
+        }
         "lifecycle" => run_lifecycle(context, client, args),
         _ => Err(CliError::usage(format!(
             "unknown playback command `{command}`; type `help`"
@@ -345,6 +354,7 @@ Playback shell commands:
   queue remove <position> | queue clear
   repeat off|one|all
   shuffle on|off
+  mode repeat_one|sequential|shuffle
   lifecycle interruption-begin
   lifecycle interruption-end on|off
   lifecycle output-disconnected

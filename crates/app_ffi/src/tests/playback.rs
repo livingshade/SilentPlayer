@@ -60,6 +60,74 @@ fn stopping_active_playback_releases_the_engine() {
 }
 
 #[test]
+fn clicking_a_track_appends_once_then_jumps_to_its_global_queue_item() {
+    let db_path = temp_db_path("play_path_global_queue");
+    let media_root = temp_dir("play_path_global_queue_media");
+    fs::create_dir_all(&media_root).unwrap();
+    let first_path = media_root.join("first.ogg");
+    let second_path = media_root.join("second.ogg");
+    let mut first = Track::from_path(first_path.clone());
+    first.set_primary_audio_hash("play-path-first");
+    let mut second = Track::from_path(second_path.clone());
+    second.set_primary_audio_hash("play-path-second");
+    LibraryStore::open(&db_path)
+        .unwrap()
+        .upsert_tracks(&[first, second])
+        .unwrap();
+    let app = create_app(&db_path, &media_root);
+    unsafe {
+        (*app).engine = Some(
+            PlayerEngine::spawn(NormalizationSettings::default(), || Ok(LoadedBackend)).unwrap(),
+        );
+    }
+
+    let second_played = unsafe {
+        call_json(player_app_play_path(
+            app,
+            c_string_arg(&second_path).as_ptr(),
+        ))
+    };
+    assert_ok(&second_played);
+    assert_eq!(second_played["data"]["queue_len"], 1);
+    assert_eq!(
+        second_played["data"]["current_track"]["path"],
+        second_path.to_string_lossy().as_ref()
+    );
+    let second_id = unsafe { (&(*app).queue_item_ids)[0] };
+
+    let first_played = unsafe {
+        call_json(player_app_play_path(
+            app,
+            c_string_arg(&first_path).as_ptr(),
+        ))
+    };
+    assert_ok(&first_played);
+    assert_eq!(first_played["data"]["queue_len"], 2);
+    assert_eq!(
+        first_played["data"]["current_track"]["path"],
+        first_path.to_string_lossy().as_ref()
+    );
+
+    let second_again = unsafe {
+        call_json(player_app_play_path(
+            app,
+            c_string_arg(&second_path).as_ptr(),
+        ))
+    };
+    assert_ok(&second_again);
+    assert_eq!(second_again["data"]["queue_len"], 2);
+    assert_eq!(
+        second_again["data"]["current_track"]["path"],
+        second_path.to_string_lossy().as_ref()
+    );
+    assert_eq!(unsafe { (&(*app).queue_item_ids)[0] }, second_id);
+
+    unsafe { player_app_destroy(app) };
+    fs::remove_file(db_path).ok();
+    fs::remove_dir_all(media_root).ok();
+}
+
+#[test]
 fn app_plays_only_the_requested_playlist_with_explicit_modes() {
     let db_path = temp_db_path("play_playlist");
     let media_root = temp_dir("play_playlist_media");
@@ -118,26 +186,26 @@ fn app_plays_only_the_requested_playlist_with_explicit_modes() {
         ))
     };
     assert_ok(&randomized_start);
-    assert_eq!(
-        randomized_start["data"]["current_track"]["path"],
-        second_path.to_string_lossy().as_ref()
-    );
     let randomized_queue = unsafe { call_json(player_app_queue(app)) };
     assert_ok(&randomized_queue);
     assert_eq!(randomized_queue["data"]["current_index"], 0);
     assert_eq!(
         randomized_queue["data"]["tracks"][0]["path"],
-        second_path.to_string_lossy().as_ref()
+        randomized_start["data"]["current_track"]["path"]
     );
-    assert_eq!(
-        randomized_queue["data"]["tracks"][1]["path"],
-        first_path.to_string_lossy().as_ref()
-    );
+    let mut randomized_paths = queue_paths(&randomized_queue);
+    randomized_paths.sort();
+    let mut expected_paths = vec![
+        first_path.to_string_lossy().into_owned(),
+        second_path.to_string_lossy().into_owned(),
+    ];
+    expected_paths.sort();
+    assert_eq!(randomized_paths, expected_paths);
     let jumped = unsafe { call_json(player_app_queue_play(app, 1)) };
     assert_ok(&jumped);
     assert_eq!(
         jumped["data"]["current_track"]["path"],
-        first_path.to_string_lossy().as_ref()
+        randomized_queue["data"]["tracks"][1]["path"]
     );
     assert_eq!(jumped["data"]["queue_position"], 1);
     assert_eq!(jumped["data"]["is_playing"], true);
@@ -230,19 +298,22 @@ fn app_exposes_repeat_shuffle_and_empty_queue_snapshot_without_opening_audio() {
     };
     assert_ok(&repeat);
     assert_eq!(repeat["data"]["repeat_mode"], "one");
+    assert_eq!(repeat["data"]["playback_mode"], "repeat_one");
     assert_eq!(repeat["data"]["shuffle_enabled"], false);
     assert_eq!(repeat["data"]["queue_len"], 0);
     assert!(repeat["data"]["queue_position"].is_null());
 
     let shuffle = unsafe { call_json(player_app_set_shuffle(app, true)) };
     assert_ok(&shuffle);
-    assert_eq!(shuffle["data"]["repeat_mode"], "one");
+    assert_eq!(shuffle["data"]["repeat_mode"], "all");
+    assert_eq!(shuffle["data"]["playback_mode"], "shuffle");
     assert_eq!(shuffle["data"]["shuffle_enabled"], true);
 
     let queue = unsafe { call_json(player_app_queue(app)) };
     assert_ok(&queue);
     assert_eq!(queue["data"]["tracks"].as_array().unwrap().len(), 0);
-    assert_eq!(queue["data"]["repeat_mode"], "one");
+    assert_eq!(queue["data"]["repeat_mode"], "all");
+    assert_eq!(queue["data"]["playback_mode"], "shuffle");
     assert_eq!(queue["data"]["shuffle_enabled"], true);
 
     let invalid = unsafe {
@@ -357,6 +428,7 @@ fn app_queue_snapshot_tracks_current_event_index_and_modes() {
             is_playing: true,
             current_index: Some(1),
             position_ms: 1_234,
+            playback_mode: domain::PlaybackMode::Shuffle,
             repeat_mode: RepeatMode::All,
             shuffle: true,
         }));

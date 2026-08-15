@@ -2,9 +2,12 @@ use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use domain::{PlaybackLifecycle, RepeatMode, TrackViewKind};
+use domain::{
+    GlobalQueueSnapshot, PlaybackLifecycle, PlaybackMode, QueueItemId, RepeatMode, TrackViewKind,
+};
 use errors::{PlayerError, PlayerResult};
 use library_service::{copy_into_media_library, copy_related_sidecars};
+use playback_store_sqlite::PlaybackStateStore;
 use store_sqlite::LibraryStore;
 
 use crate::dto::{
@@ -24,57 +27,119 @@ use crate::{
 impl PlayerApp {
     pub(crate) fn restore_persisted_queue(&mut self) -> PlayerResult<()> {
         let store = self.store()?;
-        let restored = store.load_playback_queue()?;
-        let queue_tracks = track_dtos_with_artwork(&restored.tracks, &store, &self.db_path)?;
-        let current_index = if queue_tracks.is_empty() {
-            None
+        let mut playback_store = PlaybackStateStore::open(&self.playback_state_path)?;
+        playback_store.migrate_legacy_library(&self.db_path)?;
+        let (tracks, queue_state, position_ms) = if let Some(restored) = playback_store.load()? {
+            let library_tracks = store.tracks()?;
+            let mut resolved = Vec::with_capacity(restored.items.len());
+            for item in &restored.items {
+                let track = library_tracks
+                    .iter()
+                    .find(|track| track.primary_view_id.value() == item.primary_view_id)
+                    .or_else(|| library_tracks.iter().find(|track| track.path == item.path))
+                    .cloned();
+                if let Some(track) = track {
+                    resolved.push((item.internal_id, track));
+                }
+            }
+            if resolved.len() == restored.items.len() {
+                (
+                    resolved.into_iter().map(|(_, track)| track).collect(),
+                    restored.queue,
+                    restored.position_ms,
+                )
+            } else {
+                let ordered_ids = resolved.iter().map(|(id, _)| *id).collect::<Vec<_>>();
+                let queue_state = reconciled_queue_snapshot(
+                    &restored.queue,
+                    ordered_ids,
+                    restored.queue.current_id,
+                );
+                (
+                    resolved.into_iter().map(|(_, track)| track).collect(),
+                    queue_state,
+                    restored.position_ms,
+                )
+            }
         } else {
-            Some(
-                restored
-                    .current_index
-                    .unwrap_or(0)
-                    .min(queue_tracks.len() - 1),
+            (
+                Vec::new(),
+                legacy_queue_snapshot(0, None, RepeatMode::All, false),
+                0,
             )
         };
+        let queue_tracks = track_dtos_with_artwork(&tracks, &store, &self.db_path)?;
+        let current_index = queue_state.current_id.and_then(|id| {
+            queue_state
+                .ordered_ids
+                .iter()
+                .position(|candidate| *candidate == id)
+        });
 
         self.queue_tracks = queue_tracks;
+        self.queue_item_ids = queue_state.ordered_ids.clone();
         self.queue_current_index = current_index;
+        self.queue_state = Some(queue_state.clone());
         self.reset_queue_playback_order();
         self.current_track = current_index.and_then(|index| self.queue_tracks.get(index).cloned());
         self.position_ms = if current_index.is_some() {
-            restored.position_ms
+            position_ms
         } else {
             0
         };
         self.last_persisted_queue_position_ms = self.position_ms;
         self.last_persisted_queue_index = current_index;
-        self.repeat_mode = restored.repeat_mode;
-        self.shuffle_enabled = restored.shuffle_enabled;
+        self.playback_mode = queue_state.mode;
+        self.repeat_mode = if queue_state.mode == PlaybackMode::RepeatOne {
+            RepeatMode::One
+        } else {
+            RepeatMode::All
+        };
+        self.shuffle_enabled = queue_state.mode == PlaybackMode::Shuffle;
         self.is_playing = false;
         Ok(())
     }
 
     pub(crate) fn persist_queue_state(&mut self) -> PlayerResult<()> {
-        let paths = self
+        let library = self.store()?;
+        let tracks = self
             .queue_tracks
             .iter()
-            .map(|track| PathBuf::from(&track.path))
-            .collect::<Vec<_>>();
+            .map(|queued| {
+                library.track_by_path(&queued.path)?.ok_or_else(|| {
+                    PlayerError::store(format!("queued track is not in library: {}", queued.path))
+                })
+            })
+            .collect::<PlayerResult<Vec<_>>>()?;
+        self.reconcile_cached_queue_structure();
+        let queue_state = self.queue_state.clone().unwrap_or_else(|| {
+            legacy_queue_snapshot(
+                tracks.len(),
+                self.queue_current_index,
+                self.repeat_mode,
+                self.shuffle_enabled,
+            )
+        });
         let current_index = self
             .queue_current_index
-            .filter(|index| *index < paths.len());
+            .filter(|index| *index < tracks.len());
         let position_ms = if current_index.is_some() {
             self.position_ms
         } else {
             0
         };
-        self.store()?.save_playback_queue(
-            &paths,
-            current_index,
+        let queue_items = queue_state
+            .ordered_ids
+            .iter()
+            .copied()
+            .zip(tracks.iter())
+            .collect::<Vec<_>>();
+        PlaybackStateStore::open(&self.playback_state_path)?.save(
+            &queue_items,
+            &queue_state,
             position_ms,
-            self.repeat_mode,
-            self.shuffle_enabled,
         )?;
+        self.queue_state = Some(queue_state);
         self.last_persisted_queue_position_ms = position_ms;
         self.last_persisted_queue_index = current_index;
         Ok(())
@@ -249,6 +314,7 @@ impl PlayerApp {
     pub(crate) fn zero_out_library(&mut self) -> PlayerResult<Empty> {
         self.finish_active_session_best_effort("library_zero_out");
         self.reset_library_runtime_state();
+        PlaybackStateStore::open(&self.playback_state_path)?.clear()?;
         remove_library_storage(&self.db_path, &self.media_root)?;
         Ok(Empty {})
     }
@@ -293,8 +359,13 @@ impl PlayerApp {
         self.pending_session_end_reason = None;
         self.current_track = None;
         self.queue_tracks.clear();
+        self.queue_item_ids.clear();
         self.queue_current_index = None;
-        self.repeat_mode = RepeatMode::Off;
+        self.queue_playback_order.clear();
+        self.queue_playback_position = None;
+        self.queue_state = None;
+        self.playback_mode = PlaybackMode::Sequential;
+        self.repeat_mode = RepeatMode::All;
         self.shuffle_enabled = false;
         self.is_playing = false;
         self.position_ms = 0;
@@ -304,5 +375,51 @@ impl PlayerApp {
         self.loudness_status = None;
         self.last_error = None;
         self.playback_lifecycle = PlaybackLifecycle::default();
+    }
+}
+
+fn legacy_queue_snapshot(
+    queue_len: usize,
+    current_index: Option<usize>,
+    repeat_mode: RepeatMode,
+    shuffle: bool,
+) -> GlobalQueueSnapshot {
+    let ordered_ids = (1..=queue_len as u64)
+        .map(QueueItemId::from_value)
+        .collect::<Vec<_>>();
+    let mode = if repeat_mode == RepeatMode::One {
+        PlaybackMode::RepeatOne
+    } else if shuffle {
+        PlaybackMode::Shuffle
+    } else {
+        PlaybackMode::Sequential
+    };
+    GlobalQueueSnapshot {
+        current_id: current_index
+            .and_then(|index| ordered_ids.get(index).copied())
+            .or_else(|| ordered_ids.first().copied()),
+        next_internal_id: queue_len as u64 + 1,
+        ordered_ids,
+        mode,
+        shuffle_activation_pending: mode == PlaybackMode::Shuffle,
+        shuffle: None,
+    }
+}
+
+fn reconciled_queue_snapshot(
+    previous: &GlobalQueueSnapshot,
+    ordered_ids: Vec<QueueItemId>,
+    preferred_current: Option<QueueItemId>,
+) -> GlobalQueueSnapshot {
+    let current_id = preferred_current
+        .filter(|id| ordered_ids.contains(id))
+        .or_else(|| ordered_ids.first().copied());
+    GlobalQueueSnapshot {
+        ordered_ids,
+        next_internal_id: previous.next_internal_id,
+        current_id,
+        mode: previous.mode,
+        shuffle_activation_pending: previous.mode == PlaybackMode::Shuffle,
+        shuffle: None,
     }
 }

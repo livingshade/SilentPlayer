@@ -42,6 +42,7 @@ char *player_app_seek(PlayerApp *app, uint64_t position_ms);
 char *player_app_poll(PlayerApp *app);
 char *player_app_set_repeat_mode(PlayerApp *app, const char *repeat_mode);
 char *player_app_set_shuffle(PlayerApp *app, bool enabled);
+char *player_app_set_playback_mode(PlayerApp *app, const char *playback_mode);
 char *player_app_queue(PlayerApp *app);
 char *player_app_queue_play_next(PlayerApp *app, const char *path);
 char *player_app_queue_play(PlayerApp *app, size_t index);

@@ -73,6 +73,8 @@ dependencies = [
  "fingerprint",
  "library_fs",
  "library_service",
+ "playback_store_sqlite",
+ "rusqlite",
  "serde",
  "serde_json",
  "store_sqlite",
@@ -303,6 +305,7 @@ name = "domain"
 version = "0.1.0"
 dependencies = [
  "blake3",
+ "rand",
 ]
 
 [[package]]
@@ -916,6 +919,15 @@ name = "pkg-config"
 version = "0.3.33"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "19f132c84eca552bf34cab8ec81f1c1dcc229b811638f9d283dceabe58c5569e"
+
+[[package]]
+name = "playback_store_sqlite"
+version = "0.1.0"
+dependencies = [
+ "domain",
+ "errors",
+ "rusqlite",
+]
 
 [[package]]
 name = "prettyplease"

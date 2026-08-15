@@ -383,7 +383,6 @@ impl LibraryStore {
                     "track_artwork_refs",
                     "album_artwork_refs",
                     "track_notes",
-                    "playback_queue_items",
                 ] {
                     tx.execute(
                         &format!("UPDATE {table} SET track_path = ?2 WHERE track_path = ?1"),
@@ -408,10 +407,6 @@ impl LibraryStore {
 
     pub fn zero_out(&mut self) -> PlayerResult<()> {
         let tx = self.conn.transaction().map_err(to_store_error)?;
-        tx.execute("DELETE FROM playback_queue_items", [])
-            .map_err(to_store_error)?;
-        tx.execute("DELETE FROM playback_queue_state", [])
-            .map_err(to_store_error)?;
         tx.execute("DELETE FROM playlists", [])
             .map_err(to_store_error)?;
         tx.execute("DELETE FROM tracks", [])
@@ -462,19 +457,6 @@ impl LibraryStore {
                 .map_err(to_store_error)?;
             rows
         };
-        let removed_queue_positions = {
-            let mut stmt = tx
-                .prepare(
-                    "SELECT position FROM playback_queue_items WHERE track_path = ?1 ORDER BY position",
-                )
-                .map_err(to_store_error)?;
-            let rows = stmt
-                .query_map(params![path.as_str()], |row| row.get::<_, i64>(0))
-                .map_err(to_store_error)?
-                .collect::<Result<Vec<_>, _>>()
-                .map_err(to_store_error)?;
-            rows
-        };
         let deleted = tx
             .execute("DELETE FROM tracks WHERE path = ?1", params![path.as_str()])
             .map_err(to_store_error)?;
@@ -507,60 +489,6 @@ impl LibraryStore {
             tx.execute(
                 "UPDATE playlists SET updated_at_unix_seconds = ?2 WHERE id = ?1",
                 params![playlist_id, now_unix_seconds()],
-            )
-            .map_err(to_store_error)?;
-        }
-
-        let queue_paths = {
-            let mut stmt = tx
-                .prepare("SELECT track_path FROM playback_queue_items ORDER BY position")
-                .map_err(to_store_error)?;
-            let rows = stmt
-                .query_map([], |row| row.get::<_, String>(0))
-                .map_err(to_store_error)?
-                .collect::<Result<Vec<_>, _>>()
-                .map_err(to_store_error)?;
-            rows
-        };
-        tx.execute("DELETE FROM playback_queue_items", [])
-            .map_err(to_store_error)?;
-        for (position, queue_path) in queue_paths.iter().enumerate() {
-            tx.execute(
-                "INSERT INTO playback_queue_items (position, track_path) VALUES (?1, ?2)",
-                params![saturating_i64_from_u64(position as u64), queue_path],
-            )
-            .map_err(to_store_error)?;
-        }
-        if !removed_queue_positions.is_empty() {
-            let current_index = tx
-                .query_row(
-                    "SELECT current_index FROM playback_queue_state WHERE singleton_id = 1",
-                    [],
-                    |row| row.get::<_, Option<i64>>(0),
-                )
-                .optional()
-                .map_err(to_store_error)?
-                .flatten();
-            let adjusted_index = current_index.and_then(|current| {
-                if queue_paths.is_empty() {
-                    return None;
-                }
-                let removed_before = removed_queue_positions
-                    .iter()
-                    .filter(|position| **position < current)
-                    .count() as i64;
-                let shifted = current.saturating_sub(removed_before).max(0);
-                Some(shifted.min(queue_paths.len().saturating_sub(1) as i64))
-            });
-            tx.execute(
-                r#"
-                UPDATE playback_queue_state
-                SET current_index = ?1,
-                    position_ms = 0,
-                    updated_at_unix_seconds = ?2
-                WHERE singleton_id = 1
-                "#,
-                params![adjusted_index, now_unix_seconds()],
             )
             .map_err(to_store_error)?;
         }

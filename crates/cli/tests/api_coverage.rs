@@ -135,6 +135,10 @@ fn cli_contracts() -> BTreeMap<&'static str, &'static str> {
             "player_app_set_shuffle",
             "silent --cli playback shell: shuffle",
         ),
+        (
+            "player_app_set_playback_mode",
+            "silent --cli playback shell: mode",
+        ),
         ("player_app_queue", "silent --cli playback shell: queue"),
         (
             "player_app_queue_play_next",

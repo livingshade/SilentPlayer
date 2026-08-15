@@ -1,7 +1,7 @@
 use std::collections::HashSet;
 use std::path::Path;
 
-use domain::{RepeatMode, Track};
+use domain::{PlaybackMode, RepeatMode, Track};
 use errors::{PlayerError, PlayerResult};
 use store_sqlite::LibraryStore;
 
@@ -43,6 +43,10 @@ pub(super) fn repeat_mode_name(repeat_mode: RepeatMode) -> &'static str {
         RepeatMode::One => "one",
         RepeatMode::All => "all",
     }
+}
+
+pub(super) fn parse_playback_mode(value: &str) -> PlayerResult<PlaybackMode> {
+    PlaybackMode::parse(value).map_err(|error| PlayerError::metadata(error.to_string()))
 }
 
 pub(super) fn is_valid_queue_order(order: &[usize], queue_len: usize) -> bool {

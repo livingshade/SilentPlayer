@@ -3,8 +3,8 @@ use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
 use domain::{
-    GainDecision, NormalizationSettings, PlaybackCommand, PlaybackError, PlaybackState,
-    PlayerSession, RepeatMode, Track, TrackId,
+    GainDecision, GlobalQueueSnapshot, NormalizationSettings, PlaybackCommand, PlaybackError,
+    PlaybackMode, PlaybackState, PlayerSession, RepeatMode, Track, TrackId,
 };
 use errors::{PlayerError, PlayerResult};
 
@@ -48,6 +48,11 @@ enum EngineCommand {
         repeat_mode: RepeatMode,
         shuffle: bool,
     },
+    RestoreGlobalQueue {
+        queue: Vec<Track>,
+        snapshot: GlobalQueueSnapshot,
+        position_ms: u64,
+    },
     PlayQueue {
         queue: Vec<Track>,
         start_index: usize,
@@ -74,6 +79,7 @@ enum EngineCommand {
     Refresh,
     SetRepeatMode(RepeatMode),
     SetShuffle(bool),
+    SetPlaybackMode(PlaybackMode),
     Shutdown,
 }
 
@@ -84,6 +90,7 @@ pub enum PlaybackEvent {
         order: Vec<usize>,
         current_position: Option<usize>,
     },
+    QueueStateChanged(GlobalQueueSnapshot),
     TrackChanged(Option<Box<Track>>),
     GainChanged(Option<GainDecision>),
     PositionChanged(u64),
@@ -193,6 +200,19 @@ impl PlayerEngine {
         })
     }
 
+    pub fn restore_global_queue(
+        &self,
+        queue: Vec<Track>,
+        snapshot: GlobalQueueSnapshot,
+        position_ms: u64,
+    ) -> PlayerResult<()> {
+        self.execute(EngineCommand::RestoreGlobalQueue {
+            queue,
+            snapshot,
+            position_ms,
+        })
+    }
+
     pub fn play_queue(
         &self,
         queue: Vec<Track>,
@@ -264,6 +284,10 @@ impl PlayerEngine {
 
     pub fn set_shuffle(&self, enabled: bool) -> PlayerResult<()> {
         self.execute(EngineCommand::SetShuffle(enabled))
+    }
+
+    pub fn set_playback_mode(&self, mode: PlaybackMode) -> PlayerResult<()> {
+        self.execute(EngineCommand::SetPlaybackMode(mode))
     }
 
     pub fn recv_event_timeout(&self, timeout: Duration) -> Result<PlaybackEvent, RecvTimeoutError> {
@@ -440,6 +464,22 @@ fn handle_command<B: AudioBackend>(
             }
             Ok(())
         }
+        EngineCommand::RestoreGlobalQueue {
+            queue,
+            snapshot,
+            position_ms,
+        } => {
+            *loaded_track_id = None;
+            session
+                .restore_queue(queue, snapshot, position_ms)
+                .map_err(errors_from_playback)?;
+            if session.current_track().is_some() {
+                load_current_if_needed(session, backend, loaded_track_id)?;
+                backend.seek_to(position_ms)?;
+                backend.pause()?;
+            }
+            Ok(())
+        }
         EngineCommand::PlayQueue {
             queue,
             start_index,
@@ -561,6 +601,10 @@ fn handle_command<B: AudioBackend>(
             session.set_shuffle(enabled);
             Ok(())
         }
+        EngineCommand::SetPlaybackMode(mode) => {
+            session.set_playback_mode(mode);
+            Ok(())
+        }
         EngineCommand::Shutdown => unreachable!("handled before command dispatch"),
     }
 }
@@ -656,6 +700,7 @@ fn publish_snapshot<B: AudioBackend>(
         order: session.playback_order().to_vec(),
         current_position: session.playback_position(),
     });
+    let _ = event_tx.send(PlaybackEvent::QueueStateChanged(session.queue_snapshot()));
     let _ = event_tx.send(PlaybackEvent::TrackChanged(
         session.current_track().cloned().map(Box::new),
     ));
@@ -1050,6 +1095,45 @@ mod tests {
         engine.shutdown().unwrap();
 
         assert!(calls.values().is_empty());
+    }
+
+    #[test]
+    fn engine_defers_shuffle_materialization_until_next_track() {
+        let calls = Calls(Arc::new(Mutex::new(Vec::new())));
+        let backend_calls = calls.clone();
+        let engine = PlayerEngine::spawn(NormalizationSettings::default(), move || {
+            Ok(FakeBackend {
+                calls: backend_calls,
+                position_ms: Arc::new(AtomicU64::new(0)),
+                finished_sequence: Arc::new(Mutex::new(Vec::new())),
+            })
+        })
+        .unwrap();
+
+        engine
+            .load_queue(vec![track("a"), track("b"), track("c")], 0)
+            .unwrap();
+        drain_events(&engine);
+        engine.set_playback_mode(PlaybackMode::Shuffle).unwrap();
+        let pending = wait_for_event(&engine, |event| {
+            matches!(event, PlaybackEvent::QueueStateChanged(state)
+                if state.mode == PlaybackMode::Shuffle && state.shuffle_activation_pending)
+        });
+        let PlaybackEvent::QueueStateChanged(pending) = pending else {
+            unreachable!()
+        };
+        assert!(pending.shuffle.is_none());
+
+        engine.next().unwrap();
+        let active = wait_for_event(&engine, |event| {
+            matches!(event, PlaybackEvent::QueueStateChanged(state)
+                if state.mode == PlaybackMode::Shuffle && !state.shuffle_activation_pending)
+        });
+        let PlaybackEvent::QueueStateChanged(active) = active else {
+            unreachable!()
+        };
+        assert_eq!(active.shuffle.unwrap().cycles.len(), 3);
+        engine.shutdown().unwrap();
     }
 
     #[test]

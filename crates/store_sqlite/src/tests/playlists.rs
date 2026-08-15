@@ -97,15 +97,6 @@ fn deleting_track_cascades_references_and_normalizes_order() {
     store.set_favorite(&second.path, true).unwrap();
     store.record_playback(&second.path, 42, true).unwrap();
     store
-        .save_playback_queue(
-            &[first.path.clone(), second.path.clone(), third.path.clone()],
-            Some(1),
-            12_345,
-            RepeatMode::All,
-            true,
-        )
-        .unwrap();
-    store
         .set_track_artwork_reference(&second.path, &artwork_image(0, vec![1, 2, 3]))
         .unwrap();
 
@@ -123,19 +114,6 @@ fn deleting_track_cascades_references_and_normalizes_order() {
             .collect::<Vec<_>>(),
         vec![(&first.path, 0), (&third.path, 1)]
     );
-    let queue = store.load_playback_queue().unwrap();
-    assert_eq!(
-        queue
-            .tracks
-            .iter()
-            .map(|track| &track.path)
-            .collect::<Vec<_>>(),
-        vec![&first.path, &third.path]
-    );
-    assert_eq!(queue.current_index, Some(1));
-    assert_eq!(queue.position_ms, 0);
-    assert_eq!(queue.repeat_mode, RepeatMode::All);
-    assert!(queue.shuffle_enabled);
     assert_eq!(
         store
             .conn

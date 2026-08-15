@@ -147,6 +147,7 @@ queue remove <position>
 queue clear
 repeat off|one|all
 shuffle on|off
+mode repeat_one|sequential|shuffle
 lifecycle interruption-begin
 lifecycle interruption-end on|off
 lifecycle output-disconnected
@@ -154,7 +155,7 @@ quit
 ```
 
 Queue positions in the shell are 1-based. Leaving the shell preserves the queue, selected item,
-position, repeat mode, and shuffle mode; the next app or CLI session restores it paused. `stop`
+position, and playback mode; the next app or CLI session restores it paused. `stop`
 and `queue clear` explicitly clear the persisted queue.
 
 ## Target responsibilities

@@ -36,7 +36,7 @@ Swift/Apple 层负责：
 - 耳机、CarPlay、AirPlay、系统音量。
 - iOS 文件授权和沙盒访问。
 
-Apple 平台细节保持原生，队列和播放规则保持跨平台一致。Swift 不拥有第二套播放状态机。播放队列（曲目顺序、当前项、进度、循环和随机模式）由 Rust/SQLite 持久化，macOS、iPhone 和 CLI 共用 Play Next、Add to Queue、移动、删除和清空语义；正常退出后会以暂停状态恢复。
+Apple 平台细节保持原生，队列和播放规则保持跨平台一致。Swift 不拥有第二套播放状态机。播放队列（稳定内部 ID、曲目顺序、当前项、进度和播放模式）由 Rust 持久化到独立于 Library 的 SQLite 状态库，且不会进入曲库导出包；macOS、iPhone 和 CLI 共用 Play Next、Add to Queue、移动、删除和清空语义，正常退出后会以暂停状态恢复。
 
 歌单同样由 SQLite 持久化，保存封面引用、手动曲序与最近使用时间。完整资料库 package 直接携带这些表，导入时由 Rust 统一改写音乐文件路径，因此歌单在 macOS、iPhone 与 CLI 间可以正常导入导出。Apple 界面以最近 6 个歌单作为快捷入口，不再把收藏作为主要导航。
 

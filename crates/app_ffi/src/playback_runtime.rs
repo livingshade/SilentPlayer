@@ -1,7 +1,11 @@
+use std::collections::HashMap;
 use std::path::Path;
 
 use audio_rodio::RodioBackend;
-use domain::{NormalizationSettings, PlaybackLifecycleAction, Track};
+use domain::{
+    GlobalPlaybackQueue, GlobalQueueSnapshot, NormalizationSettings, PlaybackLifecycleAction,
+    PlaybackMode, QueueItemId, Track,
+};
 use engine::{PlaybackEvent, PlayerEngine};
 use errors::{PlayerError, PlayerResult};
 use store_sqlite::LibraryStore;
@@ -46,6 +50,7 @@ impl PlayerApp {
             )?;
         }
         self.queue_tracks = queue_tracks;
+        self.queue_item_ids.clear();
         self.reset_queue_playback_order();
         self.last_error = None;
         self.poll_events();
@@ -80,6 +85,7 @@ impl PlayerApp {
         play_next: bool,
     ) -> PlayerResult<PlaybackSnapshot> {
         self.poll_events();
+        self.reconcile_cached_queue_structure();
         let store = self.store()?;
         let track = store.track_by_path(path)?.ok_or_else(|| {
             PlayerError::store(format!("track is not in library: {}", path.display()))
@@ -91,59 +97,128 @@ impl PlayerApp {
 
         if let Some(existing_index) = existing_index {
             if play_next {
-                let current_index = self.queue_current_index.unwrap_or(0);
-                if existing_index != current_index {
-                    let target_index = if existing_index < current_index {
-                        current_index
-                    } else {
-                        (current_index + 1).min(self.queue_tracks.len() - 1)
-                    };
-                    if let Some(engine) = self.engine.as_ref() {
-                        engine.move_queue_item(existing_index, target_index)?;
-                    } else {
-                        self.queue_current_index = moved_queue_index(
-                            self.queue_current_index,
-                            existing_index,
-                            target_index,
-                        );
+                if let Some(engine) = self.engine.as_ref() {
+                    engine.insert_next(vec![track])?;
+                    if !self.shuffle_enabled {
+                        self.move_cached_item_after_current(existing_index);
                     }
-                    let queued = self.queue_tracks.remove(existing_index);
-                    self.queue_tracks.insert(target_index, queued);
                     self.poll_events();
+                } else {
+                    let mut queue = self.cached_global_queue()?;
+                    queue.insert_next(vec![track]);
+                    self.adopt_cached_global_queue(&queue)?;
                 }
             }
+            self.reconcile_cached_queue_structure();
             self.persist_queue_state()?;
             return Ok(self.snapshot());
         }
 
-        let dto = track_to_dto_with_artwork(&track, &store, &self.db_path)?;
-        let insert_index = if play_next {
-            self.queue_current_index
-                .map(|index| (index + 1).min(self.queue_tracks.len()))
-                .unwrap_or(self.queue_tracks.len())
-        } else {
-            self.queue_tracks.len()
-        };
-        if play_next {
-            if let Some(engine) = self.engine.as_ref() {
+        if let Some(engine) = self.engine.as_ref() {
+            let dto = track_to_dto_with_artwork(&track, &store, &self.db_path)?;
+            if play_next {
                 engine.insert_next(vec![track])?;
-            }
-            self.queue_tracks.insert(insert_index, dto);
-        } else {
-            if let Some(engine) = self.engine.as_ref() {
+                if self.shuffle_enabled {
+                    self.queue_tracks.push(dto);
+                } else {
+                    let insert_index = self
+                        .queue_current_index
+                        .map(|index| (index + 1).min(self.queue_tracks.len()))
+                        .unwrap_or(self.queue_tracks.len());
+                    self.queue_tracks.insert(insert_index, dto);
+                }
+            } else {
                 engine.append_to_queue(vec![track])?;
+                self.queue_tracks.push(dto);
             }
-            self.queue_tracks.push(dto);
+            self.poll_events();
+        } else {
+            let mut queue = self.cached_global_queue()?;
+            if play_next {
+                queue.insert_next(vec![track]);
+            } else {
+                queue.append(vec![track]);
+            }
+            self.adopt_cached_global_queue(&queue)?;
         }
         if self.queue_current_index.is_none() {
             self.queue_current_index = Some(0);
             self.current_track = self.queue_tracks.first().cloned();
             self.position_ms = 0;
         }
-        self.reset_queue_playback_order();
-        self.poll_events();
+        self.reconcile_cached_queue_structure();
         self.persist_queue_state()?;
         Ok(self.snapshot())
+    }
+
+    fn move_cached_item_after_current(&mut self, existing_index: usize) {
+        let current_index = self.queue_current_index.unwrap_or(0);
+        if existing_index == current_index {
+            return;
+        }
+        let target_index = if existing_index < current_index {
+            current_index
+        } else {
+            (current_index + 1).min(self.queue_tracks.len() - 1)
+        };
+        self.queue_current_index =
+            moved_queue_index(self.queue_current_index, existing_index, target_index);
+        let queued = self.queue_tracks.remove(existing_index);
+        self.queue_tracks.insert(target_index, queued);
+        if existing_index < self.queue_item_ids.len() && target_index < self.queue_item_ids.len() {
+            let id = self.queue_item_ids.remove(existing_index);
+            self.queue_item_ids.insert(target_index, id);
+        }
+    }
+
+    fn cached_global_queue(&self) -> PlayerResult<GlobalPlaybackQueue> {
+        let store = self.store()?;
+        let tracks = self
+            .queue_tracks
+            .iter()
+            .map(|queued| {
+                store.track_by_path(&queued.path)?.ok_or_else(|| {
+                    PlayerError::store(format!("queued track is not in library: {}", queued.path))
+                })
+            })
+            .collect::<PlayerResult<Vec<_>>>()?;
+        let snapshot = self.queue_state.clone().unwrap_or_else(|| {
+            fallback_queue_snapshot(tracks.len(), self.queue_current_index, self.playback_mode)
+        });
+        let mut queue = GlobalPlaybackQueue::new();
+        queue
+            .restore(tracks, snapshot)
+            .map_err(|error| PlayerError::store(error.to_string()))?;
+        Ok(queue)
+    }
+
+    fn adopt_cached_global_queue(&mut self, queue: &GlobalPlaybackQueue) -> PlayerResult<()> {
+        let mut dto_by_id = self
+            .queue_item_ids
+            .iter()
+            .copied()
+            .zip(self.queue_tracks.iter().cloned())
+            .collect::<HashMap<QueueItemId, TrackDto>>();
+        let store = self.store()?;
+        let mut queue_tracks = Vec::with_capacity(queue.len());
+        for (id, track) in queue.queue_items() {
+            let dto = if let Some(dto) = dto_by_id.remove(&id) {
+                dto
+            } else {
+                track_to_dto_with_artwork(track, &store, &self.db_path)?
+            };
+            queue_tracks.push(dto);
+        }
+        self.queue_tracks = queue_tracks;
+        self.queue_item_ids = queue.ordered_ids();
+        self.queue_current_index = queue.current_index();
+        self.queue_playback_order = queue.playback_order();
+        self.queue_playback_position = queue.playback_position();
+        self.queue_state = Some(queue.snapshot());
+        self.current_track = self
+            .queue_current_index
+            .and_then(|index| self.queue_tracks.get(index).cloned());
+        Ok(())
     }
 
     pub(crate) fn play_queue_item(
@@ -191,8 +266,13 @@ impl PlayerApp {
         }
         let track = self.queue_tracks.remove(from);
         self.queue_tracks.insert(to, track);
+        if from < self.queue_item_ids.len() && to < self.queue_item_ids.len() {
+            let id = self.queue_item_ids.remove(from);
+            self.queue_item_ids.insert(to, id);
+        }
         self.reset_queue_playback_order();
         self.poll_events();
+        self.reconcile_cached_queue_structure();
         self.persist_queue_state()?;
         Ok(self.snapshot())
     }
@@ -215,6 +295,9 @@ impl PlayerApp {
             engine.remove_queue_item(index)?;
         }
         self.queue_tracks.remove(index);
+        if index < self.queue_item_ids.len() {
+            self.queue_item_ids.remove(index);
+        }
         if self.engine.is_none() {
             self.queue_current_index = match self.queue_current_index {
                 _ if self.queue_tracks.is_empty() => None,
@@ -231,6 +314,7 @@ impl PlayerApp {
         }
         self.reset_queue_playback_order();
         self.poll_events();
+        self.reconcile_cached_queue_structure();
         self.persist_queue_state()?;
         Ok(self.snapshot())
     }
@@ -242,12 +326,14 @@ impl PlayerApp {
             engine.clear_queue()?;
         }
         self.queue_tracks.clear();
+        self.queue_item_ids.clear();
         self.queue_current_index = None;
         self.queue_playback_order.clear();
         self.queue_playback_position = None;
         self.is_playing = false;
         self.position_ms = 0;
         self.poll_events();
+        self.reconcile_cached_queue_structure();
         if !had_engine {
             self.current_track = None;
         }
@@ -311,26 +397,19 @@ impl PlayerApp {
                         ))
                     })?);
                 }
-                Some((
-                    tracks,
-                    self.queue_current_index.unwrap_or(0),
-                    self.position_ms,
-                    self.repeat_mode,
-                    self.shuffle_enabled,
-                ))
+                Some((tracks, self.queue_state.clone(), self.position_ms))
             };
             let engine =
                 PlayerEngine::spawn(NormalizationSettings::default(), RodioBackend::open_default)?;
-            if let Some((tracks, current_index, position_ms, repeat_mode, shuffle_enabled)) =
-                restored
-            {
-                engine.restore_queue(
-                    tracks,
-                    current_index,
-                    position_ms,
-                    repeat_mode,
-                    shuffle_enabled,
-                )?;
+            if let Some((tracks, queue_state, position_ms)) = restored {
+                let queue_state = queue_state.unwrap_or_else(|| {
+                    fallback_queue_snapshot(
+                        tracks.len(),
+                        self.queue_current_index,
+                        self.playback_mode,
+                    )
+                });
+                engine.restore_global_queue(tracks, queue_state, position_ms)?;
             }
             self.engine = Some(engine);
             self.poll_events();
@@ -393,6 +472,7 @@ impl PlayerApp {
                 self.position_ms = state.position_ms;
                 self.repeat_mode = state.repeat_mode;
                 self.shuffle_enabled = state.shuffle;
+                self.playback_mode = state.playback_mode;
             }
             PlaybackEvent::QueueOrderChanged {
                 order,
@@ -405,6 +485,10 @@ impl PlayerApp {
                 } else {
                     self.reset_queue_playback_order();
                 }
+            }
+            PlaybackEvent::QueueStateChanged(queue_state) => {
+                self.queue_item_ids = queue_state.ordered_ids.clone();
+                self.queue_state = Some(queue_state);
             }
             PlaybackEvent::TrackChanged(track) => {
                 let next_track = match track
@@ -482,6 +566,7 @@ impl PlayerApp {
             current_track: self.current_track.clone(),
             queue_len: self.queue_tracks.len(),
             queue_position: self.queue_playback_position,
+            playback_mode: self.playback_mode.as_str().to_owned(),
             repeat_mode: repeat_mode_name(self.repeat_mode).to_owned(),
             shuffle_enabled: self.shuffle_enabled,
             gain_db: self.gain_db,
@@ -490,5 +575,73 @@ impl PlayerApp {
             interruption_active: self.playback_lifecycle.interruption_active(),
             resume_after_interruption: self.playback_lifecycle.resume_after_interruption(),
         }
+    }
+
+    pub(crate) fn reconcile_cached_queue_structure(&mut self) {
+        let mut next_id = self
+            .queue_state
+            .as_ref()
+            .map_or(1, |state| state.next_internal_id.max(1));
+        while self.queue_item_ids.len() < self.queue_tracks.len() {
+            self.queue_item_ids
+                .push(domain::QueueItemId::from_value(next_id));
+            next_id = next_id.saturating_add(1);
+        }
+        self.queue_item_ids.truncate(self.queue_tracks.len());
+        let current_id = self
+            .queue_current_index
+            .and_then(|index| self.queue_item_ids.get(index).copied());
+        let structure_matches = self
+            .queue_state
+            .as_ref()
+            .is_some_and(|state| state.ordered_ids == self.queue_item_ids);
+        let stored_mode = self
+            .queue_state
+            .as_ref()
+            .map_or(PlaybackMode::Sequential, |state| state.mode);
+        let stored_shuffle_pending = self
+            .queue_state
+            .as_ref()
+            .is_some_and(|state| state.shuffle_activation_pending);
+        let shuffle = if structure_matches {
+            self.queue_state
+                .as_ref()
+                .and_then(|state| state.shuffle.clone())
+        } else {
+            None
+        };
+        self.queue_state = Some(GlobalQueueSnapshot {
+            ordered_ids: self.queue_item_ids.clone(),
+            next_internal_id: next_id,
+            current_id,
+            mode: self.playback_mode,
+            shuffle_activation_pending: self.playback_mode == PlaybackMode::Shuffle
+                && (shuffle.is_none()
+                    || stored_mode != PlaybackMode::Shuffle
+                    || stored_shuffle_pending),
+            shuffle,
+        });
+    }
+}
+
+fn fallback_queue_snapshot(
+    queue_len: usize,
+    current_index: Option<usize>,
+    mode: PlaybackMode,
+) -> GlobalQueueSnapshot {
+    use domain::QueueItemId;
+
+    let ordered_ids = (1..=queue_len as u64)
+        .map(QueueItemId::from_value)
+        .collect::<Vec<_>>();
+    GlobalQueueSnapshot {
+        current_id: current_index
+            .and_then(|index| ordered_ids.get(index).copied())
+            .or_else(|| ordered_ids.first().copied()),
+        next_internal_id: queue_len as u64 + 1,
+        ordered_ids,
+        mode,
+        shuffle_activation_pending: mode == PlaybackMode::Shuffle,
+        shuffle: None,
     }
 }

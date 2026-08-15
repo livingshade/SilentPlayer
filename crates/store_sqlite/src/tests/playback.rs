@@ -1,51 +1,27 @@
 use super::*;
 
 #[test]
-fn persists_playback_queue_and_updates_exported_track_paths() {
-    let mut store = LibraryStore::in_memory().unwrap();
-    let first = Track::from_path("/old-library/a.ogg".into());
-    let second = Track::from_path("/old-library/b.ogg".into());
-    store
-        .upsert_tracks(&[first.clone(), second.clone()])
-        .unwrap();
-    store
-        .save_playback_queue(
-            &[first.path.clone(), second.path.clone()],
-            Some(1),
-            2_345,
-            RepeatMode::All,
-            true,
+fn library_database_contains_no_playback_queue_schema() {
+    let store = LibraryStore::in_memory().unwrap();
+    let queue_tables: i64 = store
+        .conn
+        .query_row(
+            r#"
+            SELECT COUNT(*) FROM sqlite_master
+            WHERE type = 'table' AND name IN (
+                'playback_queue_state',
+                'playback_queue_items',
+                'queue_state',
+                'queue_items',
+                'shuffle_entries'
+            )
+            "#,
+            [],
+            |row| row.get(0),
         )
         .unwrap();
 
-    let restored = store.load_playback_queue().unwrap();
-    assert_eq!(
-        restored
-            .tracks
-            .iter()
-            .map(|track| track.path.clone())
-            .collect::<Vec<_>>(),
-        vec![first.path.clone(), second.path.clone()]
-    );
-    assert_eq!(restored.current_index, Some(1));
-    assert_eq!(restored.position_ms, 2_345);
-    assert_eq!(restored.repeat_mode, RepeatMode::All);
-    assert!(restored.shuffle_enabled);
-
-    let relocated = PathBuf::from("/new-library/b.ogg");
-    store
-        .replace_track_paths(&[(second.path.clone(), relocated.clone())])
-        .unwrap();
-    assert_eq!(
-        store.load_playback_queue().unwrap().tracks[1].path,
-        relocated
-    );
-
-    store.zero_out().unwrap();
-    let empty = store.load_playback_queue().unwrap();
-    assert!(empty.tracks.is_empty());
-    assert_eq!(empty.current_index, None);
-    assert_eq!(empty.position_ms, 0);
+    assert_eq!(queue_tables, 0);
 }
 
 #[test]

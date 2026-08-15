@@ -234,6 +234,25 @@ fn app_exports_zeroes_and_imports_a_complete_library_package() {
     assert_eq!(exported["data"]["sidecar_files"], 2);
     assert!(package_root.join(LIBRARY_PACKAGE_DATABASE_FILE).is_file());
     assert!(package_root.join(LIBRARY_PACKAGE_MANIFEST_FILE).is_file());
+    let package_database =
+        rusqlite::Connection::open(package_root.join(LIBRARY_PACKAGE_DATABASE_FILE)).unwrap();
+    let exported_queue_tables: i64 = package_database
+        .query_row(
+            r#"
+            SELECT COUNT(*) FROM sqlite_master
+            WHERE type = 'table' AND name IN (
+                'playback_queue_state',
+                'playback_queue_items',
+                'queue_state',
+                'queue_items',
+                'shuffle_entries'
+            )
+            "#,
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(exported_queue_tables, 0);
     unsafe { player_app_destroy(source_app) };
 
     let target_root = temp_dir("library_package_target");
@@ -494,18 +513,16 @@ fn app_deletes_track_from_library_and_managed_storage_via_ffi() {
         store.add_playlist_track("Road", &kept.path).unwrap();
         store.set_favorite(&deleted.path, true).unwrap();
         store.record_playback(&deleted.path, 42, true).unwrap();
-        store
-            .save_playback_queue(
-                &[deleted.path.clone(), kept.path.clone()],
-                Some(0),
-                500,
-                RepeatMode::Off,
-                false,
-            )
-            .unwrap();
     }
 
     let app = create_app(&db_path, &media_root);
+    assert_ok(&unsafe {
+        call_json(player_app_queue_add(
+            app,
+            c_string_arg(&deleted_path).as_ptr(),
+        ))
+    });
+    assert_ok(&unsafe { call_json(player_app_queue_add(app, c_string_arg(&kept_path).as_ptr())) });
     let deleted = unsafe {
         call_json(player_app_delete_from_library(
             app,
@@ -530,16 +547,9 @@ fn app_deletes_track_from_library_and_managed_storage_via_ffi() {
     );
     assert!(store.favorite_tracks().unwrap().is_empty());
     assert!(store.play_history(10).unwrap().is_empty());
-    assert_eq!(
-        store
-            .load_playback_queue()
-            .unwrap()
-            .tracks
-            .into_iter()
-            .map(|track| track.path)
-            .collect::<Vec<_>>(),
-        vec![kept_path.clone()]
-    );
+    let queue = unsafe { call_json(player_app_queue(app)) };
+    assert_ok(&queue);
+    assert_eq!(queue_paths(&queue), vec![path_to_string_lossy(&kept_path)]);
     assert!(!deleted_path.exists());
     assert!(!lyrics_path.exists());
     assert!(!track_cover_path.exists());

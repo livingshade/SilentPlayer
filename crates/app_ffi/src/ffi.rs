@@ -347,6 +347,18 @@ pub unsafe extern "C" fn player_app_set_shuffle(app: *mut PlayerApp, enabled: bo
 }
 
 #[no_mangle]
+pub unsafe extern "C" fn player_app_set_playback_mode(
+    app: *mut PlayerApp,
+    playback_mode: *const c_char,
+) -> *mut c_char {
+    ffi_result(|| {
+        let app = app_mut(app)?;
+        let playback_mode = c_string(playback_mode)?;
+        app.service_set_playback_mode(&playback_mode)
+    })
+}
+
+#[no_mangle]
 pub unsafe extern "C" fn player_app_queue(app: *mut PlayerApp) -> *mut c_char {
     ffi_result(|| {
         let app = app_mut(app)?;

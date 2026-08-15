@@ -93,6 +93,7 @@ pub(super) struct PlaybackSnapshot {
     pub(super) current_track: Option<TrackDto>,
     pub(super) queue_len: usize,
     pub(super) queue_position: Option<usize>,
+    pub(super) playback_mode: String,
     pub(super) repeat_mode: String,
     pub(super) shuffle_enabled: bool,
     pub(super) gain_db: Option<f32>,
@@ -106,6 +107,7 @@ pub(super) struct PlaybackSnapshot {
 pub(super) struct PlaybackQueueDto {
     pub(super) tracks: Vec<TrackDto>,
     pub(super) current_index: Option<usize>,
+    pub(super) playback_mode: String,
     pub(super) repeat_mode: String,
     pub(super) shuffle_enabled: bool,
 }

@@ -1,9 +1,13 @@
+pub mod global_queue;
 pub mod lifecycle;
 pub mod loudness;
 pub mod model;
 pub mod playback;
 pub mod playback_error;
 
+pub use global_queue::{
+    GlobalPlaybackQueue, GlobalQueueSnapshot, PlaybackMode, QueueItemId, ShuffleQueueSnapshot,
+};
 pub use lifecycle::{PlaybackLifecycle, PlaybackLifecycleAction};
 pub use loudness::{
     gain_for_track, GainDecision, LoudnessStatus, NormalizationMode, NormalizationSettings,
