@@ -210,6 +210,13 @@ fn app_plays_only_the_requested_playlist_with_explicit_modes() {
     assert_eq!(jumped["data"]["queue_position"], 1);
     assert_eq!(jumped["data"]["is_playing"], true);
 
+    let repeat_one = unsafe {
+        call_json(player_app_set_playback_mode(
+            app,
+            c_string_arg("repeat_one").as_ptr(),
+        ))
+    };
+    assert_ok(&repeat_one);
     let sequential = unsafe {
         call_json(player_app_play_playlist(
             app,
@@ -224,6 +231,8 @@ fn app_plays_only_the_requested_playlist_with_explicit_modes() {
         first_path.to_string_lossy().as_ref()
     );
     assert_eq!(sequential["data"]["shuffle_enabled"], false);
+    assert_eq!(sequential["data"]["playback_mode"], "sequential");
+    assert_eq!(sequential["data"]["repeat_mode"], "all");
 
     let empty = unsafe {
         call_json(player_app_play_playlist(

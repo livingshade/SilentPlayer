@@ -8,6 +8,7 @@ extension AppModel {
             playback.queue = queue.tracks
             playback.queueCount = queue.tracks.count
             playback.queuePosition = queue.currentIndex
+            playback.playbackMode = queue.playbackMode
             playback.repeatMode = queue.repeatMode
             playback.isShuffleEnabled = queue.shuffleEnabled
         } catch {
@@ -25,8 +26,13 @@ extension AppModel {
         do {
             let previousTrackID = playback.nowPlaying?.id
             let previousPositionMS = playback.elapsedMS
+            let previousPlaybackMode = playback.playbackMode
             let snapshot = try await invoke(priority: .utility) { try $0.poll() }
             apply(snapshot: snapshot)
+            if previousTrackID != snapshot.currentTrack?.id
+                || previousPlaybackMode != snapshot.playbackMode {
+                await refreshQueue()
+            }
             publishPlaybackPositionDiscontinuity(
                 previousTrackID: previousTrackID,
                 previousPositionMS: previousPositionMS

@@ -177,6 +177,9 @@ extension AppModel {
             playback.isAudioInterrupted = snapshot.interruptionActive
         }
         resumeAfterAudioInterruption = snapshot.resumeAfterInterruption
+        if playback.playbackMode != snapshot.playbackMode {
+            playback.playbackMode = snapshot.playbackMode
+        }
         if playback.repeatMode != snapshot.repeatMode {
             playback.repeatMode = snapshot.repeatMode
         }

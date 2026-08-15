@@ -25,6 +25,7 @@ struct PlaybackQueueSheet: View {
                 } else {
                     ForEach(Array(model.playback.queue.enumerated()), id: \.element.id) { index, track in
                         queueRow(track, at: index)
+                            .moveDisabled(model.playback.playbackMode == .shuffle)
                     }
                     .onMove(perform: move)
                     .onDelete { offsets in
@@ -42,6 +43,26 @@ struct PlaybackQueueSheet: View {
                     Button("Done") {
                         dismiss()
                     }
+                }
+                ToolbarItem(placement: .primaryAction) {
+                    Menu {
+                        ForEach(PlaybackMode.allCases) { mode in
+                            Button {
+                                Task { await model.setPlaybackMode(mode) }
+                            } label: {
+                                Label(
+                                    mode.label,
+                                    systemImage: model.playback.playbackMode == mode ? "checkmark" : mode.systemImage
+                                )
+                            }
+                        }
+                    } label: {
+                        Label(
+                            model.playback.playbackMode.label,
+                            systemImage: model.playback.playbackMode.systemImage
+                        )
+                    }
+                    .help("Playback order: \(model.playback.playbackMode.label)")
                 }
                 ToolbarItem(placement: .destructiveAction) {
                     Button("Clear", role: .destructive) {
@@ -92,7 +113,7 @@ struct PlaybackQueueSheet: View {
                 Image(systemName: "arrow.up")
             }
             .buttonStyle(.borderless)
-            .disabled(index == 0)
+            .disabled(index == 0 || model.playback.playbackMode == .shuffle)
             .help("Move up")
 
             Button {
@@ -101,7 +122,10 @@ struct PlaybackQueueSheet: View {
                 Image(systemName: "arrow.down")
             }
             .buttonStyle(.borderless)
-            .disabled(index + 1 >= model.playback.queue.count)
+            .disabled(
+                index + 1 >= model.playback.queue.count
+                    || model.playback.playbackMode == .shuffle
+            )
             .help("Move down")
 
             Button(role: .destructive) {

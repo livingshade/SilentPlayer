@@ -69,6 +69,7 @@ public struct PlaybackSnapshot: Hashable, Sendable {
     public let currentTrack: TrackItem?
     public let queueLen: Int
     public let queuePosition: Int?
+    public let playbackMode: PlaybackMode
     public let repeatMode: PlaybackRepeatMode
     public let shuffleEnabled: Bool
     public let gainDB: Double?
@@ -81,6 +82,7 @@ public struct PlaybackSnapshot: Hashable, Sendable {
 public struct PlaybackQueue: Hashable, Sendable {
     public let tracks: [TrackItem]
     public let currentIndex: Int?
+    public let playbackMode: PlaybackMode
     public let repeatMode: PlaybackRepeatMode
     public let shuffleEnabled: Bool
 }
@@ -675,6 +677,17 @@ public final class RustPlayerClient: @unchecked Sendable {
         }
     }
 
+    public func setPlaybackMode(_ playbackMode: PlaybackMode) throws -> PlaybackSnapshot {
+        try sync {
+            try playbackMode.apiValue.withCString { playbackModeValue in
+                try decode(
+                    player_app_set_playback_mode(app, playbackModeValue),
+                    as: PlaybackSnapshotDTO.self
+                ).model
+            }
+        }
+    }
+
     public func queueSnapshot() throws -> PlaybackQueue {
         try sync {
             try decode(player_app_queue(app), as: PlaybackQueueDTO.self).model
@@ -1212,6 +1225,7 @@ private struct PlaybackSnapshotDTO: Decodable {
     let currentTrack: TrackDTO?
     let queueLen: Int
     let queuePosition: Int?
+    let playbackMode: PlaybackMode
     let repeatMode: PlaybackRepeatMode
     let shuffleEnabled: Bool
     let gainDb: Double?
@@ -1227,6 +1241,7 @@ private struct PlaybackSnapshotDTO: Decodable {
             currentTrack: currentTrack?.model,
             queueLen: queueLen,
             queuePosition: queuePosition,
+            playbackMode: playbackMode,
             repeatMode: repeatMode,
             shuffleEnabled: shuffleEnabled,
             gainDB: gainDb,
@@ -1241,6 +1256,7 @@ private struct PlaybackSnapshotDTO: Decodable {
 private struct PlaybackQueueDTO: Decodable {
     let tracks: [TrackDTO]
     let currentIndex: Int?
+    let playbackMode: PlaybackMode
     let repeatMode: PlaybackRepeatMode
     let shuffleEnabled: Bool
 
@@ -1248,6 +1264,7 @@ private struct PlaybackQueueDTO: Decodable {
         PlaybackQueue(
             tracks: tracks.map(\.model),
             currentIndex: currentIndex,
+            playbackMode: playbackMode,
             repeatMode: repeatMode,
             shuffleEnabled: shuffleEnabled
         )

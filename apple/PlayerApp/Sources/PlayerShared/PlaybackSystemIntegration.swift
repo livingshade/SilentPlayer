@@ -210,14 +210,13 @@ public final class IOSPlaybackSystemIntegration: NSObject, PlaybackSystemIntegra
             }
             .store(in: &cancellables)
 
-        Publishers.CombineLatest4(
+        Publishers.CombineLatest3(
             model.playback.$queueCount.removeDuplicates(),
             model.playback.$isAudioInterrupted.removeDuplicates(),
-            model.playback.$repeatMode.removeDuplicates(),
-            model.playback.$isShuffleEnabled.removeDuplicates()
+            model.playback.$playbackMode.removeDuplicates()
         )
         .dropFirst()
-        .sink { [weak self] _, _, _, _ in
+        .sink { [weak self] _, _, _ in
             Task { @MainActor [weak self] in
                 self?.updateRemoteCommandAvailability()
             }
@@ -336,16 +335,8 @@ public final class IOSPlaybackSystemIntegration: NSObject, PlaybackSystemIntegra
             guard let event = event as? MPChangeRepeatModeCommandEvent else {
                 return
             }
-            let mode: PlaybackRepeatMode
-            switch event.repeatType {
-            case .all:
-                mode = .all
-            case .one:
-                mode = .one
-            default:
-                mode = .off
-            }
-            await model.setRepeatMode(mode)
+            let mode: PlaybackMode = event.repeatType == .one ? .repeatOne : .sequential
+            await model.setPlaybackMode(mode)
         }
         register(
             center.changeShuffleModeCommand,
@@ -355,8 +346,10 @@ public final class IOSPlaybackSystemIntegration: NSObject, PlaybackSystemIntegra
                 return
             }
             let shouldEnable = event.shuffleType == .items
-            if model.playback.isShuffleEnabled != shouldEnable {
-                await model.toggleShuffle()
+            if shouldEnable {
+                await model.setPlaybackMode(.shuffle)
+            } else if model.playback.playbackMode == .shuffle {
+                await model.setPlaybackMode(.sequential)
             }
         }
     }
@@ -408,13 +401,13 @@ public final class IOSPlaybackSystemIntegration: NSObject, PlaybackSystemIntegra
         center.previousTrackCommand.isEnabled = model.playback.queueCount > 1
         center.changePlaybackPositionCommand.isEnabled = model.playback.nowPlaying?.durationMS != nil
         center.changeRepeatModeCommand.isEnabled = hasTrack
-        center.changeRepeatModeCommand.currentRepeatType = switch model.playback.repeatMode {
-        case .off: .off
-        case .all: .all
-        case .one: .one
+        center.changeRepeatModeCommand.currentRepeatType = switch model.playback.playbackMode {
+        case .repeatOne: .one
+        case .sequential, .shuffle: .off
         }
         center.changeShuffleModeCommand.isEnabled = model.playback.queueCount > 1
-        center.changeShuffleModeCommand.currentShuffleType = model.playback.isShuffleEnabled ? .items : .off
+        center.changeShuffleModeCommand.currentShuffleType =
+            model.playback.playbackMode == .shuffle ? .items : .off
     }
 
     private func updateNowPlayingInfo() {
@@ -558,14 +551,13 @@ public final class MacPlaybackSystemIntegration: NSObject, PlaybackSystemIntegra
             }
             .store(in: &cancellables)
 
-        Publishers.CombineLatest4(
+        Publishers.CombineLatest3(
             model.playback.$queueCount.removeDuplicates(),
             model.playback.$isAudioInterrupted.removeDuplicates(),
-            model.playback.$repeatMode.removeDuplicates(),
-            model.playback.$isShuffleEnabled.removeDuplicates()
+            model.playback.$playbackMode.removeDuplicates()
         )
         .dropFirst()
-        .sink { [weak self] _, _, _, _ in
+        .sink { [weak self] _, _, _ in
             Task { @MainActor [weak self] in
                 self?.updateRemoteCommandAvailability()
             }
@@ -625,16 +617,8 @@ public final class MacPlaybackSystemIntegration: NSObject, PlaybackSystemIntegra
             guard let event = event as? MPChangeRepeatModeCommandEvent else {
                 return
             }
-            let mode: PlaybackRepeatMode
-            switch event.repeatType {
-            case .all:
-                mode = .all
-            case .one:
-                mode = .one
-            default:
-                mode = .off
-            }
-            await model.setRepeatMode(mode)
+            let mode: PlaybackMode = event.repeatType == .one ? .repeatOne : .sequential
+            await model.setPlaybackMode(mode)
         }
         register(
             center.changeShuffleModeCommand,
@@ -644,8 +628,10 @@ public final class MacPlaybackSystemIntegration: NSObject, PlaybackSystemIntegra
                 return
             }
             let shouldEnable = event.shuffleType == .items
-            if model.playback.isShuffleEnabled != shouldEnable {
-                await model.toggleShuffle()
+            if shouldEnable {
+                await model.setPlaybackMode(.shuffle)
+            } else if model.playback.playbackMode == .shuffle {
+                await model.setPlaybackMode(.sequential)
             }
         }
     }
@@ -698,13 +684,13 @@ public final class MacPlaybackSystemIntegration: NSObject, PlaybackSystemIntegra
         center.previousTrackCommand.isEnabled = model.playback.queueCount > 1
         center.changePlaybackPositionCommand.isEnabled = model.playback.nowPlaying?.durationMS != nil
         center.changeRepeatModeCommand.isEnabled = hasTrack
-        center.changeRepeatModeCommand.currentRepeatType = switch model.playback.repeatMode {
-        case .off: .off
-        case .all: .all
-        case .one: .one
+        center.changeRepeatModeCommand.currentRepeatType = switch model.playback.playbackMode {
+        case .repeatOne: .one
+        case .sequential, .shuffle: .off
         }
         center.changeShuffleModeCommand.isEnabled = model.playback.queueCount > 1
-        center.changeShuffleModeCommand.currentShuffleType = model.playback.isShuffleEnabled ? .items : .off
+        center.changeShuffleModeCommand.currentShuffleType =
+            model.playback.playbackMode == .shuffle ? .items : .off
     }
 
     private func disableRemoteCommands() {

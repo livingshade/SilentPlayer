@@ -159,6 +159,7 @@ extension AppModel {
         playback.queueCount = 0
         playback.queuePosition = nil
         playback.queue = []
+        playback.playbackMode = .sequential
         playback.repeatMode = .off
         playback.isShuffleEnabled = false
         stopPlaybackTimer()

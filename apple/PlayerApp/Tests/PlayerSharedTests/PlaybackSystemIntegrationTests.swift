@@ -82,6 +82,17 @@ final class MacPlaybackSystemIntegrationTests: XCTestCase {
         )
         XCTAssertEqual(center.playbackState, .playing)
 
+        let commands = MPRemoteCommandCenter.shared()
+        model.playback.playbackMode = .repeatOne
+        integration.playbackPositionDidChange()
+        XCTAssertEqual(commands.changeRepeatModeCommand.currentRepeatType, .one)
+        XCTAssertEqual(commands.changeShuffleModeCommand.currentShuffleType, .off)
+
+        model.playback.playbackMode = .shuffle
+        integration.playbackPositionDidChange()
+        XCTAssertEqual(commands.changeRepeatModeCommand.currentRepeatType, .off)
+        XCTAssertEqual(commands.changeShuffleModeCommand.currentShuffleType, .items)
+
         model.playback.isPlaying = false
         integration.playbackPositionDidChange()
         XCTAssertEqual(

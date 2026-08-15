@@ -13,6 +13,15 @@ final class PlaybackPolicyTests: XCTestCase {
         XCTAssertThrowsError(
             try JSONDecoder().decode(PlaybackRepeatMode.self, from: Data(#""loop""#.utf8))
         )
+        XCTAssertEqual(
+            try JSONDecoder().decode(PlaybackMode.self, from: Data(#""repeat_one""#.utf8)),
+            .repeatOne
+        )
+        XCTAssertEqual(PlaybackMode.sequential.apiValue, "sequential")
+        XCTAssertEqual(PlaybackMode.shuffle.systemImage, "shuffle")
+        XCTAssertThrowsError(
+            try JSONDecoder().decode(PlaybackMode.self, from: Data(#""repeat_all""#.utf8))
+        )
     }
 
     func testInterruptionOnlyPreparesWhenBothSystemAndLifecycleRequestResume() {

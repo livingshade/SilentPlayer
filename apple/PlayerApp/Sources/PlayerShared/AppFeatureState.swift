@@ -39,6 +39,7 @@ public final class PlaybackFeatureState: ObservableObject {
     @Published public internal(set) var elapsedMS = 0
     @Published public internal(set) var error = ""
     @Published public internal(set) var detail = ""
+    @Published public internal(set) var playbackMode: PlaybackMode = .sequential
     @Published public internal(set) var repeatMode: PlaybackRepeatMode = .off
     @Published public internal(set) var isShuffleEnabled = false
     @Published public internal(set) var queueCount = 0

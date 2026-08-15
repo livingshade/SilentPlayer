@@ -88,9 +88,7 @@ extension AppModel {
             let previousTrackID = playback.nowPlaying?.id
             let previousPositionMS = playback.elapsedMS
             try playbackSystemIntegration?.prepareForPlayback()
-            let queuePaths = library.tracks.map(\.path)
-            let paths = queuePaths.contains(track.path) ? queuePaths : [track.path]
-            let snapshot = try await invoke { try $0.playQueue(paths: paths, startPath: track.path) }
+            let snapshot = try await invoke { try $0.play(path: track.path) }
             library.selectedTrack = track
             apply(snapshot: snapshot, fallbackTrack: track)
             await refreshQueue()
@@ -167,6 +165,10 @@ extension AppModel {
     }
 
     public func moveQueueItem(from: Int, to: Int) async {
+        guard playback.playbackMode != .shuffle else {
+            operations.status = "Switch to Sequential before reordering the queue"
+            return
+        }
         guard playback.queue.indices.contains(from),
               playback.queue.indices.contains(to),
               from != to else {
@@ -245,6 +247,7 @@ extension AppModel {
             }
             let snapshot = try await invoke { try $0.next() }
             apply(snapshot: snapshot)
+            await refreshQueue()
             publishPlaybackPositionDiscontinuity(
                 previousTrackID: previousTrackID,
                 previousPositionMS: previousPositionMS,
@@ -268,6 +271,7 @@ extension AppModel {
             }
             let snapshot = try await invoke { try $0.previous() }
             apply(snapshot: snapshot)
+            await refreshQueue()
             publishPlaybackPositionDiscontinuity(
                 previousTrackID: previousTrackID,
                 previousPositionMS: previousPositionMS,
@@ -361,14 +365,7 @@ extension AppModel {
     }
 
     public func toggleShuffle() async {
-        do {
-            let enabled = !playback.isShuffleEnabled
-            let snapshot = try await invoke { try $0.setShuffle(enabled: enabled) }
-            apply(snapshot: snapshot)
-            operations.status = snapshot.shuffleEnabled ? "Shuffle on" : "Shuffle off"
-        } catch {
-            report(error)
-        }
+        await setPlaybackMode(playback.playbackMode == .shuffle ? .sequential : .shuffle)
     }
 
     public func cycleRepeatMode() async {
@@ -376,10 +373,15 @@ extension AppModel {
     }
 
     public func setRepeatMode(_ mode: PlaybackRepeatMode) async {
+        await setPlaybackMode(mode == .one ? .repeatOne : .sequential)
+    }
+
+    public func setPlaybackMode(_ mode: PlaybackMode) async {
         do {
-            let snapshot = try await invoke { try $0.setRepeatMode(mode) }
+            let snapshot = try await invoke { try $0.setPlaybackMode(mode) }
             apply(snapshot: snapshot)
-            operations.status = snapshot.repeatMode.label
+            await refreshQueue()
+            operations.status = snapshot.playbackMode.label
         } catch {
             report(error)
         }

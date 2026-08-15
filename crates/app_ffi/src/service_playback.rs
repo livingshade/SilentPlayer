@@ -94,6 +94,12 @@ impl PlayerApp {
                 })?,
         };
         store.touch_playlist(name)?;
+        self.playback_mode = if shuffle {
+            domain::PlaybackMode::Shuffle
+        } else {
+            domain::PlaybackMode::Sequential
+        };
+        self.repeat_mode = domain::RepeatMode::All;
         self.shuffle_enabled = shuffle;
         self.play_queue_tracks(tracks, start_index, shuffle && start_path.is_none())
     }

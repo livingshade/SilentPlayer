@@ -86,18 +86,6 @@ extension ContentView {
 
                 HStack(spacing: 14) {
                     Button {
-                        Task { await model.toggleShuffle() }
-                    } label: {
-                        Label("Shuffle", systemImage: "shuffle")
-                            .labelStyle(.iconOnly)
-                            .font(.title3)
-                            .foregroundStyle(model.playback.isShuffleEnabled ? Color.accentColor : Color.secondary)
-                            .frame(width: 30, height: 30)
-                    }
-                    .buttonStyle(.borderless)
-                    .help(model.playback.isShuffleEnabled ? "Shuffle on" : "Shuffle off")
-
-                    Button {
                         Task { await model.previousTrack() }
                     } label: {
                         Label("Previous", systemImage: "backward.fill")
@@ -133,26 +121,8 @@ extension ContentView {
                     .buttonStyle(.borderless)
                     .help("Next")
 
-                    Menu {
-                        ForEach(PlaybackRepeatMode.allCases) { mode in
-                            Button {
-                                Task { await model.setRepeatMode(mode) }
-                            } label: {
-                                Label(mode.label, systemImage: model.playback.repeatMode == mode ? "checkmark" : mode.systemImage)
-                            }
-                        }
-                    } label: {
-                        Label(model.playback.repeatMode.label, systemImage: model.playback.repeatMode.systemImage)
-                            .font(.caption.weight(.semibold))
-                            .foregroundStyle(model.playback.repeatMode == .off ? Color.secondary : Color.accentColor)
-                            .lineLimit(1)
-                            .frame(maxWidth: .infinity)
-                            .frame(height: 30)
-                    }
-                    .menuStyle(.button)
-                    .controlSize(.regular)
-                    .frame(width: 118)
-                    .help("Repeat mode")
+                    playbackModeMenu
+                        .frame(width: 126)
                 }
 
                 Button {
@@ -203,6 +173,38 @@ extension ContentView {
         }
         .padding()
         .background(.bar)
+    }
+
+    internal var playbackModeMenu: some View {
+        Menu {
+            ForEach(PlaybackMode.allCases) { mode in
+                Button {
+                    Task { await model.setPlaybackMode(mode) }
+                } label: {
+                    Label(
+                        mode.label,
+                        systemImage: model.playback.playbackMode == mode ? "checkmark" : mode.systemImage
+                    )
+                }
+            }
+        } label: {
+            Label(
+                model.playback.playbackMode.label,
+                systemImage: model.playback.playbackMode.systemImage
+            )
+            .font(.caption.weight(.semibold))
+            .foregroundStyle(
+                model.playback.playbackMode == .sequential
+                    ? Color.secondary
+                    : Color.accentColor
+            )
+            .lineLimit(1)
+            .frame(maxWidth: .infinity)
+            .frame(height: 30)
+        }
+        .menuStyle(.button)
+        .controlSize(.regular)
+        .help("Playback order: \(model.playback.playbackMode.label)")
     }
 }
 #endif

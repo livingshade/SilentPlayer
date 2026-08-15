@@ -199,15 +199,31 @@ extension ContentView {
 
     internal var expandedPlaybackControls: some View {
         HStack(spacing: 22) {
-            Button {
-                Task { await model.toggleShuffle() }
+            Menu {
+                ForEach(PlaybackMode.allCases) { mode in
+                    Button {
+                        Task { await model.setPlaybackMode(mode) }
+                    } label: {
+                        Label(
+                            mode.label,
+                            systemImage: model.playback.playbackMode == mode ? "checkmark" : mode.systemImage
+                        )
+                    }
+                }
             } label: {
-                Label("Shuffle", systemImage: "shuffle")
+                Label(
+                    model.playback.playbackMode.label,
+                    systemImage: model.playback.playbackMode.systemImage
+                )
                     .labelStyle(.iconOnly)
-                    .foregroundStyle(model.playback.isShuffleEnabled ? Color.accentColor : Color.secondary)
+                    .foregroundStyle(
+                        model.playback.playbackMode == .sequential
+                            ? Color.secondary
+                            : Color.accentColor
+                    )
             }
-            .buttonStyle(.borderless)
-            .help(model.playback.isShuffleEnabled ? "Shuffle on" : "Shuffle off")
+            .menuStyle(.borderlessButton)
+            .help("Playback order: \(model.playback.playbackMode.label)")
 
             Button {
                 Task { await model.previousTrack() }
@@ -244,22 +260,6 @@ extension ContentView {
             }
             .buttonStyle(.borderless)
             .help("Next")
-
-            Menu {
-                ForEach(PlaybackRepeatMode.allCases) { mode in
-                    Button {
-                        Task { await model.setRepeatMode(mode) }
-                    } label: {
-                        Label(mode.label, systemImage: model.playback.repeatMode == mode ? "checkmark" : mode.systemImage)
-                    }
-                }
-            } label: {
-                Label(model.playback.repeatMode.label, systemImage: model.playback.repeatMode.systemImage)
-                    .labelStyle(.iconOnly)
-                    .foregroundStyle(model.playback.repeatMode == .off ? Color.secondary : Color.accentColor)
-            }
-            .menuStyle(.borderlessButton)
-            .help("Repeat mode")
 
             Button {
                 isQueuePresented = true

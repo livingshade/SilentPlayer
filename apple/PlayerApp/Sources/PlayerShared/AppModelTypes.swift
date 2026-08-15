@@ -124,6 +124,42 @@ public enum PlaybackRepeatMode: String, CaseIterable, Codable, Identifiable, Sen
     }
 }
 
+public enum PlaybackMode: String, CaseIterable, Codable, Identifiable, Sendable {
+    case sequential
+    case shuffle
+    case repeatOne = "repeat_one"
+
+    public var id: String {
+        rawValue
+    }
+
+    public var apiValue: String {
+        rawValue
+    }
+
+    public var label: String {
+        switch self {
+        case .sequential:
+            return "Sequential"
+        case .shuffle:
+            return "Shuffle"
+        case .repeatOne:
+            return "Repeat One"
+        }
+    }
+
+    public var systemImage: String {
+        switch self {
+        case .sequential:
+            return "list.number"
+        case .shuffle:
+            return "shuffle"
+        case .repeatOne:
+            return "repeat.1"
+        }
+    }
+}
+
 enum PlaybackStatusText {
     static func afterTrackChange(isPlaying: Bool, title: String?) -> String {
         let trimmedTitle = title?.trimmingCharacters(in: .whitespacesAndNewlines)
