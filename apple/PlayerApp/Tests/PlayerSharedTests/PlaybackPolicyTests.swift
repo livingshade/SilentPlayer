@@ -19,6 +19,12 @@ final class PlaybackPolicyTests: XCTestCase {
         )
         XCTAssertEqual(PlaybackMode.sequential.apiValue, "sequential")
         XCTAssertEqual(PlaybackMode.shuffle.systemImage, "shuffle")
+        XCTAssertEqual(
+            PlaybackMode.allCases,
+            [.sequential, .shuffle, .repeatOne]
+        )
+        XCTAssertEqual(PlaybackMode.sequential.label, "Sequential")
+        XCTAssertEqual(PlaybackMode.repeatOne.systemImage, "repeat.1")
         XCTAssertThrowsError(
             try JSONDecoder().decode(PlaybackMode.self, from: Data(#""repeat_all""#.utf8))
         )

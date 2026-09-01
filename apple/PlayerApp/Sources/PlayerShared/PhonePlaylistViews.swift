@@ -107,11 +107,7 @@ struct PhonePlaylistDetailView: View {
                     Button {
                         model.selectTrack(id: track.id)
                         Task {
-                            await model.playPlaylist(
-                                playlist,
-                                startingAt: track,
-                                shuffled: false
-                            )
+                            await model.play(track)
                         }
                     } label: {
                         PhoneTrackRow(
@@ -123,7 +119,7 @@ struct PhonePlaylistDetailView: View {
                     }
                     .buttonStyle(.plain)
                     .accessibilityLabel("Play \(track.phoneDisplayTitle)")
-                    .accessibilityHint("Starts this track and queues the playlist")
+                    .accessibilityHint("Adds this song to the global queue if needed, then starts it")
                     .swipeActions(edge: .trailing, allowsFullSwipe: true) {
                         Button(role: .destructive) {
                             Task { await model.removeFromActivePlaylist(track) }
@@ -134,14 +130,10 @@ struct PhonePlaylistDetailView: View {
                     .contextMenu {
                         Button {
                             Task {
-                                await model.playPlaylist(
-                                    playlist,
-                                    startingAt: track,
-                                    shuffled: false
-                                )
+                                await model.play(track)
                             }
                         } label: {
-                            Label("Play from Here", systemImage: "play.fill")
+                            Label("Play", systemImage: "play.fill")
                         }
 
                         Button {

@@ -48,4 +48,47 @@ struct PhoneEmptyState: View {
         .padding()
     }
 }
+
+struct PhonePlaybackModeMenu: View {
+    @ObservedObject var model: AppModel
+    let showsTitle: Bool
+
+    var body: some View {
+        Menu {
+            ForEach(PlaybackMode.allCases) { mode in
+                Button {
+                    Task { await model.setPlaybackMode(mode) }
+                } label: {
+                    Label(
+                        mode.label,
+                        systemImage: model.playback.playbackMode == mode
+                            ? "checkmark"
+                            : mode.systemImage
+                    )
+                }
+            }
+        } label: {
+            menuLabel
+        }
+        .accessibilityLabel("Playback Order")
+        .accessibilityValue(model.playback.playbackMode.label)
+    }
+
+    @ViewBuilder
+    private var menuLabel: some View {
+        if showsTitle {
+            Label(
+                model.playback.playbackMode.label,
+                systemImage: model.playback.playbackMode.systemImage
+            )
+        } else {
+            Image(systemName: model.playback.playbackMode.systemImage)
+                .foregroundStyle(
+                    model.playback.playbackMode == .sequential
+                        ? Color.secondary
+                        : Color.accentColor
+                )
+        }
+    }
+}
 #endif

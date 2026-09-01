@@ -578,7 +578,7 @@ public struct PhoneContentView: View {
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel("Play \(track.phoneDisplayTitle)")
-                .accessibilityHint("Starts this track and queues the visible songs")
+                .accessibilityHint("Adds this song to the global queue if needed, then starts it")
                 .swipeActions(edge: .leading) {
                     Button {
                         play(track)
@@ -801,15 +801,8 @@ public struct PhoneContentView: View {
             }
 
             HStack(spacing: 0) {
-                Button {
-                    Task { await model.toggleShuffle() }
-                } label: {
-                    Image(systemName: "shuffle")
-                        .foregroundStyle(model.playback.isShuffleEnabled ? Color.accentColor : Color.secondary)
-                }
+                PhonePlaybackModeMenu(model: model, showsTitle: false)
                 .frame(width: 44, height: 44)
-                .accessibilityLabel("Shuffle")
-                .accessibilityValue(model.playback.isShuffleEnabled ? "On" : "Off")
 
                 Spacer(minLength: 0)
                 Button {
@@ -841,14 +834,13 @@ public struct PhoneContentView: View {
 
                 Spacer(minLength: 0)
                 Button {
-                    Task { await model.cycleRepeatMode() }
+                    isQueuePresented = true
                 } label: {
-                    Image(systemName: model.playback.repeatMode.systemImage)
-                        .foregroundStyle(model.playback.repeatMode == .off ? Color.secondary : Color.accentColor)
+                    Image(systemName: "music.note.list")
                 }
                 .frame(width: 44, height: 44)
-                .accessibilityLabel("Repeat")
-                .accessibilityValue(model.playback.repeatMode.label)
+                .accessibilityLabel(model.queueStatusText)
+                .accessibilityHint("Shows the global playing queue")
             }
             .font(.title2)
             .buttonStyle(.plain)

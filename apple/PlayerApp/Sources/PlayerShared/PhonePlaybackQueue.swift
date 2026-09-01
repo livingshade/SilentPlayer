@@ -9,6 +9,24 @@ struct PhonePlaybackQueueSheet: View {
     var body: some View {
         NavigationStack {
             List {
+                Section("Playback") {
+                    Picker(
+                        "Playback Order",
+                        selection: Binding(
+                            get: { model.playback.playbackMode },
+                            set: { mode in
+                                Task { await model.setPlaybackMode(mode) }
+                            }
+                        )
+                    ) {
+                        ForEach(PlaybackMode.allCases) { mode in
+                            Label(mode.label, systemImage: mode.systemImage)
+                                .tag(mode)
+                        }
+                    }
+                    .pickerStyle(.menu)
+                }
+
                 if model.playback.queue.isEmpty {
                     VStack(spacing: 10) {
                         Image(systemName: "music.note.list")
@@ -24,8 +42,12 @@ struct PhonePlaybackQueueSheet: View {
                     .frame(maxWidth: .infinity, minHeight: 220)
                     .listRowSeparator(.hidden)
                 } else {
-                    if model.playback.isShuffleEnabled {
+                    if model.playback.playbackMode == .shuffle {
                         Label("Showing the shuffled playback order", systemImage: "shuffle")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    } else if model.playback.playbackMode == .repeatOne {
+                        Label("The current song repeats until the playback order changes", systemImage: "repeat.1")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
@@ -57,8 +79,7 @@ struct PhonePlaybackQueueSheet: View {
                         .accessibilityLabel("Play \(track.phoneDisplayTitle)")
                         .accessibilityHint("Jumps to this song in the queue")
                         .accessibilityValue(model.playback.queuePosition == index ? "Currently selected" : "")
-                        .moveDisabled(model.playback.isShuffleEnabled)
-                        .deleteDisabled(model.playback.isShuffleEnabled)
+                        .moveDisabled(model.playback.playbackMode == .shuffle)
                     }
                     .onMove(perform: move)
                     .onDelete { offsets in
@@ -81,7 +102,7 @@ struct PhonePlaybackQueueSheet: View {
 
                 ToolbarItemGroup(placement: .topBarTrailing) {
                     EditButton()
-                        .disabled(model.playback.queue.isEmpty || model.playback.isShuffleEnabled)
+                        .disabled(model.playback.queue.isEmpty)
 
                     Button("Clear", role: .destructive) {
                         Task { await model.clearPlaybackQueue() }

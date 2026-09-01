@@ -35,7 +35,7 @@ struct PhoneTrackDetailView: View {
 
                 LabeledContent("Position", value: model.playback.nowPlaying?.id == currentTrack.id ? model.playbackTimeText : currentTrack.durationText)
                 LabeledContent("Loudness", value: currentTrack.gainText)
-                LabeledContent("Queue", value: model.playback.nowPlaying?.id == currentTrack.id ? model.queueStatusText : "Not queued")
+                LabeledContent("Queue", value: queueStatus(for: currentTrack))
             }
 
             Section("Song") {
@@ -181,6 +181,16 @@ struct PhoneTrackDetailView: View {
         .task {
             model.selectTrack(id: track.id)
         }
+    }
+
+    private func queueStatus(for track: TrackItem) -> String {
+        guard let index = model.playback.queue.firstIndex(where: { $0.id == track.id }) else {
+            return "Not queued"
+        }
+        if model.playback.queuePosition == index {
+            return model.queueStatusText
+        }
+        return "Queued at \(index + 1) of \(model.playback.queue.count)"
     }
 
     private var displayedTrack: TrackItem {
