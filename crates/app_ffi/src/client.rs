@@ -185,6 +185,22 @@ impl SilentAppClient {
         self.call(PlayerApp::service_poll)
     }
 
+    pub fn configure_discord_presence(&mut self, application_id: &str) -> ClientResult {
+        self.call(|app| app.service_configure_discord_presence(Some(application_id)))
+    }
+
+    pub fn disable_discord_presence(&mut self) -> ClientResult {
+        self.call(|app| app.service_configure_discord_presence(None))
+    }
+
+    pub fn sync_discord_presence(&mut self) -> ClientResult {
+        self.call(PlayerApp::service_sync_discord_presence)
+    }
+
+    pub fn test_discord_presence(&mut self) -> ClientResult {
+        self.call(PlayerApp::service_test_discord_presence)
+    }
+
     pub fn set_repeat_mode(&mut self, mode: &str) -> ClientResult {
         self.call(|app| app.service_set_repeat_mode(mode))
     }

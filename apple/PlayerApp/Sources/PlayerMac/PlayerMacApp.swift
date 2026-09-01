@@ -44,11 +44,23 @@ struct SilentApp: App {
                 model.installPlaybackSystemIntegration(
                     MacPlaybackSystemIntegration(model: model)
                 )
+                model.installDiscordPresenceIntegration(
+                    MacDiscordPresenceIntegration(model: model)
+                )
+            }
+            .task {
+                await model.configureDiscordPresence(
+                    enabled: DiscordPresencePreferences.isEnabled,
+                    applicationID: DiscordPresencePreferences.applicationID
+                )
             }
         }
         .windowStyle(.titleBar)
         .commands {
             CommandGroup(replacing: .newItem) {}
+        }
+        Settings {
+            DiscordPresenceSettingsView(model: model)
         }
     }
 }

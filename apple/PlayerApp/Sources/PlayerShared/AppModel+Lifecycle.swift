@@ -14,6 +14,8 @@ extension AppModel {
         detailsTask = nil
         playbackSystemIntegration?.shutdown()
         playbackSystemIntegration = nil
+        discordPresenceIntegration?.shutdown()
+        discordPresenceIntegration = nil
 
         if let client {
             _ = try? client.pause()
@@ -23,6 +25,12 @@ extension AppModel {
     public func installPlaybackSystemIntegration(_ integration: any PlaybackSystemIntegration) {
         playbackSystemIntegration?.shutdown()
         playbackSystemIntegration = integration
+        integration.start()
+    }
+
+    public func installDiscordPresenceIntegration(_ integration: any PlaybackSystemIntegration) {
+        discordPresenceIntegration?.shutdown()
+        discordPresenceIntegration = integration
         integration.start()
     }
 

@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 
 use analysis_ebur128::analyze_path;
 use app_ffi::SilentAppClient;
+use discord_presence::{discord_desktop_available, DiscordPresence};
 use library_fs::{LibraryScanner, ScanOptions};
 use library_service::load_lyrics_file;
 use serde_json::{json, Value};
@@ -103,8 +104,38 @@ pub fn run(args: Vec<String>) -> CliResult<()> {
         "history" => run_history(&context, rest),
         "user" => run_user(&context, rest),
         "playback" => run_playback(&context, rest),
+        "discord" => run_discord(&context, rest),
         _ => Err(CliError::usage(format!(
             "unknown CLI domain `{domain}`; run `silent --cli --help`"
+        ))),
+    }
+}
+
+fn run_discord(context: &CliContext, mut args: Vec<String>) -> CliResult<()> {
+    let Some(command) = take_first(&mut args) else {
+        print_discord_help();
+        return Ok(());
+    };
+    if is_help(&command) {
+        print_discord_help();
+        return Ok(());
+    }
+    match command.as_str() {
+        "status" => {
+            ensure_empty(&args, "discord status")?;
+            context.emit(&json!({ "desktop_running": discord_desktop_available() }))
+        }
+        "test" => {
+            let application_id = one_value(args, "discord test requires <application-id>")?;
+            let mut presence = DiscordPresence::new(application_id)
+                .map_err(|error| CliError::operation(error.to_string()))?;
+            presence
+                .connect()
+                .map_err(|error| CliError::operation(error.to_string()))?;
+            context.emit(&json!({ "connected": true }))
+        }
+        _ => Err(CliError::usage(format!(
+            "unknown discord command `{command}`; run `silent --cli discord --help`"
         ))),
     }
 }
@@ -1114,8 +1145,18 @@ Domains:
   history       List playback history
   user          Show local user data locations
   playback      Interactive playback shell
+  discord       Diagnose the local Discord Rich Presence connection
 
 Run `silent --cli <domain> --help` for domain commands."
+    );
+}
+
+fn print_discord_help() {
+    println!(
+        "\
+Usage:
+  silent --cli [options] discord status
+  silent --cli [options] discord test <application-id>"
     );
 }
 

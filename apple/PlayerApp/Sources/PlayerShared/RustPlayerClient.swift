@@ -87,6 +87,12 @@ public struct PlaybackQueue: Hashable, Sendable {
     public let shuffleEnabled: Bool
 }
 
+public struct DiscordPresenceStatus: Hashable, Sendable {
+    public let enabled: Bool
+    public let discordRunning: Bool
+    public let sharingTrack: Bool
+}
+
 public enum LyricsFormat: String, Codable, Hashable, Sendable {
     case lrc
     case plainText = "plain_text"
@@ -660,6 +666,44 @@ public final class RustPlayerClient: @unchecked Sendable {
     public func poll() throws -> PlaybackSnapshot {
         try sync {
             try decode(player_app_poll(app), as: PlaybackSnapshotDTO.self).model
+        }
+    }
+
+    public func configureDiscordPresence(applicationID: String) throws -> DiscordPresenceStatus {
+        try sync {
+            try applicationID.withCString { applicationIDValue in
+                try decode(
+                    player_app_discord_presence_configure(app, applicationIDValue),
+                    as: DiscordPresenceStatusDTO.self
+                ).model
+            }
+        }
+    }
+
+    public func disableDiscordPresence() throws -> DiscordPresenceStatus {
+        try sync {
+            try decode(
+                player_app_discord_presence_disable(app),
+                as: DiscordPresenceStatusDTO.self
+            ).model
+        }
+    }
+
+    public func syncDiscordPresence() throws -> DiscordPresenceStatus {
+        try sync {
+            try decode(
+                player_app_discord_presence_sync(app),
+                as: DiscordPresenceStatusDTO.self
+            ).model
+        }
+    }
+
+    public func testDiscordPresence() throws -> DiscordPresenceStatus {
+        try sync {
+            try decode(
+                player_app_discord_presence_test(app),
+                as: DiscordPresenceStatusDTO.self
+            ).model
         }
     }
 
@@ -1249,6 +1293,20 @@ private struct PlaybackSnapshotDTO: Decodable {
             error: error,
             interruptionActive: interruptionActive,
             resumeAfterInterruption: resumeAfterInterruption
+        )
+    }
+}
+
+private struct DiscordPresenceStatusDTO: Decodable {
+    let enabled: Bool
+    let discordRunning: Bool
+    let sharingTrack: Bool
+
+    var model: DiscordPresenceStatus {
+        DiscordPresenceStatus(
+            enabled: enabled,
+            discordRunning: discordRunning,
+            sharingTrack: sharingTrack
         )
     }
 }

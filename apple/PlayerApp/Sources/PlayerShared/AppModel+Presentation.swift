@@ -273,6 +273,7 @@ extension AppModel {
         if playback.nowPlaying == nil {
             if previousTrackID != nil {
                 playbackSystemIntegration?.playbackDidStop()
+                discordPresenceIntegration?.playbackDidStop()
             }
             stopPlaybackTimer()
         } else if PlaybackPollingPolicy.shouldPoll(
@@ -299,6 +300,7 @@ extension AppModel {
             return
         }
         playbackSystemIntegration?.playbackPositionDidChange()
+        discordPresenceIntegration?.playbackPositionDidChange()
     }
 
     internal func loadDetails(for track: TrackItem, force: Bool = false) {

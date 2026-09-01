@@ -3,6 +3,7 @@ members = [
     "crates/analysis_ebur128",
     "crates/audio_rodio",
     "crates/domain",
+    "crates/discord_presence",
     "crates/cli",
     "crates/analyzer",
     "crates/fingerprint",

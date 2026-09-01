@@ -8,6 +8,8 @@ public final class AppModel: ObservableObject {
     public let playback = PlaybackFeatureState()
     public let trackDetail = TrackDetailFeatureState()
     public let operations = OperationFeatureState()
+    @Published public internal(set) var discordPresenceStatus = "Off"
+    @Published public internal(set) var isDiscordPresenceSharing = false
 
     private var featureStateSubscriptions: Set<AnyCancellable> = []
 
@@ -15,6 +17,7 @@ public final class AppModel: ObservableObject {
 
     internal let client: RustPlayerClient?
     internal var playbackSystemIntegration: (any PlaybackSystemIntegration)?
+    internal var discordPresenceIntegration: (any PlaybackSystemIntegration)?
     internal var resumeAfterAudioInterruption = false
     nonisolated(unsafe) internal var playbackTimer: Timer?
     internal var isPolling = false

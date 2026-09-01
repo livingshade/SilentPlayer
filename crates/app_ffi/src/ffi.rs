@@ -327,6 +327,42 @@ pub unsafe extern "C" fn player_app_poll(app: *mut PlayerApp) -> *mut c_char {
 }
 
 #[no_mangle]
+pub unsafe extern "C" fn player_app_discord_presence_configure(
+    app: *mut PlayerApp,
+    application_id: *const c_char,
+) -> *mut c_char {
+    ffi_result(|| {
+        let app = app_mut(app)?;
+        let application_id = c_string(application_id)?;
+        app.service_configure_discord_presence(Some(&application_id))
+    })
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn player_app_discord_presence_disable(app: *mut PlayerApp) -> *mut c_char {
+    ffi_result(|| {
+        let app = app_mut(app)?;
+        app.service_configure_discord_presence(None)
+    })
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn player_app_discord_presence_sync(app: *mut PlayerApp) -> *mut c_char {
+    ffi_result(|| {
+        let app = app_mut(app)?;
+        app.service_sync_discord_presence()
+    })
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn player_app_discord_presence_test(app: *mut PlayerApp) -> *mut c_char {
+    ffi_result(|| {
+        let app = app_mut(app)?;
+        app.service_test_discord_presence()
+    })
+}
+
+#[no_mangle]
 pub unsafe extern "C" fn player_app_set_repeat_mode(
     app: *mut PlayerApp,
     repeat_mode: *const c_char,

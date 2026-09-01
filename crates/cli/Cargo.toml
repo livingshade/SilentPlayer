@@ -13,6 +13,7 @@ path = "src/main.rs"
 analysis_ebur128 = { path = "../analysis_ebur128" }
 errors = { path = "../errors" }
 app_ffi = { path = "../app_ffi" }
+discord_presence = { path = "../discord_presence" }
 library_fs = { path = "../library_fs" }
 library_service = { path = "../library_service" }
 serde_json = "1.0.145"

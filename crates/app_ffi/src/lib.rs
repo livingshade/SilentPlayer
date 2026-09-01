@@ -12,6 +12,7 @@ mod playback_runtime;
 mod service_library;
 mod service_playback;
 mod service_playlists;
+mod service_presence;
 mod service_tracks;
 mod support;
 mod track_runtime;
@@ -21,6 +22,7 @@ pub use client::{SilentAppClient, SilentAppClientError};
 
 use std::path::PathBuf;
 
+use discord_presence::DiscordPresence;
 use domain::{GlobalQueueSnapshot, PlaybackLifecycle, PlaybackMode, QueueItemId, RepeatMode};
 use engine::PlayerEngine;
 
@@ -53,6 +55,7 @@ pub struct PlayerApp {
     loudness_status: Option<String>,
     last_error: Option<String>,
     playback_lifecycle: PlaybackLifecycle,
+    discord_presence: Option<DiscordPresence>,
 }
 
 const LIBRARY_PACKAGE_FORMAT_VERSION: u32 = 1;

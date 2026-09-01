@@ -128,6 +128,22 @@ fn cli_contracts() -> BTreeMap<&'static str, &'static str> {
         ("player_app_seek", "silent --cli playback shell: seek"),
         ("player_app_poll", "silent --cli playback shell: status"),
         (
+            "player_app_discord_presence_configure",
+            "silent --cli discord test",
+        ),
+        (
+            "player_app_discord_presence_disable",
+            "silent --cli discord test",
+        ),
+        (
+            "player_app_discord_presence_sync",
+            "silent --cli discord test",
+        ),
+        (
+            "player_app_discord_presence_test",
+            "silent --cli discord test",
+        ),
+        (
             "player_app_set_repeat_mode",
             "silent --cli playback shell: repeat",
         ),

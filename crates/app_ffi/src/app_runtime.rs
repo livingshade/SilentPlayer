@@ -48,6 +48,7 @@ impl PlayerApp {
             loudness_status: None,
             last_error: startup_error,
             playback_lifecycle: PlaybackLifecycle::default(),
+            discord_presence: None,
         };
         if let Err(error) = app.restore_persisted_queue() {
             app.record_nonfatal_error(error);
@@ -56,6 +57,7 @@ impl PlayerApp {
     }
 
     pub(crate) fn close(&mut self) {
+        self.discord_presence = None;
         self.poll_events();
         if let Err(error) = self.persist_queue_state() {
             eprintln!("failed to persist playback queue during shutdown: {error}");

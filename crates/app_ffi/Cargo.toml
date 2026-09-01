@@ -12,6 +12,7 @@ crate-type = ["cdylib", "staticlib", "rlib"]
 analysis_ebur128 = { path = "../analysis_ebur128" }
 audio_rodio = { path = "../audio_rodio" }
 domain = { path = "../domain" }
+discord_presence = { path = "../discord_presence" }
 engine = { path = "../engine" }
 errors = { path = "../errors" }
 fingerprint = { path = "../fingerprint" }
