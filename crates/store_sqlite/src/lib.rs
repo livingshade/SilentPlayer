@@ -477,6 +477,12 @@ impl LibraryStore {
                 CREATE INDEX IF NOT EXISTS album_artwork_refs_album_idx
                     ON album_artwork_refs(album_key);
 
+                CREATE TABLE IF NOT EXISTS track_artwork_public_urls (
+                    track_path TEXT PRIMARY KEY REFERENCES tracks(path) ON DELETE CASCADE,
+                    public_url TEXT NOT NULL,
+                    updated_at_unix_seconds INTEGER NOT NULL
+                );
+
                 CREATE TABLE IF NOT EXISTS track_notes (
                     track_path TEXT PRIMARY KEY REFERENCES tracks(path) ON DELETE CASCADE,
                     notes TEXT NOT NULL,

@@ -112,20 +112,17 @@ pub fn run(args: Vec<String>) -> CliResult<()> {
 }
 
 fn run_discord(context: &CliContext, mut args: Vec<String>) -> CliResult<()> {
-    let Some(command) = take_first(&mut args) else {
-        print_discord_help();
-        return Ok(());
-    };
-    if is_help(&command) {
-        print_discord_help();
-        return Ok(());
-    }
-    match command.as_str() {
-        "status" => {
+    let command = take_first(&mut args);
+    match command.as_deref() {
+        None | Some("--help" | "-h") => {
+            print_discord_help();
+            Ok(())
+        }
+        Some("status") => {
             ensure_empty(&args, "discord status")?;
             context.emit(&json!({ "desktop_running": discord_desktop_available() }))
         }
-        "test" => {
+        Some("test") => {
             let application_id = one_value(args, "discord test requires <application-id>")?;
             let mut presence = DiscordPresence::new(application_id)
                 .map_err(|error| CliError::operation(error.to_string()))?;
@@ -134,10 +131,22 @@ fn run_discord(context: &CliContext, mut args: Vec<String>) -> CliResult<()> {
                 .map_err(|error| CliError::operation(error.to_string()))?;
             context.emit(&json!({ "connected": true }))
         }
-        _ => Err(CliError::usage(format!(
+        Some("artwork-map") => run_discord_artwork_map(context, args),
+        Some(command) => Err(CliError::usage(format!(
             "unknown discord command `{command}`; run `silent --cli discord --help`"
         ))),
     }
+}
+
+fn run_discord_artwork_map(context: &CliContext, args: Vec<String>) -> CliResult<()> {
+    if args.len() != 2 {
+        return Err(CliError::usage(
+            "discord artwork-map requires <public-url-prefix> <export-directory>",
+        ));
+    }
+    require_confirmation(context, "discord artwork-map")?;
+    let mut client = context.open_client()?;
+    context.emit(&client.map_public_artwork_urls(&args[0], PathBuf::from(&args[1]))?)
 }
 
 fn extract_global_options(args: Vec<String>) -> CliResult<(CliContext, Vec<String>)> {
@@ -1156,7 +1165,8 @@ fn print_discord_help() {
         "\
 Usage:
   silent --cli [options] discord status
-  silent --cli [options] discord test <application-id>"
+  silent --cli [options] discord test <application-id>
+  silent --cli [options] discord artwork-map <public-url-prefix> <export-directory>"
     );
 }
 

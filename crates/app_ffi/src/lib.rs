@@ -13,6 +13,7 @@ mod service_library;
 mod service_playback;
 mod service_playlists;
 mod service_presence;
+mod service_public_artwork;
 mod service_tracks;
 mod support;
 mod track_runtime;

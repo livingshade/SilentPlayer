@@ -1,3 +1,4 @@
+use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use discord_presence::{
@@ -28,7 +29,7 @@ impl PlayerApp {
     }
 
     pub(crate) fn service_sync_discord_presence(&mut self) -> PlayerResult<DiscordPresenceStatus> {
-        let activity = self.discord_listening_activity();
+        let activity = self.discord_listening_activity()?;
         let Some(presence) = self.discord_presence.as_mut() else {
             return Ok(self.discord_presence_status());
         };
@@ -49,21 +50,27 @@ impl PlayerApp {
         Ok(self.discord_presence_status())
     }
 
-    fn discord_listening_activity(&self) -> Option<ListeningActivity> {
+    fn discord_listening_activity(&self) -> PlayerResult<Option<ListeningActivity>> {
         if !self.is_playing {
-            return None;
+            return Ok(None);
         }
-        let track = self.current_track.as_ref()?;
-        Some(ListeningActivity::from_track(
+        let Some(track) = self.current_track.as_ref() else {
+            return Ok(None);
+        };
+        let artwork_public_url = self
+            .store()?
+            .track_artwork_public_url(Path::new(&track.path))?;
+        Ok(Some(ListeningActivity::from_track(
             PresenceTrack {
                 title: &track.title,
                 artist: track.artist.as_deref(),
                 album: track.album.as_deref(),
                 duration_ms: track.duration_ms,
+                artwork_public_url: artwork_public_url.as_deref(),
             },
             self.position_ms,
             unix_time_ms(),
-        ))
+        )))
     }
 
     fn discord_presence_status(&self) -> DiscordPresenceStatus {

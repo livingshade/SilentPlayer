@@ -11,6 +11,7 @@ public struct TrackItem: Identifiable, Hashable, Sendable {
     public let artworkCount: Int
     public let artworkURL: URL?
     public let artworkSource: String?
+    public let artworkPublicURL: URL?
     public let hasAlbumIdentity: Bool
     public let path: String
     public let qualityProfile: String?
@@ -29,6 +30,7 @@ public struct TrackItem: Identifiable, Hashable, Sendable {
         artworkCount: Int = 0,
         artworkURL: URL? = nil,
         artworkSource: String? = nil,
+        artworkPublicURL: URL? = nil,
         hasAlbumIdentity: Bool = false,
         path: String,
         qualityProfile: String? = nil,
@@ -46,6 +48,7 @@ public struct TrackItem: Identifiable, Hashable, Sendable {
         self.artworkCount = artworkCount
         self.artworkURL = artworkURL
         self.artworkSource = artworkSource
+        self.artworkPublicURL = artworkPublicURL
         self.hasAlbumIdentity = hasAlbumIdentity
         self.path = path
         self.qualityProfile = qualityProfile

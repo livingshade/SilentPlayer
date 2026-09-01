@@ -81,6 +81,45 @@ impl LibraryStore {
         Ok(rows)
     }
 
+    pub fn track_artwork_public_url(&self, path: impl AsRef<Path>) -> PlayerResult<Option<String>> {
+        self.conn
+            .query_row(
+                "SELECT public_url FROM track_artwork_public_urls WHERE track_path = ?1",
+                params![path_to_string(path.as_ref())],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(to_store_error)
+    }
+
+    pub fn replace_track_artwork_public_urls(
+        &mut self,
+        mappings: &[(PathBuf, String)],
+    ) -> PlayerResult<usize> {
+        let tx = self.conn.transaction().map_err(to_store_error)?;
+        tx.execute("DELETE FROM track_artwork_public_urls", [])
+            .map_err(to_store_error)?;
+        let now = now_unix_seconds();
+        {
+            let mut statement = tx
+                .prepare(
+                    r#"
+                    INSERT INTO track_artwork_public_urls
+                        (track_path, public_url, updated_at_unix_seconds)
+                    VALUES (?1, ?2, ?3)
+                    "#,
+                )
+                .map_err(to_store_error)?;
+            for (track_path, public_url) in mappings {
+                statement
+                    .execute(params![path_to_string(track_path), public_url, now])
+                    .map_err(to_store_error)?;
+            }
+        }
+        tx.commit().map_err(to_store_error)?;
+        Ok(mappings.len())
+    }
+
     pub fn set_track_artwork_reference(
         &mut self,
         path: impl AsRef<Path>,

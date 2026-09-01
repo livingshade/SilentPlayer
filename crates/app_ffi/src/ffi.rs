@@ -363,6 +363,20 @@ pub unsafe extern "C" fn player_app_discord_presence_test(app: *mut PlayerApp) -
 }
 
 #[no_mangle]
+pub unsafe extern "C" fn player_app_map_public_artwork_urls(
+    app: *mut PlayerApp,
+    public_url_prefix: *const c_char,
+    export_directory: *const c_char,
+) -> *mut c_char {
+    ffi_result(|| {
+        let app = app_mut(app)?;
+        let public_url_prefix = c_string(public_url_prefix)?;
+        let export_directory = PathBuf::from(c_string(export_directory)?);
+        app.service_map_public_artwork_urls(&public_url_prefix, &export_directory)
+    })
+}
+
+#[no_mangle]
 pub unsafe extern "C" fn player_app_set_repeat_mode(
     app: *mut PlayerApp,
     repeat_mode: *const c_char,

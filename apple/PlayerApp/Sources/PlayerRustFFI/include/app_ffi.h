@@ -44,6 +44,7 @@ char *player_app_discord_presence_configure(PlayerApp *app, const char *applicat
 char *player_app_discord_presence_disable(PlayerApp *app);
 char *player_app_discord_presence_sync(PlayerApp *app);
 char *player_app_discord_presence_test(PlayerApp *app);
+char *player_app_map_public_artwork_urls(PlayerApp *app, const char *public_url_prefix, const char *export_directory);
 char *player_app_set_repeat_mode(PlayerApp *app, const char *repeat_mode);
 char *player_app_set_shuffle(PlayerApp *app, bool enabled);
 char *player_app_set_playback_mode(PlayerApp *app, const char *playback_mode);

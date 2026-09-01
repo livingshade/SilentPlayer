@@ -221,6 +221,7 @@ public struct TrackDetails: Hashable, Sendable {
     public let formatName: String?
     public let artworkURL: URL?
     public let artworkSource: String?
+    public let artworkPublicURL: URL?
     public let lyricsURL: URL?
     public let lyricsText: String?
     public let lyricsDocument: LyricsDocument?
@@ -245,6 +246,7 @@ public struct TrackDetails: Hashable, Sendable {
             formatName: track.formatName,
             artworkURL: nil,
             artworkSource: nil,
+            artworkPublicURL: track.artworkPublicURL,
             lyricsURL: nil,
             lyricsText: nil,
             lyricsDocument: .instrumental(),
@@ -1100,6 +1102,7 @@ private struct TrackDTO: Decodable {
     let artworkCount: UInt32
     let artworkPath: String?
     let artworkSource: String?
+    let artworkPublicUrl: String?
     let hasAlbumIdentity: Bool
     let path: String
     let qualityProfile: String?
@@ -1119,6 +1122,7 @@ private struct TrackDTO: Decodable {
             artworkCount: Int(artworkCount),
             artworkURL: artworkPath.map { URL(fileURLWithPath: $0) },
             artworkSource: artworkSource,
+            artworkPublicURL: artworkPublicUrl.flatMap(URL.init(string:)),
             hasAlbumIdentity: hasAlbumIdentity,
             path: path,
             qualityProfile: qualityProfile,
@@ -1336,6 +1340,7 @@ private struct TrackDetailsDTO: Decodable {
     let formatName: String?
     let artworkPath: String?
     let artworkSource: String?
+    let artworkPublicUrl: String?
     let lyricsPath: String?
     let lyricsText: String?
     let lyricsDocument: LyricsDocumentDTO?
@@ -1360,6 +1365,7 @@ private struct TrackDetailsDTO: Decodable {
             formatName: formatName,
             artworkURL: artworkPath.map { URL(fileURLWithPath: $0) },
             artworkSource: artworkSource,
+            artworkPublicURL: artworkPublicUrl.flatMap(URL.init(string:)),
             lyricsURL: lyricsPath.map { URL(fileURLWithPath: $0) },
             lyricsText: lyricsText,
             lyricsDocument: lyricsDocument?.model,

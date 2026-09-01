@@ -32,6 +32,7 @@ pub(super) struct TrackDto {
     pub(super) artwork_count: u32,
     pub(super) artwork_path: Option<String>,
     pub(super) artwork_source: Option<String>,
+    pub(super) artwork_public_url: Option<String>,
     pub(super) has_album_identity: bool,
     pub(super) path: String,
     pub(super) quality_profile: Option<String>,
@@ -132,6 +133,7 @@ pub(super) struct TrackDetailsDto {
     pub(super) format_name: Option<String>,
     pub(super) artwork_path: Option<String>,
     pub(super) artwork_source: Option<String>,
+    pub(super) artwork_public_url: Option<String>,
     pub(super) lyrics_path: Option<String>,
     pub(super) lyrics_text: Option<String>,
     pub(super) lyrics_document: LyricsDocument,
@@ -318,6 +320,7 @@ pub(super) fn track_to_dto(track: &Track) -> PlayerResult<TrackDto> {
         artwork_count: track.artwork_count,
         artwork_path: None,
         artwork_source: None,
+        artwork_public_url: None,
         has_album_identity: track_has_album_identity(track),
         path: track.path.to_string_lossy().into_owned(),
         quality_profile: track.quality_profile.clone(),
@@ -352,6 +355,7 @@ pub(super) fn track_to_dto_with_artwork(
         dto.artwork_path = Some(path_to_string_lossy(&path));
         dto.artwork_source = Some(source.to_owned());
     }
+    dto.artwork_public_url = store.track_artwork_public_url(&track.path)?;
     Ok(dto)
 }
 

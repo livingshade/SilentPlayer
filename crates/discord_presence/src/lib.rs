@@ -17,6 +17,7 @@ const OPCODE_CLOSE: u32 = 2;
 const ACTIVITY_TYPE_LISTENING: u8 = 2;
 const STATUS_DISPLAY_DETAILS: u8 = 2;
 const MAX_ACTIVITY_TEXT_CHARACTERS: usize = 128;
+const IPC_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PresenceTrack<'a> {
@@ -24,6 +25,7 @@ pub struct PresenceTrack<'a> {
     pub artist: Option<&'a str>,
     pub album: Option<&'a str>,
     pub duration_ms: Option<u64>,
+    pub artwork_public_url: Option<&'a str>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
@@ -35,12 +37,20 @@ pub struct ListeningActivity {
     status_display_type: u8,
     #[serde(skip_serializing_if = "Option::is_none")]
     timestamps: Option<ActivityTimestamps>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    assets: Option<ActivityAssets>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 struct ActivityTimestamps {
     start: u64,
     end: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+struct ActivityAssets {
+    large_image: String,
+    large_text: String,
 }
 
 impl ListeningActivity {
@@ -60,23 +70,15 @@ impl ListeningActivity {
         Self {
             activity_type: ACTIVITY_TYPE_LISTENING,
             details: activity_text(track.title, "Untitled"),
-            state: track_subtitle(track.artist, track.album),
+            state: activity_text(track.artist.unwrap_or_default(), "Unknown Artist"),
             status_display_type: STATUS_DISPLAY_DETAILS,
             timestamps,
+            assets: meaningful_text(track.artwork_public_url).map(|url| ActivityAssets {
+                large_image: url.to_owned(),
+                large_text: activity_text(track.album.unwrap_or_default(), "Unknown Album"),
+            }),
         }
     }
-}
-
-fn track_subtitle(artist: Option<&str>, album: Option<&str>) -> String {
-    let artist = meaningful_text(artist);
-    let album = meaningful_text(album);
-    let subtitle = match (artist, album) {
-        (Some(artist), Some(album)) => format!("{artist} · {album}"),
-        (Some(artist), None) => artist.to_owned(),
-        (None, Some(album)) => album.to_owned(),
-        (None, None) => "Unknown Artist".to_owned(),
-    };
-    activity_text(&subtitle, "Unknown Artist")
 }
 
 fn meaningful_text(value: Option<&str>) -> Option<&str> {
@@ -223,8 +225,8 @@ impl IpcConnection {
                 socket_path.display()
             ))
         })?;
-        stream.set_read_timeout(Some(Duration::from_secs(1)))?;
-        stream.set_write_timeout(Some(Duration::from_secs(1)))?;
+        stream.set_read_timeout(Some(IPC_TIMEOUT))?;
+        stream.set_write_timeout(Some(IPC_TIMEOUT))?;
         let mut connection = Self { stream };
         let handshake = json!({
             "v": DISCORD_PROTOCOL_VERSION,
@@ -370,6 +372,7 @@ mod tests {
                 artist: Some("Artist"),
                 album: Some("Album"),
                 duration_ms: Some(180_000),
+                artwork_public_url: Some("https://example.com/song.jpg"),
             },
             30_000,
             1_000_000,
@@ -377,29 +380,61 @@ mod tests {
         let value = serde_json::to_value(activity).unwrap();
         assert_eq!(value["type"], 2);
         assert_eq!(value["details"], "Song");
-        assert_eq!(value["state"], "Artist · Album");
+        assert_eq!(value["state"], "Artist");
         assert_eq!(value["status_display_type"], 2);
         assert_eq!(value["timestamps"]["start"], 970_000);
         assert_eq!(value["timestamps"]["end"], 1_150_000);
+        assert_eq!(
+            value["assets"]["large_image"],
+            "https://example.com/song.jpg"
+        );
+        assert_eq!(value["assets"]["large_text"], "Album");
     }
 
     #[test]
     fn listening_activity_falls_back_and_bounds_text() {
-        let long_title = "音".repeat(140);
+        let long_album = "音".repeat(140);
         let activity = ListeningActivity::from_track(
             PresenceTrack {
-                title: &long_title,
+                title: "Song",
                 artist: Some(" "),
-                album: None,
+                album: Some(&long_album),
                 duration_ms: None,
+                artwork_public_url: Some("https://example.com/song.jpg"),
             },
             0,
             1,
         );
         let value = serde_json::to_value(activity).unwrap();
-        assert_eq!(value["details"].as_str().unwrap().chars().count(), 128);
+        assert_eq!(value["details"], "Song");
         assert_eq!(value["state"], "Unknown Artist");
+        assert_eq!(
+            value["assets"]["large_text"]
+                .as_str()
+                .unwrap()
+                .chars()
+                .count(),
+            128
+        );
         assert!(value.get("timestamps").is_none());
+    }
+
+    #[test]
+    fn listening_activity_falls_back_when_album_and_artist_are_missing() {
+        let activity = ListeningActivity::from_track(
+            PresenceTrack {
+                title: "Song",
+                artist: None,
+                album: None,
+                duration_ms: None,
+                artwork_public_url: None,
+            },
+            0,
+            1,
+        );
+        let value = serde_json::to_value(activity).unwrap();
+        assert_eq!(value["details"], "Song");
+        assert_eq!(value["state"], "Unknown Artist");
     }
 
     #[test]

@@ -158,3 +158,42 @@ fn artwork_save_replaces_previous_images_and_can_clear_cache() {
         0
     );
 }
+
+#[test]
+fn public_artwork_urls_are_stored_per_track_and_replaced_atomically() {
+    let mut store = LibraryStore::in_memory().unwrap();
+    let first = Track::from_path("/music/album/01.ogg".into());
+    let second = Track::from_path("/music/album/02.ogg".into());
+    store
+        .upsert_tracks(&[first.clone(), second.clone()])
+        .unwrap();
+
+    let shared_url = "https://livingshade.github.io/silent/cover-a.jpg".to_owned();
+    assert_eq!(
+        store
+            .replace_track_artwork_public_urls(&[
+                (first.path.clone(), shared_url.clone()),
+                (second.path.clone(), shared_url.clone()),
+            ])
+            .unwrap(),
+        2
+    );
+    assert_eq!(
+        store.track_artwork_public_url(&first.path).unwrap(),
+        Some(shared_url.clone())
+    );
+    assert_eq!(
+        store.track_artwork_public_url(&second.path).unwrap(),
+        Some(shared_url)
+    );
+
+    let replacement = "https://livingshade.github.io/silent/cover-b.png".to_owned();
+    store
+        .replace_track_artwork_public_urls(&[(first.path.clone(), replacement.clone())])
+        .unwrap();
+    assert_eq!(
+        store.track_artwork_public_url(&first.path).unwrap(),
+        Some(replacement)
+    );
+    assert_eq!(store.track_artwork_public_url(&second.path).unwrap(), None);
+}

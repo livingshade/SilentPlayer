@@ -201,6 +201,16 @@ impl SilentAppClient {
         self.call(PlayerApp::service_test_discord_presence)
     }
 
+    pub fn map_public_artwork_urls(
+        &mut self,
+        public_url_prefix: &str,
+        export_directory: impl AsRef<Path>,
+    ) -> ClientResult {
+        self.call(|app| {
+            app.service_map_public_artwork_urls(public_url_prefix, export_directory.as_ref())
+        })
+    }
+
     pub fn set_repeat_mode(&mut self, mode: &str) -> ClientResult {
         self.call(|app| app.service_set_repeat_mode(mode))
     }

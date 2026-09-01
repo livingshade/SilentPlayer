@@ -117,6 +117,7 @@ impl PlayerApp {
             format_name: metadata.format_name,
             artwork_path: artwork.as_ref().map(|(path, _)| path_to_string_lossy(path)),
             artwork_source: artwork.map(|(_, source)| source.to_owned()),
+            artwork_public_url: store.track_artwork_public_url(path)?,
             lyrics_path: lyrics
                 .as_ref()
                 .map(|asset| path_to_string_lossy(&asset.path)),

@@ -144,6 +144,10 @@ fn cli_contracts() -> BTreeMap<&'static str, &'static str> {
             "silent --cli discord test",
         ),
         (
+            "player_app_map_public_artwork_urls",
+            "silent --cli discord artwork-map",
+        ),
+        (
             "player_app_set_repeat_mode",
             "silent --cli playback shell: repeat",
         ),

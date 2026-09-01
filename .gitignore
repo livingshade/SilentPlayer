@@ -20,3 +20,6 @@ xcuserdata/
 
 # Local recovery material; never commit personal library data.
 /.local-recovery/
+
+# Local Discord application configuration.
+/.discord.local.env
