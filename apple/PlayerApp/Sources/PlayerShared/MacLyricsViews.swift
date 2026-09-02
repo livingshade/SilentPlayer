@@ -225,7 +225,7 @@ struct TimedLyricsView: View {
                     scroll(to: activeID, using: proxy)
                 }
             }
-            .onChange(of: activeID) { newID in
+            .onChange(of: activeID) { _, newID in
                 guard followsPlayback, let newID else {
                     return
                 }

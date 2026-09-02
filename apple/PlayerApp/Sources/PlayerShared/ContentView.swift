@@ -116,22 +116,22 @@ public struct ContentView: View {
         .task {
             await restorePresentation()
         }
-        .onChange(of: model.library.scope) { _ in
+        .onChange(of: model.library.scope) {
             persistPresentation()
         }
-        .onChange(of: model.library.selectedTrack?.id) { _ in
+        .onChange(of: model.library.selectedTrack?.id) {
             persistPresentation()
         }
-        .onChange(of: model.playback.nowPlaying?.id) { trackID in
+        .onChange(of: model.playback.nowPlaying?.id) { _, trackID in
             pendingSeekProgress = nil
             if trackID == nil {
                 dismissExpandedNowPlaying()
             }
         }
-        .onChange(of: model.playlists.items) { _ in
+        .onChange(of: model.playlists.items) {
             persistPresentation()
         }
-        .onChange(of: scenePhase) { phase in
+        .onChange(of: scenePhase) { _, phase in
             if phase == .background {
                 persistPresentation()
             }

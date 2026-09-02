@@ -125,6 +125,9 @@ extension ContentView {
                         .frame(width: 126)
                 }
 
+                FloatingLyricsOpenButton()
+                    .disabled(model.playback.nowPlaying == nil)
+
                 Button {
                     isQueuePresented = true
                 } label: {

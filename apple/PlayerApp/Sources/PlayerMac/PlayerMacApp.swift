@@ -6,10 +6,16 @@ import UniformTypeIdentifiers
 @main
 struct SilentApp: App {
     @NSApplicationDelegateAdaptor(SilentAppDelegate.self) private var appDelegate
-    @StateObject private var model = AppModel()
+    @StateObject private var model: AppModel
+    @StateObject private var floatingLyrics: FloatingLyricsWindowState
     @State private var isSystemPlaybackInstalled = false
 
     init() {
+        let model = AppModel()
+        _model = StateObject(wrappedValue: model)
+        _floatingLyrics = StateObject(
+            wrappedValue: FloatingLyricsWindowState()
+        )
         NSApplication.shared.setActivationPolicy(.regular)
         NSApplication.shared.activate(ignoringOtherApps: true)
     }
@@ -58,7 +64,24 @@ struct SilentApp: App {
         .windowStyle(.titleBar)
         .commands {
             CommandGroup(replacing: .newItem) {}
+            CommandMenu("Lyrics") {
+                Button(floatingLyrics.isLocked ? "Unlock Floating Lyrics" : "Lock Floating Lyrics") {
+                    floatingLyrics.toggleLocked()
+                }
+            }
         }
+        Window("Lyrics", id: "floating-lyrics") {
+            FloatingLyricsWindowContent(
+                model: model,
+                windowState: floatingLyrics
+            )
+        }
+        .windowLevel(.floating)
+        .windowStyle(.plain)
+        .windowBackgroundDragBehavior(.enabled)
+        .defaultSize(width: 560, height: 96)
+        .windowResizability(.contentSize)
+        .commandsRemoved()
         Settings {
             DiscordPresenceSettingsView(model: model)
         }

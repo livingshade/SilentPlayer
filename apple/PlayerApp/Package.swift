@@ -1,4 +1,4 @@
-// swift-tools-version: 6.0
+// swift-tools-version: 6.2
 
 import Foundation
 import PackageDescription
@@ -56,7 +56,7 @@ let macTestRustLinkerSettings: [LinkerSetting] = [
 let package = Package(
     name: "NormalPlayerApple",
     platforms: [
-        .macOS(.v13),
+        .macOS(.v26),
         .iOS(.v16)
     ],
     products: [
