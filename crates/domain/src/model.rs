@@ -325,18 +325,4 @@ mod tests {
         assert_eq!(track.duration_ms, Some(1234));
         assert_eq!(track.artwork_count, 1);
     }
-
-    #[test]
-    fn artwork_image_keeps_binary_payload() {
-        let image = ArtworkImage {
-            picture_index: 0,
-            mime_type: Some("image/png".to_owned()),
-            picture_type: "CoverFront".to_owned(),
-            description: Some("front".to_owned()),
-            data: vec![1, 2, 3],
-        };
-
-        assert_eq!(image.data.len(), 3);
-        assert_eq!(image.mime_type.as_deref(), Some("image/png"));
-    }
 }

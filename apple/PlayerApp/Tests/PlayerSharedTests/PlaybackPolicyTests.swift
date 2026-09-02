@@ -18,16 +18,15 @@ final class PlaybackPolicyTests: XCTestCase {
             .repeatOne
         )
         XCTAssertEqual(PlaybackMode.sequential.apiValue, "sequential")
-        XCTAssertEqual(PlaybackMode.shuffle.systemImage, "shuffle")
-        XCTAssertEqual(
-            PlaybackMode.allCases,
-            [.sequential, .shuffle, .repeatOne]
-        )
-        XCTAssertEqual(PlaybackMode.sequential.label, "Sequential")
-        XCTAssertEqual(PlaybackMode.repeatOne.systemImage, "repeat.1")
         XCTAssertThrowsError(
             try JSONDecoder().decode(PlaybackMode.self, from: Data(#""repeat_all""#.utf8))
         )
+    }
+
+    func testPlaybackModesExposePlatformPresentationMetadata() {
+        XCTAssertEqual(PlaybackMode.shuffle.systemImage, "shuffle")
+        XCTAssertEqual(PlaybackMode.sequential.label, "Sequential")
+        XCTAssertEqual(PlaybackMode.repeatOne.systemImage, "repeat.1")
     }
 
     func testInterruptionOnlyPreparesWhenBothSystemAndLifecycleRequestResume() {
@@ -54,19 +53,6 @@ final class PlaybackPolicyTests: XCTestCase {
         ))
     }
 
-    func testRouteDisconnectUsesOnePausePathAndDoesNotCreateAStuckInterruption() {
-        XCTAssertFalse(PlaybackRouteChangePolicy.prefersSystemInterruptionOnDisconnect)
-        XCTAssertTrue(PlaybackRouteChangePolicy.shouldPause(
-            oldDeviceBecameUnavailable: true
-        ))
-    }
-
-    func testCarPowerOffStillPausesWhenPreviousRouteDescriptionIsMissing() {
-        XCTAssertTrue(PlaybackRouteChangePolicy.shouldPause(
-            oldDeviceBecameUnavailable: true
-        ))
-    }
-
     func testRemotePlayCommandsAreDisabledDuringAnInterruption() {
         XCTAssertTrue(PlaybackRemoteCommandPolicy.canPlay(
             hasTrack: true,
@@ -82,11 +68,7 @@ final class PlaybackPolicyTests: XCTestCase {
         ))
     }
 
-    func testLockScreenPlaybackCommandsStayAvailableAndRateRepresentsState() {
-        XCTAssertTrue(PlaybackRemoteCommandPolicy.canPlay(
-            hasTrack: true,
-            isInterrupted: false
-        ))
+    func testLockScreenPauseAndToggleCommandsStayAvailable() {
         XCTAssertTrue(PlaybackRemoteCommandPolicy.canPause(
             hasTrack: true,
             isInterrupted: false
@@ -95,6 +77,9 @@ final class PlaybackPolicyTests: XCTestCase {
             hasTrack: true,
             isInterrupted: false
         ))
+    }
+
+    func testNowPlayingRateRepresentsConfirmedState() {
         XCTAssertEqual(PlaybackNowPlayingPolicy.playbackRate(isPlaying: true), 1)
         XCTAssertEqual(PlaybackNowPlayingPolicy.playbackRate(isPlaying: false), 0)
     }

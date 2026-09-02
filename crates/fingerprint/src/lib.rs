@@ -131,9 +131,20 @@ mod tests {
     use super::*;
 
     #[test]
-    fn file_hash_matches_identical_files() {
-        let fixture = fixture("into_the_oceans_chorus.ogg");
-        assert_eq!(file_hash(&fixture).unwrap(), file_hash(&fixture).unwrap());
+    fn file_hash_depends_only_on_file_bytes() {
+        let dir = temp_dir("file_hash_content");
+        std::fs::create_dir_all(&dir).unwrap();
+        let first = dir.join("first.bin");
+        let same = dir.join("same.bin");
+        let different = dir.join("different.bin");
+        std::fs::write(&first, b"same bytes").unwrap();
+        std::fs::write(&same, b"same bytes").unwrap();
+        std::fs::write(&different, b"different bytes").unwrap();
+
+        assert_eq!(file_hash(&first).unwrap(), file_hash(&same).unwrap());
+        assert_ne!(file_hash(&first).unwrap(), file_hash(&different).unwrap());
+
+        std::fs::remove_dir_all(dir).ok();
     }
 
     #[test]

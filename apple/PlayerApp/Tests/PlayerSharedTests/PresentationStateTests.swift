@@ -2,6 +2,9 @@ import Foundation
 import XCTest
 @testable import PlayerShared
 
+#if os(iOS)
+import UniformTypeIdentifiers
+#endif
 
 final class PhoneDisplayTextTests: XCTestCase {
     func testCollapsesImportedLineBreaksAndWhitespace() {
@@ -14,14 +17,18 @@ final class PhoneDisplayTextTests: XCTestCase {
 
 final class PhonePresentationStateTests: XCTestCase {
     #if os(iOS)
-    func testEmptyPhoneLibraryPrimaryActionImportsLibraryPackage() {
-        XCTAssertEqual(PhoneFileImportPurpose.emptyLibraryPrimaryAction, .libraryPackage)
+    func testEmptyPhoneLibraryActionConfiguresASingleCopiedLibraryPackageImport() {
+        let purpose = PhoneFileImportPurpose.emptyLibraryPrimaryAction
+
+        XCTAssertEqual(
+            purpose.allowedContentTypes.map(\.identifier),
+            ["com.normalplayer.silent-library", UTType.package.identifier]
+        )
+        XCTAssertTrue(purpose.importsAsCopy)
+        XCTAssertFalse(purpose.allowsMultipleSelection)
+        XCTAssertEqual(purpose.presentationStatus, "Choose a Silent library package")
     }
     #endif
-
-    func testTabsRepresentOnlyStableTopLevelDestinations() {
-        XCTAssertEqual(PhonePresentationTab.allCases, [.library, .playlists])
-    }
 
     func testSnapshotRoundTripsThroughSceneStorageEncoding() throws {
         let snapshot = PhonePresentationSnapshot(

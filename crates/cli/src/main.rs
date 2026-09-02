@@ -52,15 +52,3 @@ The macOS app, iPhone app, and CLI are peer targets backed by the same Rust
 application behavior. Run `silent --cli --help` for the complete CLI."
     );
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn root_rejects_complex_commands_without_cli_boundary() {
-        let error = run(vec!["library".to_owned(), "list".to_owned()]).unwrap_err();
-        assert_eq!(error.exit_code(), 2);
-        assert!(error.to_string().contains("silent --cli"));
-    }
-}

@@ -7,7 +7,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use serde_json::Value;
 
 #[test]
-fn root_commands_are_simple_and_complex_commands_require_cli_boundary() {
+fn root_version_is_read_only() {
     let root = make_temp_dir("root");
     let version = silent()
         .current_dir(&root)
@@ -23,6 +23,12 @@ fn root_commands_are_simple_and_complex_commands_require_cli_boundary() {
     assert!(!root.join("player_library.sqlite3").exists());
     assert!(!root.join("UserData").exists());
 
+    fs::remove_dir_all(root).ok();
+}
+
+#[test]
+fn complex_commands_require_cli_boundary() {
+    let root = make_temp_dir("root_boundary");
     let rejected = silent()
         .current_dir(&root)
         .args(["library", "list"])

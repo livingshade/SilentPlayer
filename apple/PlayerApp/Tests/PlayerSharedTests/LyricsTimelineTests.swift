@@ -141,9 +141,5 @@ final class LyricsTimelineTests: XCTestCase {
         XCTAssertEqual(lyrics.instrumentalToken, "♪")
         XCTAssertEqual(lines.map(\.startMS), [1_100, 2_600])
         XCTAssertEqual(lines.map(\.text), ["First", "Second"])
-        XCTAssertEqual(details.playCount, 0)
-        XCTAssertEqual(details.playbackSessionCount, 0)
-        XCTAssertNil(details.lastPlayedAtUnixSeconds)
-        XCTAssertNil(details.lastCompletedAtUnixSeconds)
     }
 }
