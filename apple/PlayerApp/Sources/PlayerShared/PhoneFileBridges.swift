@@ -195,6 +195,7 @@ enum PhoneFileImportPurpose: Equatable {
             return [.image]
         case .editLyrics:
             return [
+                UTType(filenameExtension: "lrcx") ?? .plainText,
                 UTType(filenameExtension: "lrc") ?? .plainText,
                 UTType(filenameExtension: "lyrics") ?? .plainText,
                 .plainText

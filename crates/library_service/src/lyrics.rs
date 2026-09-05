@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 
 use errors::{PlayerError, PlayerResult};
 use serde::Serialize;
+use unicode_segmentation::UnicodeSegmentation;
 
 use crate::LYRICS_EXTENSIONS;
 
@@ -13,6 +14,7 @@ pub const INSTRUMENTAL_LYRICS_TOKEN: &str = "♪";
 #[serde(rename_all = "snake_case")]
 pub enum LyricsFormat {
     Lrc,
+    Lrcx,
     PlainText,
     Instrumental,
 }
@@ -104,6 +106,15 @@ pub struct TimedLyricsLine {
     pub id: u32,
     pub start_ms: u64,
     pub text: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub ruby: Vec<LyricsRubyAnnotation>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct LyricsRubyAnnotation {
+    pub reading: String,
+    pub start_character: usize,
+    pub end_character: usize,
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize)]
@@ -150,6 +161,13 @@ struct RawTimedLine {
     text: String,
 }
 
+#[derive(Debug)]
+struct RawRubyAttachment {
+    start_ms: u64,
+    line_number: usize,
+    body: String,
+}
+
 pub fn parse_lyrics_text(text: &str, format: LyricsFormat) -> PlayerResult<LyricsDocument> {
     let text = text.strip_prefix('\u{feff}').unwrap_or(text);
     match format {
@@ -169,6 +187,7 @@ pub fn parse_lyrics_text(text: &str, format: LyricsFormat) -> PlayerResult<Lyric
             }
         }
         LyricsFormat::Lrc => parse_lrc(text),
+        LyricsFormat::Lrcx => parse_lrcx(text),
         LyricsFormat::Instrumental => Err(PlayerError::invalid_input(
             "instrumental lyrics are a virtual display state, not a file format",
         )),
@@ -206,6 +225,7 @@ pub fn load_track_lyrics(track_path: &Path) -> PlayerResult<Option<LyricsAsset>>
 pub fn set_track_lyrics(track_path: &Path, source_path: &Path) -> PlayerResult<LyricsAsset> {
     let source = load_lyrics_file(source_path)?;
     let destination_extension = match source.document.content {
+        LyricsContent::Timed { .. } if source.document.format == LyricsFormat::Lrcx => "lrcx",
         LyricsContent::Timed { .. } => "lrc",
         LyricsContent::Plain { .. } => "txt",
         LyricsContent::Instrumental => {
@@ -244,9 +264,18 @@ pub fn remove_track_lyrics(track_path: &Path) -> PlayerResult<LyricsRemoval> {
 }
 
 fn parse_lrc(text: &str) -> PlayerResult<LyricsDocument> {
+    parse_lrc_content(text, LyricsFormat::Lrc)
+}
+
+fn parse_lrcx(text: &str) -> PlayerResult<LyricsDocument> {
+    parse_lrc_content(text, LyricsFormat::Lrcx)
+}
+
+fn parse_lrc_content(text: &str, format: LyricsFormat) -> PlayerResult<LyricsDocument> {
     let mut metadata = LyricsMetadata::default();
     let mut diagnostics = Vec::new();
     let mut timed = Vec::new();
+    let mut ruby_attachments = Vec::new();
     let mut untimed = Vec::new();
     let mut source_order = 0_usize;
 
@@ -291,6 +320,28 @@ fn parse_lrc(text: &str) -> PlayerResult<LyricsDocument> {
             }
         }
 
+        if !timestamps.is_empty() && format == LyricsFormat::Lrcx {
+            if let Some((tag, body)) = parse_lrcx_attachment_line(remainder) {
+                if tag.eq_ignore_ascii_case("fu") {
+                    for timestamp in timestamps {
+                        ruby_attachments.push(RawRubyAttachment {
+                            start_ms: timestamp,
+                            line_number,
+                            body: body.to_owned(),
+                        });
+                    }
+                } else {
+                    diagnostics.push(LyricsDiagnostic {
+                        severity: LyricsDiagnosticSeverity::Info,
+                        code: "unsupported_lrcx_attachment".to_owned(),
+                        line: Some(line_number),
+                        message: format!("Ignored unsupported LRCX attachment `[{tag}]`."),
+                    });
+                }
+                continue;
+            }
+        }
+
         if !timestamps.is_empty() {
             let lyric = remainder.trim_start().to_owned();
             for timestamp in timestamps {
@@ -318,7 +369,7 @@ fn parse_lrc(text: &str) -> PlayerResult<LyricsDocument> {
             });
         }
         return Ok(LyricsDocument {
-            format: LyricsFormat::Lrc,
+            format,
             instrumental_token: INSTRUMENTAL_LYRICS_TOKEN.to_owned(),
             metadata,
             content: LyricsContent::Plain {
@@ -340,6 +391,29 @@ fn parse_lrc(text: &str) -> PlayerResult<LyricsDocument> {
         });
     }
 
+    for attachment in &ruby_attachments {
+        if !timed
+            .iter()
+            .any(|line: &RawTimedLine| line.start_ms == attachment.start_ms)
+        {
+            return Err(PlayerError::invalid_input(format!(
+                "LRCX furigana at line {} has no lyric line at the same timestamp",
+                attachment.line_number
+            )));
+        }
+    }
+
+    let mut ruby_by_timestamp = BTreeMap::<u64, Vec<LyricsRubyAnnotation>>::new();
+    for attachment in ruby_attachments {
+        ruby_by_timestamp
+            .entry(attachment.start_ms)
+            .or_default()
+            .extend(parse_lrcx_ruby_attachment(
+                &attachment.body,
+                attachment.line_number,
+            )?);
+    }
+
     let offset = i128::from(metadata.offset_ms);
     let mut clamped = 0_usize;
     let mut lines = Vec::with_capacity(timed.len());
@@ -353,7 +427,7 @@ fn parse_lrc(text: &str) -> PlayerResult<LyricsDocument> {
                 PlayerError::invalid_input("LRC timestamp overflows after applying offset")
             })?
         };
-        lines.push((start_ms, raw.source_order, raw.text));
+        lines.push((start_ms, raw.source_order, raw.start_ms, raw.text));
     }
     if clamped > 0 {
         diagnostics.push(LyricsDiagnostic {
@@ -366,24 +440,130 @@ fn parse_lrc(text: &str) -> PlayerResult<LyricsDocument> {
         });
     }
 
-    lines.sort_by_key(|(start_ms, source_order, _)| (*start_ms, *source_order));
+    lines.sort_by_key(|(start_ms, source_order, _, _)| (*start_ms, *source_order));
     let lines = lines
         .into_iter()
         .enumerate()
-        .map(|(id, (start_ms, _, text))| {
+        .map(|(id, (start_ms, _, source_start_ms, text))| {
             let id = u32::try_from(id)
                 .map_err(|_| PlayerError::invalid_input("lyrics contain too many timed lines"))?;
-            Ok(TimedLyricsLine { id, start_ms, text })
+            let mut ruby = ruby_by_timestamp
+                .get(&source_start_ms)
+                .cloned()
+                .unwrap_or_default();
+            validate_lrcx_ruby_ranges(&text, &mut ruby)?;
+            Ok(TimedLyricsLine {
+                id,
+                start_ms,
+                text,
+                ruby,
+            })
         })
         .collect::<PlayerResult<Vec<_>>>()?;
 
     Ok(LyricsDocument {
-        format: LyricsFormat::Lrc,
+        format,
         instrumental_token: INSTRUMENTAL_LYRICS_TOKEN.to_owned(),
         metadata,
         content: LyricsContent::Timed { lines },
         diagnostics,
     })
+}
+
+fn parse_lrcx_attachment_line(line: &str) -> Option<(&str, &str)> {
+    let after_open = line.strip_prefix('[')?;
+    let close = after_open.find(']')?;
+    let tag = &after_open[..close];
+    let key = tag.split_once(':').map_or(tag, |(key, _)| key);
+    if key.is_empty()
+        || !key
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-')
+    {
+        return None;
+    }
+    Some((tag, &after_open[close + 1..]))
+}
+
+fn parse_lrcx_ruby_attachment(
+    body: &str,
+    line_number: usize,
+) -> PlayerResult<Vec<LyricsRubyAnnotation>> {
+    let mut annotations = Vec::new();
+    let mut remainder = body;
+    while !remainder.is_empty() {
+        let Some(after_open) = remainder.strip_prefix('<') else {
+            return Err(PlayerError::invalid_input(format!(
+                "invalid LRCX furigana attachment at line {line_number}"
+            )));
+        };
+        let Some(close) = after_open.find('>') else {
+            return Err(PlayerError::invalid_input(format!(
+                "unterminated LRCX furigana attachment at line {line_number}"
+            )));
+        };
+        let segment = &after_open[..close];
+        let mut components = segment.split(',');
+        let reading = components.next().unwrap_or_default();
+        let start = components.next();
+        let end = components.next();
+        if reading.is_empty() || start.is_none() || end.is_none() || components.next().is_some() {
+            return Err(PlayerError::invalid_input(format!(
+                "invalid LRCX furigana segment `<{segment}>` at line {line_number}"
+            )));
+        }
+        let start_character = start.unwrap().parse::<usize>().map_err(|_| {
+            PlayerError::invalid_input(format!(
+                "invalid LRCX furigana start in `<{segment}>` at line {line_number}"
+            ))
+        })?;
+        let end_character = end.unwrap().parse::<usize>().map_err(|_| {
+            PlayerError::invalid_input(format!(
+                "invalid LRCX furigana end in `<{segment}>` at line {line_number}"
+            ))
+        })?;
+        if start_character >= end_character {
+            return Err(PlayerError::invalid_input(format!(
+                "LRCX furigana range must be non-empty in `<{segment}>` at line {line_number}"
+            )));
+        }
+        annotations.push(LyricsRubyAnnotation {
+            reading: reading.to_owned(),
+            start_character,
+            end_character,
+        });
+        remainder = &after_open[close + 1..];
+    }
+    if annotations.is_empty() {
+        return Err(PlayerError::invalid_input(format!(
+            "LRCX furigana attachment is empty at line {line_number}"
+        )));
+    }
+    Ok(annotations)
+}
+
+fn validate_lrcx_ruby_ranges(
+    text: &str,
+    annotations: &mut [LyricsRubyAnnotation],
+) -> PlayerResult<()> {
+    let character_count = text.graphemes(true).count();
+    annotations.sort_by_key(|item| (item.start_character, item.end_character));
+    let mut previous_end = 0;
+    for annotation in annotations {
+        if annotation.end_character > character_count {
+            return Err(PlayerError::invalid_input(format!(
+                "LRCX furigana range {}..{} exceeds lyric length {character_count}",
+                annotation.start_character, annotation.end_character
+            )));
+        }
+        if annotation.start_character < previous_end {
+            return Err(PlayerError::invalid_input(
+                "LRCX furigana ranges must not overlap",
+            ));
+        }
+        previous_end = annotation.end_character;
+    }
+    Ok(())
 }
 
 fn contains_lrc_timestamp(text: &str) -> PlayerResult<bool> {
@@ -531,8 +711,11 @@ fn format_for_path(path: &Path) -> PlayerResult<LyricsFormat> {
     if extension.eq_ignore_ascii_case("lrc") || extension.eq_ignore_ascii_case("lyrics") {
         return Ok(LyricsFormat::Lrc);
     }
+    if extension.eq_ignore_ascii_case("lrcx") {
+        return Ok(LyricsFormat::Lrcx);
+    }
     Err(PlayerError::invalid_input(format!(
-        "unsupported lyrics extension `.{extension}`; expected .lrc, .txt, or .lyrics"
+        "unsupported lyrics extension `.{extension}`; expected .lrcx, .lrc, .txt, or .lyrics"
     )))
 }
 
@@ -616,24 +799,105 @@ mod tests {
                     id: 0,
                     start_ms: 12_200,
                     text: "One".to_owned(),
+                    ruby: Vec::new(),
                 },
                 TimedLyricsLine {
                     id: 1,
                     start_ms: 15_600,
                     text: "Two".to_owned(),
+                    ruby: Vec::new(),
                 },
                 TimedLyricsLine {
                     id: 2,
                     start_ms: 18_620,
                     text: "Chorus".to_owned(),
+                    ruby: Vec::new(),
                 },
                 TimedLyricsLine {
                     id: 3,
                     start_ms: 60_620,
                     text: "Chorus".to_owned(),
+                    ruby: Vec::new(),
                 },
             ]
         );
+    }
+
+    #[test]
+    fn parses_lrcx_furigana_with_character_ranges() {
+        let document = parse_lyrics_text(
+            "[00:01.000]Aか\u{3099}恋人を\n[00:01.000][fu]<あなた,2,4>\n",
+            LyricsFormat::Lrcx,
+        )
+        .unwrap();
+
+        assert_eq!(document.format, LyricsFormat::Lrcx);
+        let lines = document.timed_lines().unwrap();
+        assert_eq!(lines.len(), 1);
+        assert_eq!(lines[0].text, "Aか\u{3099}恋人を");
+        assert_eq!(
+            lines[0].ruby,
+            [LyricsRubyAnnotation {
+                reading: "あなた".to_owned(),
+                start_character: 2,
+                end_character: 4,
+            }]
+        );
+    }
+
+    #[test]
+    fn rejects_lrcx_furigana_outside_the_lyric_line() {
+        let result = parse_lyrics_text(
+            "[00:01.000]恋人\n[00:01.000][fu]<あなた,0,3>\n",
+            LyricsFormat::Lrcx,
+        );
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn ordinary_lrc_lines_have_no_ruby_annotations() {
+        let document = parse_lyrics_text("[00:01.000]恋人", LyricsFormat::Lrc).unwrap();
+        let line = &document.timed_lines().unwrap()[0];
+
+        assert_eq!(document.format, LyricsFormat::Lrc);
+        assert!(line.ruby.is_empty());
+        assert_eq!(line.text, "恋人");
+    }
+
+    #[test]
+    fn non_furigana_lrcx_attachments_do_not_become_timeline_lines() {
+        let document = parse_lyrics_text(
+            "[00:01.000]恋人\n[00:01.000][tr:en]Beloved\n[00:01.000][tt]<0,0>\n[00:01.000][ro]<anata,0,2>\n",
+            LyricsFormat::Lrcx,
+        )
+        .unwrap();
+
+        let lines = document.timed_lines().unwrap();
+        assert_eq!(lines.len(), 1);
+        assert_eq!(lines[0].text, "恋人");
+        assert!(document
+            .diagnostics
+            .iter()
+            .any(|item| item.code == "unsupported_lrcx_attachment"));
+    }
+
+    #[test]
+    fn lrcx_sidecars_are_preserved_and_preferred() {
+        let root = temp_dir("lrcx_sidecar");
+        let track = root.join("Song.ogg");
+        fs::write(&track, []).unwrap();
+        fs::write(root.join("Song.lrc"), "[00:01.000]Plain LRC").unwrap();
+        let source = root.join("incoming.lrcx");
+        fs::write(&source, "[00:01.000]恋人\n[00:01.000][fu]<あなた,0,2>\n").unwrap();
+
+        let asset = set_track_lyrics(&track, &source).unwrap();
+
+        assert_eq!(asset.path, root.join("Song.lrcx"));
+        assert_eq!(asset.document.format, LyricsFormat::Lrcx);
+        assert!(!root.join("Song.lrc").exists());
+        assert_eq!(load_track_lyrics(&track).unwrap().unwrap().path, asset.path);
+        fs::remove_dir_all(root).ok();
     }
 
     #[test]

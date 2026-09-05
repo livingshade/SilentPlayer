@@ -121,7 +121,7 @@ extension ContentView {
                     .font(.headline)
                 Spacer()
                 if let format = details?.lyricsDocument?.format {
-                    Text(format == .lrc ? "Synced" : "Plain Text")
+                    Text(format.presentationLabel)
                         .font(.caption2.weight(.medium))
                         .foregroundStyle(.secondary)
                 }

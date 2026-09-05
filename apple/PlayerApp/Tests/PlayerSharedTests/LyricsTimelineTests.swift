@@ -142,4 +142,59 @@ final class LyricsTimelineTests: XCTestCase {
         XCTAssertEqual(lines.map(\.startMS), [1_100, 2_600])
         XCTAssertEqual(lines.map(\.text), ["First", "Second"])
     }
+
+    func testTrackDetailsDecodeLRCXFurigana() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let source = root.appendingPathComponent("Source", isDirectory: true)
+        try FileManager.default.createDirectory(at: source, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let audio = source.appendingPathComponent("song.ogg")
+        try FileManager.default.copyItem(
+            at: repositoryRoot
+                .appendingPathComponent("test-assets/audio/into_the_oceans_chorus.ogg"),
+            to: audio
+        )
+        try "[00:01.00]Aか\u{3099}恋人を\n[00:01.00][fu]<あなた,2,4>\n"
+            .write(
+                to: source.appendingPathComponent("song.lrcx"),
+                atomically: true,
+                encoding: .utf8
+            )
+
+        let client = try RustPlayerClient(
+            dbURL: root.appendingPathComponent("library.sqlite3"),
+            mediaRootURL: root.appendingPathComponent("Music", isDirectory: true),
+            repoRoot: repositoryRoot
+        )
+        _ = try client.importFiles([audio])
+        let track = try XCTUnwrap(client.library().first)
+        let details = try client.trackDetails(path: track.path)
+        let lyrics = try XCTUnwrap(details.lyricsDocument)
+        let line = try XCTUnwrap(lyrics.timedLines?.first)
+
+        XCTAssertEqual(lyrics.format, .lrcx)
+        XCTAssertEqual(line.text, "Aか\u{3099}恋人を")
+        XCTAssertEqual(
+            line.ruby,
+            [LyricsRubyAnnotation(
+                reading: "あなた",
+                startCharacter: 2,
+                endCharacter: 4
+            )]
+        )
+    }
+
+    #if os(macOS)
+    func testRubyCharacterRangeMapsToUTF16AfterCombinedGrapheme() {
+        let range = RubyLyricsTextLayout.utf16Range(
+            in: "Aか\u{3099}恋人を",
+            startCharacter: 2,
+            endCharacter: 4
+        )
+
+        XCTAssertEqual(range, NSRange(location: 3, length: 2))
+    }
+    #endif
 }

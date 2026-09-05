@@ -5,6 +5,18 @@ import XCTest
 
 @MainActor
 final class FloatingLyricsWindowTests: XCTestCase {
+    func testWindowCarriesFloatingLyricsIdentifier() {
+        let state = FloatingLyricsWindowState()
+        let window = makeNativeWindow()
+
+        state.attach(to: window)
+
+        XCTAssertEqual(
+            window.identifier?.rawValue,
+            FloatingLyricsWindowState.windowIdentifier
+        )
+    }
+
     func testLockMakesTheAttachedWindowClickThroughAndImmovable() {
         let state = FloatingLyricsWindowState()
         let window = makeNativeWindow()
@@ -59,9 +71,38 @@ final class FloatingLyricsWindowTests: XCTestCase {
                 fallbackText: nil,
                 positionMS: 2_600,
                 isLoading: false
-            ),
+            ).text,
             "Second"
         )
+    }
+
+    func testPresentationPreservesRubyForCurrentTimedLine() {
+        let ruby = LyricsRubyAnnotation(
+            reading: "しょうはい",
+            startCharacter: 0,
+            endCharacter: 2
+        )
+        let document = LyricsDocument(
+            format: .lrcx,
+            content: .timed([
+                TimedLyricsLine(
+                    id: 0,
+                    startMS: 1_000,
+                    text: "勝敗を別つ瞬間",
+                    ruby: [ruby]
+                )
+            ])
+        )
+
+        let line = FloatingLyricsPresentation.currentLine(
+            document: document,
+            fallbackText: nil,
+            positionMS: 1_000,
+            isLoading: false
+        )
+
+        XCTAssertEqual(line.text, "勝敗を別つ瞬間")
+        XCTAssertEqual(line.ruby, [ruby])
     }
 
     func testPresentationUsesFirstNonblankFallbackLine() {
@@ -71,7 +112,7 @@ final class FloatingLyricsWindowTests: XCTestCase {
                 fallbackText: "  \n First line \nSecond line",
                 positionMS: 0,
                 isLoading: false
-            ),
+            ).text,
             "First line"
         )
     }
@@ -83,7 +124,7 @@ final class FloatingLyricsWindowTests: XCTestCase {
                 fallbackText: nil,
                 positionMS: 0,
                 isLoading: true
-            ),
+            ).text,
             "Loading lyrics…"
         )
     }
@@ -95,7 +136,7 @@ final class FloatingLyricsWindowTests: XCTestCase {
                 fallbackText: nil,
                 positionMS: 0,
                 isLoading: false
-            ),
+            ).text,
             "♪"
         )
     }

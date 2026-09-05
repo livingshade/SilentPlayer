@@ -9,4 +9,4 @@ authors.workspace = true
 domain = { path = "../domain" }
 engine = { path = "../engine" }
 errors = { path = "../errors" }
-rodio = "0.22.2"
+rodio = { version = "0.22.2", features = ["symphonia-alac"] }

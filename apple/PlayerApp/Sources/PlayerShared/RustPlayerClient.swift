@@ -95,19 +95,50 @@ public struct DiscordPresenceStatus: Hashable, Sendable {
 
 public enum LyricsFormat: String, Codable, Hashable, Sendable {
     case lrc
+    case lrcx
     case plainText = "plain_text"
     case instrumental
+
+    public var presentationLabel: String {
+        switch self {
+        case .lrc, .lrcx:
+            return "Synced"
+        case .plainText:
+            return "Plain Text"
+        case .instrumental:
+            return "Instrumental"
+        }
+    }
 }
 
 public struct TimedLyricsLine: Identifiable, Hashable, Sendable {
     public let id: Int
     public let startMS: Int
     public let text: String
+    public let ruby: [LyricsRubyAnnotation]
 
-    public init(id: Int, startMS: Int, text: String) {
+    public init(
+        id: Int,
+        startMS: Int,
+        text: String,
+        ruby: [LyricsRubyAnnotation] = []
+    ) {
         self.id = id
         self.startMS = startMS
         self.text = text
+        self.ruby = ruby
+    }
+}
+
+public struct LyricsRubyAnnotation: Hashable, Sendable {
+    public let reading: String
+    public let startCharacter: Int
+    public let endCharacter: Int
+
+    public init(reading: String, startCharacter: Int, endCharacter: Int) {
+        self.reading = reading
+        self.startCharacter = startCharacter
+        self.endCharacter = endCharacter
     }
 }
 
@@ -1422,12 +1453,28 @@ private struct TimedLyricsLineDTO: Decodable {
     let id: Int
     let startMs: UInt64
     let text: String
+    let ruby: [LyricsRubyAnnotationDTO]?
 
     var model: TimedLyricsLine {
         TimedLyricsLine(
             id: id,
             startMS: Int(clamping: startMs),
-            text: text
+            text: text,
+            ruby: (ruby ?? []).map(\.model)
+        )
+    }
+}
+
+private struct LyricsRubyAnnotationDTO: Decodable {
+    let reading: String
+    let startCharacter: Int
+    let endCharacter: Int
+
+    var model: LyricsRubyAnnotation {
+        LyricsRubyAnnotation(
+            reading: reading,
+            startCharacter: startCharacter,
+            endCharacter: endCharacter
         )
     }
 }

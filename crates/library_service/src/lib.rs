@@ -17,10 +17,10 @@ use store_sqlite::LibraryStore;
 pub use lyrics::{
     load_lyrics_file, load_track_lyrics, parse_lyrics_text, remove_track_lyrics, set_track_lyrics,
     LyricsAsset, LyricsContent, LyricsDiagnostic, LyricsDiagnosticSeverity, LyricsDocument,
-    LyricsFormat, LyricsMetadata, LyricsRemoval, TimedLyricsLine,
+    LyricsFormat, LyricsMetadata, LyricsRemoval, LyricsRubyAnnotation, TimedLyricsLine,
 };
 
-pub const LYRICS_EXTENSIONS: &[&str] = &["lrc", "txt", "lyrics"];
+pub const LYRICS_EXTENSIONS: &[&str] = &["lrcx", "lrc", "txt", "lyrics"];
 pub const ARTWORK_EXTENSIONS: &[&str] = &["jpg", "jpeg", "png", "webp", "gif"];
 pub const ALBUM_ARTWORK_STEMS: &[&str] = &["cover", "folder", "front", "album"];
 

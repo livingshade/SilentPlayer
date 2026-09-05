@@ -32,7 +32,7 @@ struct SilentApp: App {
             } chooseLyricsFile: {
                 await MacFolderPicker.chooseFile(
                     title: "Choose lyrics",
-                    allowedFileTypes: ["lrc", "txt", "lyrics"]
+                    allowedFileTypes: ["lrcx", "lrc", "txt", "lyrics"]
                 )
             } chooseExportFile: { track in
                 await MacFolderPicker.chooseExportDestination(for: track)
@@ -60,6 +60,12 @@ struct SilentApp: App {
                     applicationID: DiscordPresencePreferences.applicationID
                 )
             }
+            .background {
+                MacDashboardWindowAttachment(
+                    coordinator: appDelegate.dashboardWindowCoordinator
+                )
+                .frame(width: 0, height: 0)
+            }
         }
         .windowStyle(.titleBar)
         .commands {
@@ -70,7 +76,7 @@ struct SilentApp: App {
                 }
             }
         }
-        Window("Lyrics", id: "floating-lyrics") {
+        Window("Lyrics", id: FloatingLyricsWindowState.windowIdentifier) {
             FloatingLyricsWindowContent(
                 model: model,
                 windowState: floatingLyrics
@@ -79,7 +85,7 @@ struct SilentApp: App {
         .windowLevel(.floating)
         .windowStyle(.plain)
         .windowBackgroundDragBehavior(.enabled)
-        .defaultSize(width: 560, height: 96)
+        .defaultSize(width: 320, height: 124)
         .windowResizability(.contentSize)
         .commandsRemoved()
         Settings {
@@ -91,6 +97,24 @@ struct SilentApp: App {
 @MainActor
 final class SilentAppDelegate: NSObject, NSApplicationDelegate {
     weak var model: AppModel?
+    let dashboardWindowCoordinator = MacDashboardWindowCoordinator()
+
+    func applicationShouldHandleReopen(
+        _ sender: NSApplication,
+        hasVisibleWindows flag: Bool
+    ) -> Bool {
+        let eventWindowIdentifier = sender.currentEvent?
+            .window?
+            .identifier?
+            .rawValue
+        guard MacDashboardReopenPolicy.shouldRestoreDashboard(
+            eventWindowIdentifier: eventWindowIdentifier
+        ) else {
+            return false
+        }
+        sender.activate()
+        return !dashboardWindowCoordinator.restoreDashboardForReopen()
+    }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         model?.shutdownForQuit()
