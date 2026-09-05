@@ -1,4 +1,5 @@
 import AppKit
+import Darwin
 import PlayerShared
 import SwiftUI
 import UniformTypeIdentifiers
@@ -11,6 +12,10 @@ struct SilentApp: App {
     @State private var isSystemPlaybackInstalled = false
 
     init() {
+        if AppLaunchArguments.isCLIInvocation(CommandLine.arguments) {
+            print(AppLaunchArguments.unsupportedCLIMessage)
+            exit(2)
+        }
         let model = AppModel()
         _model = StateObject(wrappedValue: model)
         _floatingLyrics = StateObject(
