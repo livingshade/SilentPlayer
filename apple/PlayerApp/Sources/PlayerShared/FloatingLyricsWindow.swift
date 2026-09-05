@@ -8,7 +8,7 @@ public final class FloatingLyricsWindowState: ObservableObject {
 
     @Published public private(set) var isLocked = false
     @Published public private(set) var isHovering = false
-    private weak var window: NSWindow?
+    private weak var window: NSPanel?
     private var contentSize: NSSize?
 
     public var showsOverlayControls: Bool {
@@ -17,10 +17,12 @@ public final class FloatingLyricsWindowState: ObservableObject {
 
     public init() {}
 
-    func attach(to window: NSWindow) {
+    func attach(to window: NSPanel) {
         self.window = window
         window.identifier = NSUserInterfaceItemIdentifier(Self.windowIdentifier)
-        window.styleMask = [.borderless]
+        window.styleMask = [.borderless, .nonactivatingPanel]
+        window.isFloatingPanel = true
+        window.becomesKeyOnlyIfNeeded = true
         window.titleVisibility = .hidden
         window.toolbar = nil
         window.level = .floating
@@ -58,6 +60,10 @@ public final class FloatingLyricsWindowState: ObservableObject {
         applyContentSize()
     }
 
+    public func close() {
+        window?.orderOut(nil)
+    }
+
     private func applyInteractionState() {
         window?.ignoresMouseEvents = isLocked
         window?.isMovable = !isLocked
@@ -70,6 +76,49 @@ public final class FloatingLyricsWindowState: ObservableObject {
             return
         }
         window.setContentSize(contentSize)
+    }
+}
+
+@MainActor
+public final class FloatingLyricsPanelController {
+    private let model: AppModel
+    private let windowState: FloatingLyricsWindowState
+    private var panel: NSPanel?
+
+    public init(model: AppModel, windowState: FloatingLyricsWindowState) {
+        self.model = model
+        self.windowState = windowState
+    }
+
+    public func show() {
+        let panel = panel ?? makePanel()
+        panel.orderFrontRegardless()
+    }
+
+    private func makePanel() -> NSPanel {
+        let panel = NSPanel(
+            contentRect: NSRect(
+                origin: .zero,
+                size: NSSize(
+                    width: FloatingLyricsWindowLayout.minimumWidth,
+                    height: FloatingLyricsWindowLayout.contentHeight
+                )
+            ),
+            styleMask: [.borderless, .nonactivatingPanel],
+            backing: .buffered,
+            defer: false
+        )
+        panel.isReleasedWhenClosed = false
+        panel.contentView = NSHostingView(
+            rootView: FloatingLyricsWindowContent(
+                model: model,
+                windowState: windowState
+            )
+        )
+        windowState.attach(to: panel)
+        panel.center()
+        self.panel = panel
+        return panel
     }
 }
 
@@ -189,14 +238,14 @@ struct LyricsPresentationLine: Hashable {
 }
 
 public struct FloatingLyricsOpenButton: View {
-    @Environment(\.openWindow) private var openWindow
+    private let show: () -> Void
 
-    public init() {}
+    public init(show: @escaping () -> Void) {
+        self.show = show
+    }
 
     public var body: some View {
-        Button {
-            openWindow(id: FloatingLyricsWindowState.windowIdentifier)
-        } label: {
+        Button(action: show) {
             Label("Lyrics", systemImage: "text.quote")
                 .font(.callout.weight(.semibold))
         }
@@ -207,7 +256,6 @@ public struct FloatingLyricsOpenButton: View {
 }
 
 public struct FloatingLyricsWindowContent: View {
-    @Environment(\.dismiss) private var dismiss
     @ObservedObject private var model: AppModel
     @ObservedObject private var windowState: FloatingLyricsWindowState
 
@@ -263,7 +311,7 @@ public struct FloatingLyricsWindowContent: View {
                 .help("Lock Lyrics")
 
                 Button {
-                    dismiss()
+                    windowState.close()
                 } label: {
                     Label("Close Lyrics", systemImage: "xmark")
                         .labelStyle(.iconOnly)
@@ -326,8 +374,8 @@ private struct FloatingLyricsWindowBridge: NSViewRepresentable {
         nsView.windowState = windowState
         nsView.contentSize = contentSize
         windowState.setContentSize(contentSize)
-        if let window = nsView.window {
-            windowState.attach(to: window)
+        if let panel = nsView.window as? NSPanel {
+            windowState.attach(to: panel)
         }
     }
 }
@@ -350,8 +398,8 @@ private final class FloatingLyricsWindowAttachmentView: NSView {
 
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
-        if let window {
-            windowState.attach(to: window)
+        if let panel = window as? NSPanel {
+            windowState.attach(to: panel)
             windowState.setContentSize(contentSize)
         }
     }

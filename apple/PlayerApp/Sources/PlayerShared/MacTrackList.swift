@@ -125,7 +125,7 @@ extension ContentView {
                         .frame(width: 126)
                 }
 
-                FloatingLyricsOpenButton()
+                FloatingLyricsOpenButton(show: showFloatingLyrics)
                     .disabled(model.playback.nowPlaying == nil)
 
                 Button {

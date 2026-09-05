@@ -9,6 +9,7 @@ struct SilentApp: App {
     @NSApplicationDelegateAdaptor(SilentAppDelegate.self) private var appDelegate
     @StateObject private var model: AppModel
     @StateObject private var floatingLyrics: FloatingLyricsWindowState
+    private let floatingLyricsPanel: FloatingLyricsPanelController
     @State private var isSystemPlaybackInstalled = false
 
     init() {
@@ -18,8 +19,11 @@ struct SilentApp: App {
         }
         let model = AppModel()
         _model = StateObject(wrappedValue: model)
-        _floatingLyrics = StateObject(
-            wrappedValue: FloatingLyricsWindowState()
+        let floatingLyrics = FloatingLyricsWindowState()
+        _floatingLyrics = StateObject(wrappedValue: floatingLyrics)
+        floatingLyricsPanel = FloatingLyricsPanelController(
+            model: model,
+            windowState: floatingLyrics
         )
         NSApplication.shared.setActivationPolicy(.regular)
         NSApplication.shared.activate(ignoringOtherApps: true)
@@ -27,25 +31,36 @@ struct SilentApp: App {
 
     var body: some Scene {
         WindowGroup {
-            ContentView(model: model) {
-                await MacFolderPicker.chooseFolder()
-            } chooseArtworkFile: {
-                await MacFolderPicker.chooseFile(
-                    title: "Choose artwork",
-                    allowedFileTypes: ["jpg", "jpeg", "png", "webp", "gif"]
-                )
-            } chooseLyricsFile: {
-                await MacFolderPicker.chooseFile(
-                    title: "Choose lyrics",
-                    allowedFileTypes: ["lrcx", "lrc", "txt", "lyrics"]
-                )
-            } chooseExportFile: { track in
-                await MacFolderPicker.chooseExportDestination(for: track)
-            } chooseLibraryExportPackage: {
-                await MacFolderPicker.chooseLibraryExportDestination()
-            } chooseLibraryImportPackage: {
-                await MacFolderPicker.chooseLibraryPackage()
-            }
+            ContentView(
+                model: model,
+                chooseFolder: {
+                    await MacFolderPicker.chooseFolder()
+                },
+                chooseArtworkFile: {
+                    await MacFolderPicker.chooseFile(
+                        title: "Choose artwork",
+                        allowedFileTypes: ["jpg", "jpeg", "png", "webp", "gif"]
+                    )
+                },
+                chooseLyricsFile: {
+                    await MacFolderPicker.chooseFile(
+                        title: "Choose lyrics",
+                        allowedFileTypes: ["lrcx", "lrc", "txt", "lyrics"]
+                    )
+                },
+                chooseExportFile: { track in
+                    await MacFolderPicker.chooseExportDestination(for: track)
+                },
+                chooseLibraryExportPackage: {
+                    await MacFolderPicker.chooseLibraryExportDestination()
+                },
+                chooseLibraryImportPackage: {
+                    await MacFolderPicker.chooseLibraryPackage()
+                },
+                showFloatingLyrics: {
+                    floatingLyricsPanel.show()
+                }
+            )
             .onAppear {
                 appDelegate.model = model
                 guard !isSystemPlaybackInstalled else {
@@ -81,18 +96,6 @@ struct SilentApp: App {
                 }
             }
         }
-        Window("Lyrics", id: FloatingLyricsWindowState.windowIdentifier) {
-            FloatingLyricsWindowContent(
-                model: model,
-                windowState: floatingLyrics
-            )
-        }
-        .windowLevel(.floating)
-        .windowStyle(.plain)
-        .windowBackgroundDragBehavior(.enabled)
-        .defaultSize(width: 320, height: 124)
-        .windowResizability(.contentSize)
-        .commandsRemoved()
         Settings {
             DiscordPresenceSettingsView(model: model)
         }

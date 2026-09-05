@@ -23,6 +23,7 @@ public struct ContentView: View {
     internal let chooseExportFile: (TrackItem) async -> URL?
     internal let chooseLibraryExportPackage: () async -> URL?
     internal let chooseLibraryImportPackage: () async -> URL?
+    internal let showFloatingLyrics: () -> Void
 
     public init(
         model: AppModel,
@@ -31,7 +32,8 @@ public struct ContentView: View {
         chooseLyricsFile: @escaping () async -> URL?,
         chooseExportFile: @escaping (TrackItem) async -> URL?,
         chooseLibraryExportPackage: @escaping () async -> URL?,
-        chooseLibraryImportPackage: @escaping () async -> URL?
+        chooseLibraryImportPackage: @escaping () async -> URL?,
+        showFloatingLyrics: @escaping () -> Void
     ) {
         self.model = model
         self.chooseFolder = chooseFolder
@@ -40,6 +42,7 @@ public struct ContentView: View {
         self.chooseExportFile = chooseExportFile
         self.chooseLibraryExportPackage = chooseLibraryExportPackage
         self.chooseLibraryImportPackage = chooseLibraryImportPackage
+        self.showFloatingLyrics = showFloatingLyrics
     }
 
     public var body: some View {

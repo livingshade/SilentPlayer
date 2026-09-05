@@ -34,6 +34,21 @@ final class MacDashboardWindowTests: XCTestCase {
         )
     }
 
+    func testFloatingLyricsPanelDoesNotActivateOwningApplication() {
+        let panel = NSPanel(
+            contentRect: NSRect(x: 0, y: 0, width: 320, height: 124),
+            styleMask: [.borderless],
+            backing: .buffered,
+            defer: false
+        )
+        let state = FloatingLyricsWindowState()
+
+        state.attach(to: panel)
+
+        XCTAssertTrue(panel.styleMask.contains(.nonactivatingPanel))
+        XCTAssertTrue(panel.becomesKeyOnlyIfNeeded)
+    }
+
     func testDockReopenRestoresDashboard() {
         XCTAssertTrue(
             MacDashboardReopenPolicy.shouldRestoreDashboard(

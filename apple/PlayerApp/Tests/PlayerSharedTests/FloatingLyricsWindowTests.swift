@@ -150,8 +150,8 @@ final class FloatingLyricsWindowTests: XCTestCase {
         XCTAssertFalse(state.showsOverlayControls)
     }
 
-    private func makeNativeWindow() -> NSWindow {
-        NSWindow(
+    private func makeNativeWindow() -> NSPanel {
+        NSPanel(
             contentRect: NSRect(x: 0, y: 0, width: 560, height: 100),
             styleMask: [.titled, .closable],
             backing: .buffered,
