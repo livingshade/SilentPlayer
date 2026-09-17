@@ -33,6 +33,10 @@ pub trait AudioBackend {
     fn is_finished(&self) -> PlayerResult<bool> {
         Ok(false)
     }
+
+    fn stream_failed(&self) -> bool {
+        false
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -137,7 +141,7 @@ impl PlayerEngine {
     ) -> PlayerResult<Self>
     where
         B: AudioBackend + Send + 'static,
-        F: FnOnce() -> PlayerResult<B> + Send + 'static,
+        F: Fn() -> PlayerResult<B> + Send + 'static,
     {
         Self::spawn_with_options(
             EngineOptions {
@@ -154,7 +158,7 @@ impl PlayerEngine {
     ) -> PlayerResult<Self>
     where
         B: AudioBackend + Send + 'static,
-        F: FnOnce() -> PlayerResult<B> + Send + 'static,
+        F: Fn() -> PlayerResult<B> + Send + 'static,
     {
         let (request_tx, request_rx) = mpsc::channel();
         let (event_tx, event_rx) = mpsc::channel();
@@ -343,7 +347,7 @@ fn run_engine<B, F>(
     event_tx: Sender<PlaybackEvent>,
 ) where
     B: AudioBackend + Send + 'static,
-    F: FnOnce() -> PlayerResult<B>,
+    F: Fn() -> PlayerResult<B>,
 {
     let mut backend = match backend_factory() {
         Ok(backend) => backend,
@@ -357,41 +361,61 @@ fn run_engine<B, F>(
     let mut loaded_track_id = None;
 
     loop {
-        let result =
-            match receive_engine_input(&request_rx, session.state().is_playing, poll_interval) {
-                EngineInput::Request(EngineRequest {
-                    command: EngineCommand::Shutdown,
-                    completion,
-                }) => {
-                    let _ = event_tx.send(PlaybackEvent::Stopped);
-                    let _ = completion.send(Ok(()));
-                    break;
+        let input = receive_engine_input(
+            &request_rx,
+            session.state().is_playing,
+            poll_interval,
+        );
+        if backend.stream_failed() {
+            match recover_backend(
+                &mut session,
+                &mut backend,
+                &mut loaded_track_id,
+                &backend_factory,
+            ) {
+                Ok(()) => {}
+                Err(error) => {
+                    let _ = event_tx.send(PlaybackEvent::Error(error.to_string()));
+                    let _ = session.apply(PlaybackCommand::Pause);
                 }
-                EngineInput::Request(request) => {
-                    let result = handle_command(
-                        request.command,
-                        &mut session,
-                        &mut backend,
-                        &mut loaded_track_id,
-                    );
-                    match result {
-                        Ok(()) => {
-                            publish_snapshot(&mut session, &backend, &event_tx);
-                            let _ = request.completion.send(Ok(()));
-                        }
-                        Err(error) => {
-                            let _ = event_tx.send(PlaybackEvent::Error(error.to_string()));
-                            publish_snapshot(&mut session, &backend, &event_tx);
-                            let _ = request.completion.send(Err(error));
-                        }
+            }
+            publish_snapshot(&mut session, &backend, &event_tx);
+        }
+
+        let result = match input {
+            EngineInput::Request(EngineRequest {
+                command: EngineCommand::Shutdown,
+                completion,
+            }) => {
+                let _ = event_tx.send(PlaybackEvent::Stopped);
+                let _ = completion.send(Ok(()));
+                break;
+            }
+            EngineInput::Request(request) => {
+                let result = handle_command(
+                    request.command,
+                    &mut session,
+                    &mut backend,
+                    &mut loaded_track_id,
+                );
+                match result {
+                    Ok(()) => {
+                        publish_snapshot(&mut session, &backend, &event_tx);
+                        let _ = request.completion.send(Ok(()));
                     }
-                    continue;
+                    Err(error) => {
+                        let _ = event_tx.send(PlaybackEvent::Error(error.to_string()));
+                        publish_snapshot(&mut session, &backend, &event_tx);
+                        let _ = request.completion.send(Err(error));
+                    }
                 }
-                EngineInput::Poll => {
-                    poll_playback(&mut session, &mut backend, &mut loaded_track_id)
-                }
-                EngineInput::Disconnected => break,
-            };
+                continue;
+            }
+            EngineInput::Poll => {
+                poll_playback(&mut session, &mut backend, &mut loaded_track_id)
+            }
+            EngineInput::Disconnected => break,
+        };
 
         match result {
             Ok(true) => publish_snapshot(&mut session, &backend, &event_tx),
@@ -402,6 +426,30 @@ fn run_engine<B, F>(
             }
         }
     }
+}
+
+fn recover_backend<B, F>(
+    session: &mut PlayerSession,
+    backend: &mut B,
+    loaded_track_id: &mut Option<TrackId>,
+    backend_factory: &F,
+) -> PlayerResult<()>
+where
+    B: AudioBackend,
+    F: Fn() -> PlayerResult<B>,
+{
+    *loaded_track_id = None;
+    *backend = backend_factory()?;
+    if session.current_track().is_some() {
+        load_current_if_needed(session, backend, loaded_track_id)?;
+        backend.seek_to(session.state().position_ms)?;
+        if session.state().is_playing {
+            backend.play()?;
+        } else {
+            backend.pause()?;
+        }
+    }
+    Ok(())
 }
 
 fn receive_engine_input(
@@ -713,7 +761,7 @@ fn publish_snapshot<B: AudioBackend>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
 
     #[derive(Clone, Debug)]
@@ -733,6 +781,54 @@ mod tests {
         calls: Calls,
         position_ms: Arc<AtomicU64>,
         finished_sequence: Arc<Mutex<Vec<bool>>>,
+    }
+
+    struct RecoverableBackend {
+        calls: Calls,
+        position_ms: Arc<AtomicU64>,
+        finished: Arc<AtomicBool>,
+        failed: Arc<AtomicBool>,
+    }
+
+    impl AudioBackend for RecoverableBackend {
+        fn load(&mut self, track: &Track, settings: AudioRenderSettings) -> PlayerResult<()> {
+            self.position_ms
+                .store(settings.start_position_ms, Ordering::SeqCst);
+            self.calls.push(format!("load:{}", track.title));
+            Ok(())
+        }
+
+        fn play(&mut self) -> PlayerResult<()> {
+            self.calls.push("play");
+            Ok(())
+        }
+
+        fn pause(&mut self) -> PlayerResult<()> {
+            self.calls.push("pause");
+            Ok(())
+        }
+
+        fn seek_to(&mut self, position_ms: u64) -> PlayerResult<()> {
+            self.position_ms.store(position_ms, Ordering::SeqCst);
+            self.calls.push(format!("seek:{position_ms}"));
+            Ok(())
+        }
+
+        fn set_gain(&mut self, _gain: GainDecision) -> PlayerResult<()> {
+            Ok(())
+        }
+
+        fn position_ms(&self) -> PlayerResult<u64> {
+            Ok(self.position_ms.load(Ordering::SeqCst))
+        }
+
+        fn is_finished(&self) -> PlayerResult<bool> {
+            Ok(self.finished.load(Ordering::SeqCst))
+        }
+
+        fn stream_failed(&self) -> bool {
+            self.failed.load(Ordering::SeqCst)
+        }
     }
 
     struct FailingPlayBackend;
@@ -823,7 +919,7 @@ mod tests {
         let backend_calls = calls.clone();
         let engine = PlayerEngine::spawn(NormalizationSettings::default(), move || {
             Ok(FakeBackend {
-                calls: backend_calls,
+                calls: backend_calls.clone(),
                 position_ms: Arc::new(AtomicU64::new(0)),
                 finished_sequence: Arc::new(Mutex::new(Vec::new())),
             })
@@ -846,7 +942,7 @@ mod tests {
         let backend_calls = calls.clone();
         let engine = PlayerEngine::spawn(NormalizationSettings::default(), move || {
             Ok(FakeBackend {
-                calls: backend_calls,
+                calls: backend_calls.clone(),
                 position_ms: Arc::new(AtomicU64::new(0)),
                 finished_sequence: Arc::new(Mutex::new(Vec::new())),
             })
@@ -898,7 +994,7 @@ mod tests {
         let backend_calls = calls.clone();
         let engine = PlayerEngine::spawn(NormalizationSettings::default(), move || {
             Ok(FakeBackend {
-                calls: backend_calls,
+                calls: backend_calls.clone(),
                 position_ms: Arc::new(AtomicU64::new(0)),
                 finished_sequence: Arc::new(Mutex::new(Vec::new())),
             })
@@ -923,7 +1019,7 @@ mod tests {
         let backend_calls = calls.clone();
         let engine = PlayerEngine::spawn(NormalizationSettings::default(), move || {
             Ok(FakeBackend {
-                calls: backend_calls,
+                calls: backend_calls.clone(),
                 position_ms: Arc::new(AtomicU64::new(0)),
                 finished_sequence: Arc::new(Mutex::new(Vec::new())),
             })
@@ -977,7 +1073,7 @@ mod tests {
             },
             move || {
                 Ok(FakeBackend {
-                    calls: backend_calls,
+                    calls: backend_calls.clone(),
                     position_ms: Arc::new(AtomicU64::new(0)),
                     finished_sequence: Arc::new(Mutex::new(Vec::new())),
                 })
@@ -1042,9 +1138,9 @@ mod tests {
             },
             move || {
                 Ok(FakeBackend {
-                    calls: backend_calls,
+                    calls: backend_calls.clone(),
                     position_ms: Arc::new(AtomicU64::new(0)),
-                    finished_sequence: backend_finished_sequence,
+                    finished_sequence: backend_finished_sequence.clone(),
                 })
             },
         )
@@ -1073,7 +1169,7 @@ mod tests {
             },
             move || {
                 Ok(FakeBackend {
-                    calls: backend_calls,
+                    calls: backend_calls.clone(),
                     position_ms: Arc::new(AtomicU64::new(0)),
                     finished_sequence: Arc::new(Mutex::new(Vec::new())),
                 })
@@ -1103,7 +1199,7 @@ mod tests {
         let backend_calls = calls.clone();
         let engine = PlayerEngine::spawn(NormalizationSettings::default(), move || {
             Ok(FakeBackend {
-                calls: backend_calls,
+                calls: backend_calls.clone(),
                 position_ms: Arc::new(AtomicU64::new(0)),
                 finished_sequence: Arc::new(Mutex::new(Vec::new())),
             })
@@ -1148,9 +1244,9 @@ mod tests {
             },
             move || {
                 Ok(FakeBackend {
-                    calls: backend_calls,
+                    calls: backend_calls.clone(),
                     position_ms: Arc::new(AtomicU64::new(0)),
-                    finished_sequence: backend_finished_sequence,
+                    finished_sequence: backend_finished_sequence.clone(),
                 })
             },
         )
@@ -1166,6 +1262,117 @@ mod tests {
         let values = calls.values();
         assert!(!values.iter().any(|value| value == "load:b:4.00"));
         assert!(values.iter().filter(|value| *value == "play").count() >= 2);
+    }
+
+    fn spawn_recoverable_engine(
+        calls: &Calls,
+        failed: &Arc<AtomicBool>,
+        factory_fails_after_first: bool,
+    ) -> PlayerEngine {
+        let generation = Arc::new(AtomicUsize::new(0));
+        let calls_for_factory = calls.clone();
+        let failed_for_factory = failed.clone();
+        PlayerEngine::spawn(NormalizationSettings::default(), move || {
+            if factory_fails_after_first && generation.fetch_add(1, Ordering::SeqCst) > 0 {
+                return Err(PlayerError::audio("no output device"));
+            }
+            Ok(RecoverableBackend {
+                calls: calls_for_factory.clone(),
+                position_ms: Arc::new(AtomicU64::new(0)),
+                finished: Arc::new(AtomicBool::new(false)),
+                failed: failed_for_factory.clone(),
+            })
+        })
+        .unwrap()
+    }
+
+    #[test]
+    fn engine_reopens_failed_backend_and_resumes_current_track() {
+        let calls = Calls(Arc::new(Mutex::new(Vec::new())));
+        let failed = Arc::new(AtomicBool::new(false));
+        let engine = spawn_recoverable_engine(&calls, &failed, false);
+
+        engine.load_queue(vec![track("a"), track("b")], 0).unwrap();
+        engine.play().unwrap();
+        drain_events(&engine);
+
+        failed.store(true, Ordering::SeqCst);
+        engine.refresh().unwrap();
+
+        wait_for_repeated_call(&calls, "load:a", 2);
+        let values = calls.values();
+        assert!(
+            values.iter().filter(|value| *value == "play").count() >= 2,
+            "expected the recovered backend to resume playback; calls={values:?}"
+        );
+        wait_for_event(
+            &engine,
+            |event| matches!(event, PlaybackEvent::StateChanged(state) if state.is_playing),
+        );
+        engine.shutdown().unwrap();
+    }
+
+    #[test]
+    fn engine_pauses_playback_when_backend_recovery_fails() {
+        let calls = Calls(Arc::new(Mutex::new(Vec::new())));
+        let failed = Arc::new(AtomicBool::new(false));
+        let engine = spawn_recoverable_engine(&calls, &failed, true);
+
+        engine.load_queue(vec![track("a")], 0).unwrap();
+        engine.play().unwrap();
+        drain_events(&engine);
+
+        failed.store(true, Ordering::SeqCst);
+        engine.refresh().unwrap();
+
+        let event = wait_for_event(&engine, |event| matches!(event, PlaybackEvent::Error(_)));
+        assert!(
+            matches!(&event, PlaybackEvent::Error(message) if message.contains("no output device")),
+            "expected a recovery error event; got {event:?}"
+        );
+        wait_for_event(
+            &engine,
+            |event| matches!(event, PlaybackEvent::StateChanged(state) if !state.is_playing),
+        );
+        engine.shutdown().unwrap();
+    }
+
+    #[test]
+    fn engine_recovers_paused_backend_without_resuming() {
+        let calls = Calls(Arc::new(Mutex::new(Vec::new())));
+        let failed = Arc::new(AtomicBool::new(false));
+        let engine = spawn_recoverable_engine(&calls, &failed, false);
+
+        engine.load_queue(vec![track("a"), track("b")], 0).unwrap();
+        engine.play().unwrap();
+        wait_for_call(&calls, "play");
+        engine.pause().unwrap();
+        drain_events(&engine);
+
+        failed.store(true, Ordering::SeqCst);
+        engine.refresh().unwrap();
+
+        let values = calls.values();
+        assert_eq!(
+            values.iter().filter(|value| *value == "load:a").count(),
+            2,
+            "expected the track to be reloaded on a fresh backend; calls={values:?}"
+        );
+        assert_eq!(
+            values.iter().filter(|value| *value == "play").count(),
+            1,
+            "recovery must not resume a paused session; calls={values:?}"
+        );
+        assert_eq!(
+            values.iter().filter(|value| *value == "pause").count(),
+            2,
+            "expected the recovered backend to stay paused; calls={values:?}"
+        );
+        wait_for_event(
+            &engine,
+            |event| matches!(event, PlaybackEvent::StateChanged(state) if !state.is_playing),
+        );
+        engine.shutdown().unwrap();
     }
 
     fn wait_for_call(calls: &Calls, expected: &str) {
