@@ -49,6 +49,7 @@ struct TrackArtworkThumbnail: View {
 
 struct PlaylistArtworkThumbnail: View {
     let artworkURL: URL?
+    var size: CGFloat = 22
 
     var body: some View {
         ZStack {
@@ -57,11 +58,11 @@ struct PlaylistArtworkThumbnail: View {
                 Image(nsImage: image)
                     .resizable()
                     .aspectRatio(contentMode: .fill)
-                    .frame(width: 22, height: 22)
+                    .frame(width: size, height: size)
                     .clipped()
             } else {
                 Image(systemName: "music.note.house")
-                    .font(.caption)
+                    .font(.system(size: size * 0.5))
                     .foregroundStyle(.secondary)
             }
             #else
@@ -70,9 +71,9 @@ struct PlaylistArtworkThumbnail: View {
                 .foregroundStyle(.secondary)
             #endif
         }
-        .frame(width: 22, height: 22)
+        .frame(width: size, height: size)
         .background(Color(nsColor: .separatorColor).opacity(0.18))
-        .clipShape(RoundedRectangle(cornerRadius: 4))
+        .clipShape(RoundedRectangle(cornerRadius: size > 22 ? 8 : 4))
     }
 }
 

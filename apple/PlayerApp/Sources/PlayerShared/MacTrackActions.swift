@@ -129,6 +129,13 @@ extension ContentView {
 
         Button {
             selectTrackImmediately(track)
+            isTrackDetailsPresented = true
+        } label: {
+            Label("Song Details…", systemImage: "info.circle")
+        }
+
+        Button {
+            selectTrackImmediately(track)
             model.presentTrackEdit()
         } label: {
             Label("Edit Song", systemImage: "pencil")

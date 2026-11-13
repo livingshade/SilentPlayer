@@ -1,6 +1,57 @@
 use super::*;
 
 #[test]
+fn playlist_search_filters_names_via_ffi() {
+    let root = temp_dir("search_playlists");
+    fs::create_dir_all(&root).unwrap();
+    let db_path = root.join("library.sqlite3");
+    let mut store = LibraryStore::open(&db_path).unwrap();
+    for name in [
+        "Road Trip",
+        "Rainy Night",
+        "Late Night",
+        "Äpfel_100%",
+        "MixX1000",
+        "夜间歌单",
+    ] {
+        store.create_playlist(name).unwrap();
+    }
+    drop(store);
+
+    let app = create_app(&db_path, &root.join("Music"));
+    let all = [
+        "Late Night",
+        "MixX1000",
+        "Rainy Night",
+        "Road Trip",
+        "Äpfel_100%",
+        "夜间歌单",
+    ];
+    for (query, expected) in [
+        ("  nIgHt  ", &["Late Night", "Rainy Night"][..]),
+        ("äPFEL", &["Äpfel_100%"]),
+        ("_100%", &["Äpfel_100%"]),
+        ("夜间", &["夜间歌单"]),
+        ("missing", &[]),
+        ("", &all),
+        (" \t", &all),
+    ] {
+        let query_arg = c_string_arg(query);
+        let result = unsafe { call_json(player_app_search_playlists(app, query_arg.as_ptr())) };
+        assert_ok(&result);
+        let names: Vec<_> = result["data"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|playlist| playlist["name"].as_str().unwrap())
+            .collect();
+        assert_eq!(names, expected, "query {query:?}");
+    }
+    unsafe { player_app_destroy(app) };
+    fs::remove_dir_all(root).ok();
+}
+
+#[test]
 fn app_sorts_playlist_via_ffi() {
     let db_path = temp_db_path("sort_playlist");
     let media_root = temp_dir("sort_playlist_media");

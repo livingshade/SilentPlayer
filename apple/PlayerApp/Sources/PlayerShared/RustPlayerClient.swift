@@ -951,6 +951,15 @@ public final class RustPlayerClient: @unchecked Sendable {
         }
     }
 
+    public func searchPlaylists(_ query: String) throws -> [PlaylistItem] {
+        try sync {
+            try query.withCString { queryValue in
+                try decode(player_app_search_playlists(app, queryValue), as: [PlaylistDTO].self)
+                    .map(\.model)
+            }
+        }
+    }
+
     public func recentPlaylists(limit: Int = 6) throws -> [PlaylistItem] {
         try sync {
             try decode(

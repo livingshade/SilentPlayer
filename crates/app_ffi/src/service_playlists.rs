@@ -15,10 +15,16 @@ struct PlaylistAddSummary {
 
 impl PlayerApp {
     pub(crate) fn service_playlists(&mut self) -> PlayerResult<impl Serialize> {
+        self.service_search_playlists("")
+    }
+
+    pub(crate) fn service_search_playlists(&mut self, query: &str) -> PlayerResult<impl Serialize> {
+        let query = query.trim().to_lowercase();
         let store = self.store()?;
         store
             .playlists()?
             .into_iter()
+            .filter(|playlist| query.is_empty() || playlist.name.to_lowercase().contains(&query))
             .map(|playlist| self.playlist_to_dto(&store, playlist))
             .collect::<PlayerResult<Vec<_>>>()
     }

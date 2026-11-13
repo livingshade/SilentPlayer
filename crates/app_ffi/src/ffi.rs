@@ -644,6 +644,18 @@ pub unsafe extern "C" fn player_app_playlists(app: *mut PlayerApp) -> *mut c_cha
 }
 
 #[no_mangle]
+pub unsafe extern "C" fn player_app_search_playlists(
+    app: *mut PlayerApp,
+    query: *const c_char,
+) -> *mut c_char {
+    ffi_result(|| {
+        let app = app_mut(app)?;
+        let query = c_string(query)?;
+        app.service_search_playlists(&query)
+    })
+}
+
+#[no_mangle]
 pub unsafe extern "C" fn player_app_recent_playlists(
     app: *mut PlayerApp,
     limit: usize,

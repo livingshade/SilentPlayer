@@ -70,6 +70,7 @@ char *player_app_favorites(PlayerApp *app);
 char *player_app_history(PlayerApp *app, size_t limit);
 
 char *player_app_playlists(PlayerApp *app);
+char *player_app_search_playlists(PlayerApp *app, const char *query);
 char *player_app_recent_playlists(PlayerApp *app, size_t limit);
 char *player_app_create_playlist(PlayerApp *app, const char *name);
 char *player_app_rename_playlist(PlayerApp *app, const char *old_name, const char *new_name);

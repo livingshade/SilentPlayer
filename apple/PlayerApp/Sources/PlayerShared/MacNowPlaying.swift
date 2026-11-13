@@ -3,13 +3,12 @@ import Foundation
 import SwiftUI
 
 extension ContentView {
-    internal func nowPlayingPanel(for track: TrackItem, layout: DetailPaneLayout) -> some View {
+    internal func trackDetailsSheet(for track: TrackItem) -> some View {
         HStack(alignment: .top, spacing: 18) {
             ArtworkViewport(
-                artworkURL: model.trackDetail.details?.artworkURL,
-                size: layout.artworkSize
+                artworkURL: model.detailDetails?.artworkURL ?? track.artworkURL,
+                size: 180
             )
-            .frame(width: layout.artworkSize)
 
             ScrollView(.vertical) {
                 VStack(alignment: .leading, spacing: 10) {
@@ -33,11 +32,8 @@ extension ContentView {
 
                         Spacer(minLength: 8)
 
-                        VStack(alignment: .trailing, spacing: 8) {
-                            ratingPicker(for: track)
-                                .frame(maxWidth: 140, alignment: .trailing)
-                            trackActionsMenu(for: track)
-                        }
+                        ratingPicker(for: track)
+                            .frame(maxWidth: 140, alignment: .trailing)
                     }
 
                     secondaryContentPanels
@@ -48,11 +44,16 @@ extension ContentView {
             }
             .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .padding(.horizontal, 20)
-        .padding(.vertical, 14)
-        .frame(maxWidth: .infinity, alignment: .topLeading)
-        .frame(height: layout.detailPanelHeight, alignment: .topLeading)
-        .background(Color(nsColor: .controlBackgroundColor).opacity(0.55))
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            HStack {
+                Spacer()
+                Button("Close") { isTrackDetailsPresented = false }
+                    .keyboardShortcut(.cancelAction)
+            }
+            .padding(.top, 12)
+        }
+        .padding(20)
+        .frame(minWidth: 650, idealWidth: 720, minHeight: 340, idealHeight: 460)
     }
 
     internal func expandedNowPlaying(for track: TrackItem) -> some View {

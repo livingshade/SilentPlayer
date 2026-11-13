@@ -10,11 +10,14 @@ public struct ContentView: View {
     @State internal var pendingSeekProgress: Double?
     @State internal var pendingSingleClick: DispatchWorkItem?
     @State internal var isFileChecksExpanded = false
+    @State internal var isTrackDetailsPresented = false
     @State internal var isZeroOutConfirmationPresented = false
     @State internal var isQueuePresented = false
     @State internal var isLibraryInformationPresented = false
     @State internal var isNowPlayingExpanded = false
     @State internal var splitViewVisibility: NavigationSplitViewVisibility = .all
+    @State internal var playlistSearchText = ""
+    @State internal var playlistSearchResult: (query: String, result: Result<[PlaylistItem], Error>)?
     @State internal var pendingLibraryDeletion: TrackItem?
     @State internal var isLibraryDeletionConfirmationPresented = false
     internal let chooseFolder: () async -> URL?
@@ -60,6 +63,11 @@ public struct ContentView: View {
                 chooseArtworkFile: chooseArtworkFile,
                 chooseLyricsFile: chooseLyricsFile
             )
+        }
+        .sheet(isPresented: $isTrackDetailsPresented) {
+            if let track = model.library.selectedTrack {
+                trackDetailsSheet(for: track)
+            }
         }
         .sheet(isPresented: Binding(
             get: { model.playlists.presentedSheet != nil },

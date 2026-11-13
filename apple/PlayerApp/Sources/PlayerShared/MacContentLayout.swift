@@ -2,16 +2,20 @@
 import Foundation
 import SwiftUI
 
+private struct PlaylistSearchRequest: Equatable {
+    let query: String
+    let playlists: [PlaylistItem]
+}
+
 extension ContentView {
     internal var playerContent: some View {
         NavigationSplitView(columnVisibility: $splitViewVisibility) {
             sidebar
                 .navigationSplitViewColumnWidth(min: 220, ideal: 270, max: 340)
         } detail: {
-            GeometryReader { proxy in
-                detailPane(layout: DetailPaneLayout(containerSize: proxy.size))
-            }
+            detailPane
         }
+        .searchable(text: $playlistSearchText, placement: .sidebar, prompt: "Search playlists")
     }
 
     @MainActor
@@ -74,7 +78,7 @@ extension ContentView {
         .accessibilityLabel("Restoring player")
     }
 
-    internal func detailPane(layout: DetailPaneLayout) -> some View {
+    internal var detailPane: some View {
         ZStack {
             VStack(spacing: 0) {
                 if isNowPlayingExpanded, let track = model.playback.nowPlaying {
@@ -86,10 +90,6 @@ extension ContentView {
                 } else {
                     contentHeader
                     Divider()
-                    if let track = model.detailTrack {
-                        nowPlayingPanel(for: track, layout: layout)
-                        Divider()
-                    }
                     trackList
                         .layoutPriority(1)
                     Divider()
@@ -123,19 +123,6 @@ extension ContentView {
             .shadow(radius: 14, y: 4)
         }
         .allowsHitTesting(true)
-    }
-
-    internal struct DetailPaneLayout {
-        let containerSize: CGSize
-
-        var detailPanelHeight: CGFloat {
-            let adaptiveHeight = containerSize.height * 0.34
-            return min(max(adaptiveHeight, 220), 360)
-        }
-
-        var artworkSize: CGFloat {
-            min(max(detailPanelHeight - 76, 144), 220)
-        }
     }
 
     internal var sidebar: some View {
@@ -175,10 +162,12 @@ extension ContentView {
 
             ScrollView {
                 VStack(spacing: 4) {
-                    ForEach(model.playlists.items) { playlist in
-                        playlistButton(playlist)
-                    }
+                    sidebarPlaylistRows
                 }
+                .frame(maxWidth: .infinity)
+            }
+            .task(id: PlaylistSearchRequest(query: playlistSearchQuery, playlists: model.playlists.items)) {
+                await searchSidebarPlaylists(playlistSearchQuery)
             }
 
             Spacer()
@@ -200,7 +189,57 @@ extension ContentView {
         .frame(minWidth: 220, idealWidth: 270, maxWidth: 340)
     }
 
+    private var playlistSearchQuery: String {
+        playlistSearchText.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    @ViewBuilder
+    private var sidebarPlaylistRows: some View {
+        if playlistSearchQuery.isEmpty {
+            ForEach(model.playlists.items, content: playlistButton)
+        } else if let search = playlistSearchResult, search.query == playlistSearchQuery {
+            switch search.result {
+            case .success(let matches) where !matches.isEmpty:
+                ForEach(matches, content: playlistButton)
+            case .success:
+                Text("No matching playlists")
+                    .foregroundStyle(.secondary)
+            case .failure:
+                Text("Couldn’t search playlists")
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    private func searchSidebarPlaylists(_ query: String) async {
+        guard !query.isEmpty else {
+            playlistSearchResult = nil
+            return
+        }
+        do {
+            try await Task.sleep(for: .milliseconds(120))
+            let matches = try await model.invoke { try $0.searchPlaylists(query) }
+            try Task.checkCancellation()
+            playlistSearchResult = (query, .success(matches))
+        } catch is CancellationError {
+            return
+        } catch {
+            guard !Task.isCancelled else { return }
+            playlistSearchResult = (query, .failure(error))
+        }
+    }
+
     internal var contentHeader: some View {
+        Group {
+            if let playlist = activePlaylist {
+                playlistHeader(for: playlist)
+            } else {
+                collectionHeader
+            }
+        }
+    }
+
+    private var collectionHeader: some View {
         HStack(spacing: 14) {
             VStack(alignment: .leading, spacing: 2) {
                 Text(model.library.scope.title)
@@ -214,49 +253,18 @@ extension ContentView {
             Spacer(minLength: 12)
 
             if supportsSongSearch {
-                HStack(spacing: 7) {
-                    Image(systemName: "magnifyingglass")
-                        .foregroundStyle(.secondary)
-
-                    TextField("Search songs", text: featureBinding(model.library, \.query))
-                        .textFieldStyle(.plain)
-                        .onSubmit {
-                            Task { await model.search() }
-                        }
-
-                    if !model.library.query.isEmpty {
-                        Button {
-                            clearSearch()
-                        } label: {
-                            Image(systemName: "xmark.circle.fill")
-                                .foregroundStyle(.secondary)
-                        }
-                        .buttonStyle(.borderless)
-                        .help("Clear search")
+                songSearchField
+                    .frame(width: 280)
+                    .background(Color(nsColor: .controlBackgroundColor))
+                    .clipShape(RoundedRectangle(cornerRadius: 7))
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 7)
+                            .stroke(Color(nsColor: .separatorColor).opacity(0.55), lineWidth: 1)
                     }
-                }
-                .padding(.horizontal, 10)
-                .padding(.vertical, 7)
-                .frame(width: 280)
-                .background(Color(nsColor: .controlBackgroundColor))
-                .clipShape(RoundedRectangle(cornerRadius: 7))
-                .overlay {
-                    RoundedRectangle(cornerRadius: 7)
-                        .stroke(Color(nsColor: .separatorColor).opacity(0.55), lineWidth: 1)
-                }
             }
 
             if supportsCollectionPlayAll {
-                Button {
-                    Task { await playAllCurrentCollection() }
-                } label: {
-                    Label("Play All", systemImage: "play.fill")
-                        .font(.callout.weight(.semibold))
-                }
-                .buttonStyle(.borderedProminent)
-                .controlSize(.regular)
-                .disabled(!canPlayAllCurrentCollection || model.operations.isBusy)
-                .help("Replace the queue with all songs in \(model.library.scope.title) and start playing")
+                collectionPlayAllButton
             }
 
             Menu {
@@ -270,6 +278,136 @@ extension ContentView {
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 10)
+    }
+
+    private func playlistHeader(for playlist: PlaylistItem) -> some View {
+        let accent = Color(red: 0.85, green: 0.10, blue: 0.29)
+        let createdAt = Date(timeIntervalSince1970: TimeInterval(playlist.createdAtUnixSeconds))
+        return VStack(alignment: .leading, spacing: 20) {
+            HStack(alignment: .top, spacing: 24) {
+                PlaylistArtworkThumbnail(artworkURL: playlist.artworkURL, size: 176)
+                    .accessibilityHidden(true)
+
+                VStack(alignment: .leading, spacing: 12) {
+                    HStack(alignment: .firstTextBaseline, spacing: 8) {
+                        Text(playlist.name)
+                            .font(.largeTitle.weight(.semibold))
+                            .lineLimit(2)
+                            .accessibilityAddTraits(.isHeader)
+
+                        Button {
+                            model.presentPlaylistSettings(playlist)
+                        } label: {
+                            Label("Edit Playlist", systemImage: "square.and.pencil")
+                                .labelStyle(.iconOnly)
+                                .font(.title3)
+                        }
+                        .buttonStyle(.borderless)
+                        .help("Edit playlist")
+                    }
+
+                    if playlist.createdAtUnixSeconds > 0 {
+                        Text("Created \(createdAt.formatted(date: .abbreviated, time: .omitted))")
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
+                    }
+
+                    Spacer(minLength: 0)
+
+                    HStack(spacing: 10) {
+                        collectionPlayAllButton
+                            .controlSize(.large)
+                            .tint(accent)
+
+                        Menu {
+                            contentActionsMenu
+                        } label: {
+                            Label("More", systemImage: "ellipsis")
+                                .labelStyle(.iconOnly)
+                        }
+                        .menuIndicator(.hidden)
+                        .menuStyle(.borderedButton)
+                        .controlSize(.large)
+                        .help("More actions")
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .topLeading)
+                .frame(height: 176, alignment: .topLeading)
+            }
+
+            HStack {
+                Text(playlist.trackCount == 1 ? "1 song" : "\(playlist.trackCount) songs")
+                    .font(.headline)
+                    .padding(.bottom, 5)
+                    .overlay(alignment: .bottomLeading) {
+                        Capsule()
+                            .fill(accent)
+                            .frame(width: 18, height: 3)
+                            .accessibilityHidden(true)
+                    }
+
+                Spacer()
+
+                songSearchField
+                    .frame(minWidth: 140, idealWidth: 190, maxWidth: 230)
+                    .background(.white.opacity(0.12), in: Capsule())
+            }
+        }
+        .fixedSize(horizontal: false, vertical: true)
+        .padding(.horizontal, 22)
+        .padding(.vertical, 16)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .foregroundStyle(.white)
+        .environment(\.colorScheme, .dark)
+        .background {
+            LinearGradient(
+                colors: [Color(red: 0.35, green: 0.19, blue: 0.38), Color(red: 0.19, green: 0.12, blue: 0.21)],
+                startPoint: .top,
+                endPoint: .bottom
+            )
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("playlistSummary")
+    }
+
+    private var songSearchField: some View {
+        HStack(spacing: 7) {
+            Image(systemName: "magnifyingglass")
+                .foregroundStyle(.secondary)
+                .accessibilityHidden(true)
+
+            TextField("Search songs", text: featureBinding(model.library, \.query))
+                .textFieldStyle(.plain)
+                .onSubmit {
+                    Task { await model.search() }
+                }
+
+            if !model.library.query.isEmpty {
+                Button {
+                    clearSearch()
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.borderless)
+                .accessibilityLabel("Clear song search")
+                .help("Clear search")
+            }
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 7)
+    }
+
+    private var collectionPlayAllButton: some View {
+        Button {
+            Task { await playAllCurrentCollection() }
+        } label: {
+            Label("Play All", systemImage: "play.fill")
+                .font(.callout.weight(.semibold))
+        }
+        .buttonStyle(.borderedProminent)
+        .disabled(!canPlayAllCurrentCollection || model.operations.isBusy)
+        .help("Replace the queue with all songs in \(model.library.scope.title) and start playing")
     }
 
     @ViewBuilder
