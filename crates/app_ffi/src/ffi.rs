@@ -719,6 +719,18 @@ pub unsafe extern "C" fn player_app_delete_playlist(
 }
 
 #[no_mangle]
+pub unsafe extern "C" fn player_app_delete_playlist_tracks_from_library(
+    app: *mut PlayerApp,
+    name: *const c_char,
+) -> *mut c_char {
+    ffi_result(|| {
+        let app = app_mut(app)?;
+        let name = c_string(name)?;
+        app.service_delete_playlist_tracks_from_library(&name)
+    })
+}
+
+#[no_mangle]
 pub unsafe extern "C" fn player_app_clear_playlist(
     app: *mut PlayerApp,
     name: *const c_char,

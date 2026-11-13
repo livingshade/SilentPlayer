@@ -162,6 +162,54 @@ fn managed_import_search_analysis_and_audit_share_app_semantics() {
 }
 
 #[test]
+fn playlist_delete_songs_requires_confirmation_and_deletes_library_members() {
+    let root = make_temp_dir("playlist_delete_songs");
+    let db_path = root.join("silent.sqlite3");
+    let media_root = root.join("Music");
+    import_one(
+        &db_path,
+        &media_root,
+        &fixture("into_the_oceans_chorus.ogg"),
+    );
+    let track = first_track(&db_path, &media_root);
+    let path = track["path"].as_str().unwrap();
+    assert_command_ok(
+        &silent_cli(&db_path, &media_root)
+            .args(["playlist", "add", "Road", path])
+            .output()
+            .unwrap(),
+    );
+    let rejected = silent_cli(&db_path, &media_root)
+        .args(["playlist", "delete-songs", "Road"])
+        .output()
+        .unwrap();
+    assert_eq!(rejected.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&rejected.stderr).contains("--yes"));
+    assert!(Path::new(path).exists());
+    let deleted = silent_cli(&db_path, &media_root)
+        .args([
+            "--yes",
+            "--output",
+            "json",
+            "playlist",
+            "delete-songs",
+            "Road",
+        ])
+        .output()
+        .unwrap();
+    assert_command_ok(&deleted);
+    assert_eq!(json_output(&deleted)["tracks_deleted"], 1);
+    assert!(!Path::new(path).exists());
+    let library = silent_cli(&db_path, &media_root)
+        .args(["--output", "json", "library", "list"])
+        .output()
+        .unwrap();
+    assert_command_ok(&library);
+    assert!(json_output(&library).as_array().unwrap().is_empty());
+    fs::remove_dir_all(root).ok();
+}
+
+#[test]
 fn music_view_collections_and_playlist_commands_cover_app_mutations() {
     let root = make_temp_dir("mutations");
     let db_path = root.join("silent.sqlite3");

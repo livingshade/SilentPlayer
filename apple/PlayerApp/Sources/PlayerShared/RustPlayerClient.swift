@@ -21,6 +21,13 @@ public struct DeleteTrackSummary: Hashable, Sendable {
     public let cleanupError: String?
 }
 
+public struct DeletePlaylistTracksSummary: Decodable, Sendable {
+    public let tracksDeleted: Int
+    public let deletedPaths: [String]
+    public let managedFilesDeleted: Int
+    public let errors: [String]
+}
+
 public struct LibraryPage: Hashable, Sendable {
     public let total: Int
     public let offset: Int
@@ -1009,6 +1016,17 @@ public final class RustPlayerClient: @unchecked Sendable {
         try sync {
             try name.withCString { nameValue in
                 _ = try decode(player_app_clear_playlist(app, nameValue), as: EmptyDTO.self)
+            }
+        }
+    }
+
+    public func deletePlaylistTracksFromLibrary(name: String) throws -> DeletePlaylistTracksSummary {
+        try sync {
+            try name.withCString { nameValue in
+                try decode(
+                    player_app_delete_playlist_tracks_from_library(app, nameValue),
+                    as: DeletePlaylistTracksSummary.self
+                )
             }
         }
     }

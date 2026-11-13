@@ -7,6 +7,8 @@ struct PhonePlaylistDetailView: View {
     let playlist: PlaylistItem
     let confirmLibraryDeletion: (TrackItem) -> Void
     @State private var isLoadingPlaylist = true
+    @State private var isClearConfirmationPresented = false
+    @State private var isLibraryDeletionConfirmationPresented = false
 
     var body: some View {
         Group {
@@ -34,12 +36,45 @@ struct PhonePlaylistDetailView: View {
         }
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
-                Button {
-                    model.presentPlaylistSettings(playlist)
+                Menu {
+                    Button {
+                        model.presentPlaylistSettings(playlist)
+                    } label: {
+                        Label("Edit Playlist", systemImage: "pencil")
+                    }
+
+                    Button(role: .destructive) {
+                        isClearConfirmationPresented = true
+                    } label: {
+                        Label("Remove All from Playlist…", systemImage: "minus.circle")
+                    }
+                    .disabled(!canRemovePlaylistSongs)
+
+                    Button(role: .destructive) {
+                        isLibraryDeletionConfirmationPresented = true
+                    } label: {
+                        Label("Delete All from Library…", systemImage: "trash")
+                    }
+                    .disabled(!canRemovePlaylistSongs)
+
                 } label: {
-                    Label("Edit Playlist", systemImage: "ellipsis.circle")
+                    Label("Playlist Actions", systemImage: "ellipsis.circle")
                 }
             }
+        }
+        .confirmationDialog("Remove All Songs from Playlist?", isPresented: $isClearConfirmationPresented, titleVisibility: .visible) {
+            Button("Remove All from Playlist", role: .destructive) {
+                Task { await model.clearPlaylist(named: playlist.name) }
+            }
+        } message: {
+            Text("All \(playlistSongCount) songs will be removed from “\(playlist.name)”. They will stay in your library and other playlists. The playlist will be kept.")
+        }
+        .confirmationDialog("Delete All Playlist Songs from Library?", isPresented: $isLibraryDeletionConfirmationPresented, titleVisibility: .visible) {
+            Button("Delete All from Library", role: .destructive) {
+                Task { await model.deletePlaylistSongsFromLibrary(named: playlist.name) }
+            }
+        } message: {
+            Text("All \(playlistSongCount) songs in “\(playlist.name)” will be permanently deleted from Library, every playlist, favorites, history, the playback queue, and the managed music folder. This includes songs hidden by search. The playlist will be kept. This can’t be undone.")
         }
         .task(id: playlist.id) {
             isLoadingPlaylist = model.activePlaylistName != playlist.name
@@ -48,6 +83,17 @@ struct PhonePlaylistDetailView: View {
             }
             isLoadingPlaylist = false
         }
+    }
+
+    private var playlistSongCount: Int {
+        model.playlists.items.first { $0.id == playlist.id }?.trackCount ?? playlist.trackCount
+    }
+
+    private var canRemovePlaylistSongs: Bool {
+        playlistSongCount > 0 && !isLoadingPlaylist
+            && !model.operations.isBusy
+            && !model.operations.isLibraryWorking
+            && !model.operations.isAnalyzing
     }
 
     private var playlistContent: some View {

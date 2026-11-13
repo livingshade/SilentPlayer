@@ -324,15 +324,13 @@ impl PlayerApp {
             PlayerError::store(format!("track is not in library: {}", path.display()))
         })?;
 
-        let queue_indexes = self
-            .queue_tracks
+        while let Some(index) = self
+            .valid_queue_playback_order()
             .iter()
-            .enumerate()
-            .filter_map(|(index, queued)| {
-                (Path::new(&queued.path) == track.path.as_path()).then_some(index)
+            .position(|&source_index| {
+                Path::new(&self.queue_tracks[source_index].path) == track.path.as_path()
             })
-            .collect::<Vec<_>>();
-        for index in queue_indexes.into_iter().rev() {
+        {
             self.remove_queue_item(index)?;
         }
 

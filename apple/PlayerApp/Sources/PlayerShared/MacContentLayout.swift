@@ -549,10 +549,22 @@ extension ContentView {
             Divider()
 
             Button(role: .destructive) {
-                Task { await model.clearActivePlaylist() }
+                pendingPlaylistSongRemoval = activePlaylist
+                isPlaylistSongRemovalConfirmationPresented = true
             } label: {
-                Label("Clear Playlist", systemImage: "clear")
+                Label("Remove All from Playlist…", systemImage: "minus.circle")
             }
+            .disabled(!canRemovePlaylistSongs)
+
+            Button(role: .destructive) {
+                pendingPlaylistLibraryDeletion = activePlaylist
+                isPlaylistLibraryDeletionConfirmationPresented = true
+            } label: {
+                Label("Delete All from Library…", systemImage: "trash")
+            }
+            .disabled(!canRemovePlaylistSongs)
+
+            Divider()
 
             Button(role: .destructive) {
                 Task { await model.deleteActivePlaylist() }
@@ -569,6 +581,13 @@ extension ContentView {
             return nil
         }
         return model.playlists.items.first { $0.name == name }
+    }
+
+    internal var canRemovePlaylistSongs: Bool {
+        (activePlaylist?.trackCount ?? 0) > 0
+            && !model.operations.isBusy
+            && !model.operations.isLibraryWorking
+            && !model.operations.isAnalyzing
     }
 
     internal func clearSearch() {

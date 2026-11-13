@@ -369,6 +369,10 @@ impl SilentAppClient {
         self.call(|app| app.service_clear_playlist(name))
     }
 
+    pub fn delete_playlist_tracks_from_library(&mut self, name: &str) -> ClientResult {
+        self.call(|app| app.service_delete_playlist_tracks_from_library(name))
+    }
+
     pub fn add_to_playlist(&mut self, name: &str, path: impl AsRef<Path>) -> ClientResult {
         self.call(|app| app.service_add_to_playlist(name, path.as_ref()))
     }

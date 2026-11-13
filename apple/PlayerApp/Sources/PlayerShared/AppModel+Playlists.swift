@@ -219,13 +219,8 @@ extension AppModel {
     public func deleteFromLibrary(_ track: TrackItem) async {
         await runBusy("Deleting \(track.title)") { [self] in
             let summary = try await invoke { try $0.deleteFromLibrary(path: track.path) }
-            if library.selectedTrack?.id == track.id {
-                library.selectedTrack = nil
-                clearDetails()
-            }
-            invalidateLibraryPresentationCache()
+            removeDeletedTracks(paths: [track.path])
             await refreshPlaylists()
-            await reloadActiveScope(quiet: true)
             await refreshPlaybackState()
             if let cleanupError = summary.cleanupError {
                 operations.status = "Removed \(track.title) from Library"
@@ -276,6 +271,10 @@ extension AppModel {
             operations.status = "Select a playlist first"
             return
         }
+        await clearPlaylist(named: name)
+    }
+
+    public func clearPlaylist(named name: String) async {
         await runBusy("Clearing playlist") { [self] in
             try await invoke { try $0.clearPlaylist(name: name) }
             library.selectedTrack = nil
@@ -283,6 +282,22 @@ extension AppModel {
             operations.status = "Cleared \(name)"
             await refreshPlaylists()
             await reloadActiveScope(quiet: true)
+        }
+    }
+
+    public func deletePlaylistSongsFromLibrary(named name: String) async {
+        await runBusy("Deleting songs from \(name)") { [self] in
+            let summary = try await invoke {
+                try $0.deletePlaylistTracksFromLibrary(name: name)
+            }
+            removeDeletedTracks(paths: Set(summary.deletedPaths))
+            await refreshPlaylists()
+            await refreshPlaybackState()
+            operations.status = "Deleted \(summary.tracksDeleted) songs from Library"
+            if !summary.errors.isEmpty {
+                operations.status += " with \(summary.errors.count) errors"
+                playback.error = summary.errors.joined(separator: "\n")
+            }
         }
     }
 

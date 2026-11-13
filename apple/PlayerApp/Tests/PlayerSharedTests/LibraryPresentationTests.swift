@@ -6,6 +6,83 @@ import XCTest
 
 @MainActor
 final class LibraryPresentationCacheTests: XCTestCase {
+    func testDeletingFromLibraryUpdatesTheListWithoutLoadingPages() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let client = try RustPlayerClient(
+            dbURL: root.appendingPathComponent("library.sqlite3"),
+            mediaRootURL: root.appendingPathComponent("Music"),
+            repoRoot: root
+        )
+        _ = try client.importFolder(repositoryRoot.appendingPathComponent("test-assets/audio"))
+        let model = AppModel(client: client)
+        await model.bootstrap()
+        let deleted = try XCTUnwrap(model.library.tracks.first)
+        let kept = Array(model.library.tracks.dropFirst())
+        let selected = try XCTUnwrap(kept.first)
+        model.selectTrack(id: selected.id)
+
+        var loadingProgress: [Double] = []
+        let progress = model.operations.$libraryProgress.compactMap { $0 }.sink {
+            loadingProgress.append($0)
+        }
+        defer { progress.cancel() }
+
+        await model.deleteFromLibrary(deleted)
+
+        XCTAssertEqual(model.library.tracks.map(\.id), kept.map(\.id))
+        XCTAssertEqual(model.library.selectedTrack?.id, selected.id)
+        XCTAssertTrue(loadingProgress.isEmpty)
+
+        await model.showFavorites()
+        await model.showLibrary()
+
+        XCTAssertEqual(model.library.tracks.map(\.id), kept.map(\.id))
+        XCTAssertEqual(model.library.selectedTrack?.id, selected.id)
+        XCTAssertTrue(loadingProgress.isEmpty)
+    }
+
+    func testDeletingPlaylistSongsPreservesLibrarySearchAndUpdatesTheCachedLibrary() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let client = try RustPlayerClient(
+            dbURL: root.appendingPathComponent("library.sqlite3"),
+            mediaRootURL: root.appendingPathComponent("Music"),
+            repoRoot: root
+        )
+        _ = try client.importFolder(repositoryRoot.appendingPathComponent("test-assets/audio"))
+        let model = AppModel(client: client)
+        await model.bootstrap()
+        let deleted = try XCTUnwrap(model.library.tracks.first)
+        let kept = Array(model.library.tracks.dropFirst())
+        try client.addToPlaylist(name: "Road", path: deleted.path)
+        model.selectTrack(id: deleted.id)
+        model.library.query = deleted.path
+        await model.search()
+        XCTAssertEqual(model.library.tracks.map(\.id), [deleted.id])
+
+        var loadingProgress: [Double] = []
+        let progress = model.operations.$libraryProgress.compactMap { $0 }.sink {
+            loadingProgress.append($0)
+        }
+        defer { progress.cancel() }
+
+        await model.deletePlaylistSongsFromLibrary(named: "Road")
+
+        XCTAssertEqual(model.library.query, deleted.path)
+        XCTAssertTrue(model.library.tracks.isEmpty)
+        XCTAssertNil(model.library.selectedTrack)
+        XCTAssertEqual(model.playlists.items.first { $0.name == "Road" }?.trackCount, 0)
+
+        await model.showLibrary()
+
+        XCTAssertEqual(model.library.tracks.map(\.id), kept.map(\.id))
+        XCTAssertNil(model.library.selectedTrack)
+        XCTAssertTrue(loadingProgress.isEmpty)
+    }
+
     func testReturningToLibraryUsesSessionCacheUntilExplicitRefresh() async throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)

@@ -20,6 +20,10 @@ public struct ContentView: View {
     @State internal var playlistSearchResult: (query: String, result: Result<[PlaylistItem], Error>)?
     @State internal var pendingLibraryDeletion: TrackItem?
     @State internal var isLibraryDeletionConfirmationPresented = false
+    @State internal var pendingPlaylistSongRemoval: PlaylistItem?
+    @State internal var pendingPlaylistLibraryDeletion: PlaylistItem?
+    @State internal var isPlaylistSongRemovalConfirmationPresented = false
+    @State internal var isPlaylistLibraryDeletionConfirmationPresented = false
     internal let chooseFolder: () async -> URL?
     internal let chooseArtworkFile: () async -> URL?
     internal let chooseLyricsFile: () async -> URL?
@@ -122,6 +126,38 @@ public struct ContentView: View {
         } message: {
             if let track = pendingLibraryDeletion {
                 Text("“\(track.title)” will be removed from Library, every playlist, favorites, history, and the managed music folder. This can’t be undone.")
+            }
+        }
+        .confirmationDialog(
+            "Remove All Songs from Playlist?",
+            isPresented: $isPlaylistSongRemovalConfirmationPresented,
+            titleVisibility: .visible
+        ) {
+            Button("Remove All from Playlist", role: .destructive) {
+                guard let playlist = pendingPlaylistSongRemoval else { return }
+                pendingPlaylistSongRemoval = nil
+                Task { await model.clearPlaylist(named: playlist.name) }
+            }
+            Button("Cancel", role: .cancel) { pendingPlaylistSongRemoval = nil }
+        } message: {
+            if let playlist = pendingPlaylistSongRemoval {
+                Text("All \(playlist.trackCount) songs will be removed from “\(playlist.name)”. They will stay in your library and other playlists. The playlist will be kept.")
+            }
+        }
+        .confirmationDialog(
+            "Delete All Playlist Songs from Library?",
+            isPresented: $isPlaylistLibraryDeletionConfirmationPresented,
+            titleVisibility: .visible
+        ) {
+            Button("Delete All from Library", role: .destructive) {
+                guard let playlist = pendingPlaylistLibraryDeletion else { return }
+                pendingPlaylistLibraryDeletion = nil
+                Task { await model.deletePlaylistSongsFromLibrary(named: playlist.name) }
+            }
+            Button("Cancel", role: .cancel) { pendingPlaylistLibraryDeletion = nil }
+        } message: {
+            if let playlist = pendingPlaylistLibraryDeletion {
+                Text("All \(playlist.trackCount) songs in “\(playlist.name)” will be permanently deleted from Library, every playlist, favorites, history, the playback queue, and the managed music folder. This includes songs hidden by search. The playlist will be kept. This can’t be undone.")
             }
         }
         .task {

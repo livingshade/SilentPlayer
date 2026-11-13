@@ -741,6 +741,12 @@ fn run_playlist(context: &CliContext, mut args: Vec<String>) -> CliResult<()> {
             };
             context.emit(&value)
         }
+        "delete-songs" => {
+            let name = one_value(args, "playlist delete-songs requires <name>")?;
+            require_confirmation(context, "delete playlist songs from library")?;
+            let mut client = context.open_client()?;
+            context.emit(&client.delete_playlist_tracks_from_library(&name)?)
+        }
         "add" | "remove" => {
             if args.len() != 2 {
                 return Err(CliError::usage(
@@ -1224,6 +1230,7 @@ Usage:
   silent --cli [options] playlist recent [--limit <n>]
   silent --cli [options] playlist search <name> <query> --limit <n>
   silent --cli [options] playlist show|create|delete|clear <name>
+  silent --cli [options] --yes playlist delete-songs <name>
   silent --cli [options] playlist rename <old-name> <new-name>
   silent --cli [options] playlist add|remove <name> <selector>
   silent --cli [options] playlist move <name> <selector> <up|down>

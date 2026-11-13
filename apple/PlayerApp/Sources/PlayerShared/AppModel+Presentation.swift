@@ -43,6 +43,31 @@ extension AppModel {
         isPresentingCompleteLibrary = false
     }
 
+    internal func removeDeletedTracks(paths: Set<String>) {
+        guard !paths.isEmpty else {
+            return
+        }
+
+        loadedTracks.removeAll { paths.contains($0.path) }
+        let remainingTracks = library.tracks.filter { !paths.contains($0.path) }
+        if remainingTracks.count != library.tracks.count {
+            library.tracks = remainingTracks
+        }
+        if let selected = library.selectedTrack, paths.contains(selected.path) {
+            library.selectedTrack = nil
+            clearDetails()
+        }
+
+        if var cache = libraryPresentationCache {
+            cache.tracks.removeAll { paths.contains($0.path) }
+            if let selectedID = cache.selectedTrackID,
+               !cache.tracks.contains(where: { $0.id == selectedID }) {
+                cache.selectedTrackID = nil
+            }
+            libraryPresentationCache = cache
+        }
+    }
+
     internal func replaceTrackInLibraryCache(_ updated: TrackItem) {
         guard var cache = libraryPresentationCache else {
             return

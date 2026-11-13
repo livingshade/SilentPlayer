@@ -52,6 +52,193 @@ fn playlist_search_filters_names_via_ffi() {
 }
 
 #[test]
+fn playlist_library_deletion_removes_all_members_and_preserves_other_tracks() {
+    let root = temp_dir("delete_playlist_songs");
+    let media_root = root.join("Music");
+    fs::create_dir_all(&media_root).unwrap();
+    let db_path = root.join("library.sqlite3");
+    let first = media_root.join("first.ogg");
+    let second = root.join("external.ogg");
+    let kept = media_root.join("kept.ogg");
+    for path in [&first, &second, &kept] {
+        fs::write(path, b"test").unwrap();
+    }
+    {
+        let mut store = LibraryStore::open(&db_path).unwrap();
+        store
+            .upsert_tracks(&[
+                Track::from_path(first.clone()),
+                Track::from_path(second.clone()),
+                Track::from_path(kept.clone()),
+            ])
+            .unwrap();
+        store.add_playlist_track("Delete", &first).unwrap();
+        store.add_playlist_track("Delete", &second).unwrap();
+        store.add_playlist_track("Other", &first).unwrap();
+        store.add_playlist_track("Other", &kept).unwrap();
+        store.set_favorite(&first, true).unwrap();
+        store.record_playback(&first, 42, true).unwrap();
+    }
+    let app = create_app(&db_path, &media_root);
+    for path in [&first, &kept, &first, &second] {
+        assert_ok(&unsafe { call_json(player_app_queue_add(app, c_string_arg(path).as_ptr())) });
+    }
+    let result = unsafe {
+        call_json(player_app_delete_playlist_tracks_from_library(
+            app,
+            c_string_arg("Delete").as_ptr(),
+        ))
+    };
+    assert_ok(&result);
+    assert_eq!(result["data"]["tracks_deleted"], 2);
+    assert_eq!(result["data"]["managed_files_deleted"], 1);
+    assert_eq!(
+        result["data"]["deleted_paths"],
+        serde_json::json!([path_to_string_lossy(&first), path_to_string_lossy(&second)])
+    );
+    assert_eq!(result["data"]["errors"], serde_json::json!([]));
+    let store = LibraryStore::open(&db_path).unwrap();
+    assert!(store.track_by_path(&first).unwrap().is_none());
+    assert!(store.track_by_path(&second).unwrap().is_none());
+    assert!(store.track_by_path(&kept).unwrap().is_some());
+    assert!(store.playlist_tracks("Delete").unwrap().is_empty());
+    assert_eq!(store.playlists().unwrap().len(), 2);
+    assert_eq!(store.playlist_tracks("Other").unwrap()[0].track.path, kept);
+    assert!(store.favorite_tracks().unwrap().is_empty());
+    assert!(store.play_history(10).unwrap().is_empty());
+    assert!(!first.exists());
+    assert!(second.exists());
+    assert!(kept.exists());
+    assert_eq!(
+        queue_paths(&unsafe { call_json(player_app_queue(app)) }),
+        vec![path_to_string_lossy(&kept)]
+    );
+    unsafe { player_app_destroy(app) };
+    let reopened = create_app(&db_path, &media_root);
+    assert_eq!(
+        queue_paths(&unsafe { call_json(player_app_queue(reopened)) }),
+        vec![path_to_string_lossy(&kept)]
+    );
+    unsafe { player_app_destroy(reopened) };
+    drop(store);
+    fs::remove_dir_all(root).ok();
+}
+
+#[test]
+fn playlist_library_deletion_accepts_empty_and_missing_playlists() {
+    let root = temp_dir("delete_empty_playlist_songs");
+    fs::create_dir_all(&root).unwrap();
+    let db_path = root.join("library.sqlite3");
+    LibraryStore::open(&db_path)
+        .unwrap()
+        .create_playlist("Empty")
+        .unwrap();
+    let app = create_app(&db_path, &root.join("Music"));
+    for name in ["Empty", "Missing"] {
+        let result = unsafe {
+            call_json(player_app_delete_playlist_tracks_from_library(
+                app,
+                c_string_arg(name).as_ptr(),
+            ))
+        };
+        assert_ok(&result);
+        assert_eq!(result["data"]["tracks_deleted"], 0);
+        assert_eq!(result["data"]["deleted_paths"], serde_json::json!([]));
+        assert_eq!(result["data"]["errors"], serde_json::json!([]));
+    }
+    unsafe { player_app_destroy(app) };
+    fs::remove_dir_all(root).ok();
+}
+
+#[test]
+fn playlist_library_deletion_reports_cleanup_failure_and_continues() {
+    let root = temp_dir("delete_playlist_cleanup_failure");
+    let media_root = root.join("Music");
+    fs::create_dir_all(&media_root).unwrap();
+    let db_path = root.join("library.sqlite3");
+    let first = media_root.join("first.ogg");
+    let second = media_root.join("second.ogg");
+    fs::write(&first, b"test").unwrap();
+    fs::write(&second, b"test").unwrap();
+    // A directory in place of a sidecar makes file cleanup fail deterministically.
+    fs::create_dir(media_root.join("first.lrc")).unwrap();
+    {
+        let mut store = LibraryStore::open(&db_path).unwrap();
+        store
+            .upsert_tracks(&[
+                Track::from_path(first.clone()),
+                Track::from_path(second.clone()),
+            ])
+            .unwrap();
+        store.add_playlist_track("Delete", &first).unwrap();
+        store.add_playlist_track("Delete", &second).unwrap();
+    }
+    let app = create_app(&db_path, &media_root);
+    let result = unsafe {
+        call_json(player_app_delete_playlist_tracks_from_library(
+            app,
+            c_string_arg("Delete").as_ptr(),
+        ))
+    };
+    assert_ok(&result);
+    assert_eq!(result["data"]["tracks_deleted"], 2);
+    assert_eq!(
+        result["data"]["deleted_paths"],
+        serde_json::json!([path_to_string_lossy(&first), path_to_string_lossy(&second)])
+    );
+    assert_eq!(result["data"]["errors"].as_array().unwrap().len(), 1);
+    assert!(result["data"]["errors"][0]
+        .as_str()
+        .unwrap()
+        .contains("first.lrc"));
+    assert!(!second.exists());
+    assert!(LibraryStore::open(&db_path)
+        .unwrap()
+        .playlist_tracks("Delete")
+        .unwrap()
+        .is_empty());
+    unsafe { player_app_destroy(app) };
+    fs::remove_dir_all(root).ok();
+}
+
+#[test]
+fn playlist_library_deletion_removes_members_from_shuffled_queue() {
+    let root = temp_dir("delete_playlist_shuffled_queue");
+    fs::create_dir_all(&root).unwrap();
+    let db_path = root.join("library.sqlite3");
+    let deleted = root.join("deleted.ogg");
+    let kept = root.join("kept.ogg");
+    {
+        let mut store = LibraryStore::open(&db_path).unwrap();
+        store
+            .upsert_tracks(&[
+                Track::from_path(deleted.clone()),
+                Track::from_path(kept.clone()),
+            ])
+            .unwrap();
+        store.add_playlist_track("Delete", &deleted).unwrap();
+    }
+    let app = create_app(&db_path, &root.join("Music"));
+    for path in [&deleted, &kept] {
+        assert_ok(&unsafe { call_json(player_app_queue_add(app, c_string_arg(path).as_ptr())) });
+    }
+    unsafe { (*app).queue_playback_order = vec![1, 0] };
+    let result = unsafe {
+        call_json(player_app_delete_playlist_tracks_from_library(
+            app,
+            c_string_arg("Delete").as_ptr(),
+        ))
+    };
+    assert_ok(&result);
+    assert_eq!(
+        queue_paths(&unsafe { call_json(player_app_queue(app)) }),
+        vec![path_to_string_lossy(&kept)]
+    );
+    unsafe { player_app_destroy(app) };
+    fs::remove_dir_all(root).ok();
+}
+
+#[test]
 fn app_sorts_playlist_via_ffi() {
     let db_path = temp_db_path("sort_playlist");
     let media_root = temp_dir("sort_playlist_media");

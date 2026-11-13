@@ -77,6 +77,7 @@ char *player_app_rename_playlist(PlayerApp *app, const char *old_name, const cha
 char *player_app_set_playlist_artwork(PlayerApp *app, const char *name, const char *image_path);
 char *player_app_delete_playlist(PlayerApp *app, const char *name);
 char *player_app_clear_playlist(PlayerApp *app, const char *name);
+char *player_app_delete_playlist_tracks_from_library(PlayerApp *app, const char *name);
 char *player_app_add_to_playlist(PlayerApp *app, const char *name, const char *path);
 char *player_app_remove_from_playlist(PlayerApp *app, const char *name, const char *path);
 char *player_app_move_playlist_track(PlayerApp *app, const char *name, const char *path, int32_t delta);
